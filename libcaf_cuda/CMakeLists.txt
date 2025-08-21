@@ -15,7 +15,6 @@ file(GLOB_RECURSE CAF_CUDA_HEADERS "caf/*.hpp")
 
 # list cpp files excluding platform-dependent files
 set(LIBCAF_CUDA_SRCS
-  src/global.cpp
   src/manager.cpp
   src/platform.cpp
   src/program.cpp
