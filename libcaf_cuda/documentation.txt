@@ -120,8 +120,7 @@ mmulCommand mmul;
 
 }}}
 
-For a more in depth look on how this is done go to https://github.com/Dalton166/Cuda-Actors/blob/main/examples/custom-actor-examples/mmul.example.cpp 
-
+For a more in depth look on how this is done go to https://github.com/uofs-simlab/actor-framework/blob/main/libcaf_cuda/examples/custom-actor-examples/mmul.example.cpp 
 
 == Actor id's
 Actors use ids as a way to request resources on the GPU, mainly streams (command queues on the GPU). The actor facade will automatically get its own id and separate GPU resources from other actors. However if you are creating your own custom GPU actor, then you can decide if 2 or more actors or kernel launches share the same GPU resources, such as streams by using the same id per request. It is worth mentioning that at a certain limit (after 500 actor ids) GPU resources will be shared amongst actors to prevent extreme overhead costs of managing all the GPU resources or even crashing for having too much resources allocated
@@ -204,12 +203,6 @@ The command runner does support kernels with shared memory (actor facade does no
 }}}
 
 
-For more details, see the example code found at https://github.com/Dalton166/Cuda-Actors/tree/main/examples 
-
-
-
-
-
-
+For more details, see the example code found at https://github.com/uofs-simlab/actor-framework/tree/main/libcaf_cuda/examples
 
 
