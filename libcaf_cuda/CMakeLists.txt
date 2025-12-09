@@ -22,6 +22,7 @@ set(LIBCAF_CUDA_SRCS
   src/test.cpp
   src/scheduler.cpp
   src/streampool.cpp
+  src/control-layer/scheduler_actor.cpp
 )
 
 # -- add targets ---------------------------------------------------------------
