@@ -20,7 +20,7 @@ public:
     virtual int getType() = 0;
 
 protected:
-    std::atomic<size_t> ref_count_{0};
+    mutable std::atomic<size_t> ref_count_{0};
 
     friend void intrusive_ptr_add_ref(const token* p) noexcept {
         p->ref_count_.fetch_add(1, std::memory_order_relaxed);
