@@ -2,6 +2,13 @@
 #include <atomic>
 #include "caf/all.hpp"
 
+//types of tokens
+#define LAUNCH 1
+#define LAUNCH_RESPONSE 2
+#define BEHAVIOR 3
+
+
+
 namespace caf::cuda {
 
 // Base token interface
