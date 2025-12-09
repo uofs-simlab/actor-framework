@@ -13,7 +13,6 @@
 // CAF type ID registration
 #include <caf/type_id.hpp>
 #include <caf/anon_mail.hpp>
-#include "caf/cuda/control-layer/all-control-layer.hpp"
 
 //a strange fix required in order to get the .so files to become viewable for binaries
 //linking against them, if this is not defined with classes you want viewable then
@@ -201,7 +200,5 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<int>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<float>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<double>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<char>)
-CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::ndrange)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::nd_range)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::program_ptr)
-CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::token_ptr)
-//TODO may need to add launch and launch response token pointer
