@@ -7,13 +7,13 @@ namespace caf::cuda {
 	class behavior_token : token {
 	
 		public:
-			behavior_token(String behavior) :
+			behavior_token(std::string behavior) :
 				behavior_(behavior) {}
 
 			int getType() override {return BEHAVIOR;}
 			String getBehavior() {return behavior_;}
 		private:
-			String behavior_;
+			std::string behavior_;
 
 
 	};
