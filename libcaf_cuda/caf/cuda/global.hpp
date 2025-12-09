@@ -201,4 +201,7 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<int>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<float>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<double>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<char>)
-
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::ndrange)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::program_ptr)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::token_ptr)
+//TODO may need to add launch and launch response token pointer
