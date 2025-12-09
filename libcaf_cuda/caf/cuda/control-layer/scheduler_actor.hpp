@@ -2,6 +2,9 @@
 #include <caf/all.hpp>
 #include "caf/cuda/control-layer/launch_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
+#include "caf/cuda/control-layer/behavior.hpp"
+#include "caf/cuda/control-layer/behavior_table.hpp"
+#include "caf/cuda/control-layer/behavior_token.hpp"
 #include <queue>
 
 /*
@@ -9,10 +12,6 @@
  * meant to make scheduling decisions using s/r/r ipc
  */
 
-struct scheduler_actor_state {
-	std::queue<token_ptr> queue;
-}
-
-
-caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>);
-
+namespace caf::cuda {
+caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state> * self);
+}//namespace caf::cuda
