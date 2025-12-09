@@ -1,0 +1,37 @@
+#include "caf/cuda/control-layer/scheduler_actor.hpp"
+#include "caf/cuda/control-layer/green_light_behavior.hpp"
+#include "caf/cuda/control-layer/red_light_behavior.hpp"
+
+/*
+ * This class is meant to handle actor GPU scheduling via s/r/r IPC 
+ * it has nothing to do with the scheduler class, that is kernel laye
+ */ 
+
+namespace caf::cuda {
+
+caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) {
+
+    // populate the table
+    self->state().table.add("green", &GREEN_BEHAVIOR);
+    self->state().table.add("red", &RED_BEHAVIOR);
+
+    // default behavior
+    self->state().current_behavior = self->state().table.get(behavior_token("green"));
+
+    return {
+        [=](const token_ptr& tok) {
+            self->state().current_behavior->receive(&self->state(), tok);
+        },
+        [=](const behavior_token& tok) {
+            auto* next = self->state().table.get(tok);
+            if (next)
+                self->state().current_behavior = next;  // swap behavior
+        },
+        [=](schedule_request&) {
+            self->state().current_behavior->schedule();
+        }
+    };
+}
+
+} // namespace caf::cuda
+
