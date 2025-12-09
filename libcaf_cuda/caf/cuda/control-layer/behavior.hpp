@@ -1,7 +1,7 @@
 #pragma once 
 #include "caf/cuda/control-layer/launch_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
-
+#include "caf/cuda/control-layer/scheduler_actor_state.hpp"
 
 
 //this class is meant to provide an interface so that 
@@ -21,7 +21,7 @@ public:
     virtual ~scheduler_actor_behavior() = default;
 
     virtual void schedule() = 0;
-    virtual void receive(class scheduler_actor_state* state, const launch_token& tok) = 0;
+    virtual void receive(scheduler_actor_state* state, const token_ptr& tok) = 0;
 };
 
 } // namespace caf::cuda
