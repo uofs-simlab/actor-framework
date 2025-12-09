@@ -26,9 +26,6 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) 
             auto* next = self->state().table.get(tok);
             if (next)
                 self->state().current_behavior = next;  // swap behavior
-        },
-        [=](schedule_request&) {
-            self->state().current_behavior->schedule();
         }
     };
 }
