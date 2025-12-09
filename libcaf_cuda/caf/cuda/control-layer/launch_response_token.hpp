@@ -1,6 +1,6 @@
 #pragma once
-#include "caf/scheduler/token.hpp"
-#include "caf/scheduler/launch_token.hpp"
+#include "caf/cuda/control-layer/token.hpp"
+#include "caf/cuda/control-layer/launch_token.hpp"
 #include <caf/actor.hpp>
 #include "caf/cuda/all.hpp"
 #include <atomic>
@@ -32,7 +32,7 @@ public:
         release();
     }
 
-    int getType() override { return 2; }
+    int getType() override { return LAUNCH_RESPONSE; }
 
     const nd_range& getRange() const { return range_; }
     int getMemoryUsage() const { return memory_usage_; }

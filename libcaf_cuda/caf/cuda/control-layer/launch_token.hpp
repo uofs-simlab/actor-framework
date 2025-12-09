@@ -1,5 +1,5 @@
 #pragma once
-#include "caf/scheduler/token.hpp"
+#include "caf/cuda/control-layer/token.hpp"
 #include "caf/cuda/all.hpp"
 #include <string>
 
@@ -16,7 +16,7 @@ public:
           memory_usage_(memory_usage),
           id_(std::move(id)) {}
 
-    int getType() override { return 1; }
+    int getType() override { return LAUNCH; }
 
     const program_ptr& getProgram() const { return program_; }
     const nd_range& getRange() const { return range_; }
