@@ -51,7 +51,7 @@ public:
     void release() {
         bool expected = false;
         if (released_.compare_exchange_strong(expected, true)) {
-            caf::anon_send(receiver_, id_, getBlocks());
+            caf::anon_mail(id_, getBlocks()).urgent().send(receiver_);
         }
     }
 
