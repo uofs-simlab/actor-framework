@@ -2,12 +2,120 @@
 #include <stdexcept>
 #include <mutex>
 #include <map>
+#include "caf/cuda/control-layer/scheduler_actor.hpp"
+#include "caf/cuda/manager_config.hpp"
 
 
 namespace caf::cuda {
 
 	manager* manager::instance_ = nullptr;
 	std::mutex manager::mutex_;
+
+
+namespace caf::cuda {
+
+// --------------------------------
+// Static members
+// --------------------------------
+manager* manager::instance_ = nullptr;
+std::mutex manager::mutex_;
+
+// --------------------------------
+// Static init (no config)
+// --------------------------------
+void manager::init(caf::actor_system& sys) {
+    std::lock_guard<std::mutex> guard(mutex_);
+
+    if (instance_) {
+        throw std::runtime_error("CUDA manager already initialized");
+    }
+
+    CHECK_CUDA(cuInit(0));
+
+    CUcontext ctx = nullptr;
+    cuCtxGetCurrent(&ctx);
+
+    instance_ = new manager(sys);
+
+    caf::init_global_meta_objects<caf::id_block::cuda>();
+}
+
+// --------------------------------
+// Static init (with config)
+// --------------------------------
+void manager::init(caf::actor_system& sys, manager_config config) {
+    std::lock_guard<std::mutex> guard(mutex_);
+
+    if (instance_) {
+        throw std::runtime_error("CUDA manager already initialized");
+    }
+
+    CHECK_CUDA(cuInit(0));
+
+    CUcontext ctx = nullptr;
+    cuCtxGetCurrent(&ctx);
+
+    instance_ = new manager(sys);
+
+    caf::init_global_meta_objects<caf::id_block::cuda>();
+
+    instance_->scheduler_on = config.getSchedulerOn();
+
+    if (instance_->scheduler_on) {
+        instance_->scheduler_actor =
+            sys.spawn(actor_from_state<scheduler_actor_state>);
+    }
+}
+
+// --------------------------------
+// Static get()
+// --------------------------------
+manager& manager::get() {
+    std::lock_guard<std::mutex> guard(mutex_);
+
+    if (!instance_) {
+        throw std::runtime_error(
+            "CUDA manager used before initialization.\n"
+            "Call caf::cuda::manager::init() inside CAF_MAIN."
+        );
+    }
+
+    return *instance_;
+}
+
+// --------------------------------
+// Static shutdown()
+// --------------------------------
+void manager::shutdown() {
+    std::lock_guard<std::mutex> guard(mutex_);
+
+    if (!instance_)
+        return;
+
+    if (instance_->scheduler_on) {
+        anon_send_exit(
+            instance_->scheduler_actor,
+            caf::exit_reason::user_shutdown
+        );
+    }
+
+    delete instance_;
+    instance_ = nullptr;
+}
+
+// --------------------------------
+// Static getter for scheduler actor
+// --------------------------------
+caf::actor manager::get_scheduler_actor() {
+    std::lock_guard<std::mutex> guard(mutex_);
+
+    if (!instance_) {
+        throw std::runtime_error("CUDA manager not initialized");
+    }
+
+    return instance_->scheduler_actor;
+}
+
 
 
 
