@@ -20,6 +20,8 @@
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/actor_facade.hpp"
 #include "caf/cuda/platform.hpp"
+#include "caf/cuda/manager_config.hpp"
+#include "caf/cuda/control-layer/scheduler_actor.hpp"
 
 //A class that just acts as a user interface
 //and a system initialization for cuda 
@@ -40,36 +42,22 @@ class actor_facade;
 class CAF_CUDA_EXPORT manager {
 public:
   /// Initializes the singleton. Must be called exactly once before get().
-  static void init(caf::actor_system& sys) {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (instance_) {
-      	//return;
-      throw std::runtime_error("CUDA manager already initialized");
-    }
-    CHECK_CUDA(cuInit(0));
-    CUcontext ctx = nullptr;
-    cuCtxGetCurrent(&ctx);
-    //std::cout << "Before cuCtxCreate, context: " << ctx << std::endl;
-    instance_ = new manager(sys);
-    //caf::core::init_global_meta_objects();
-     caf::init_global_meta_objects<caf::id_block::cuda>();
-  }
+  static void init(caf::actor_system& sys);
+
+
+
+
+ /// Initializes the singleton. Must be called exactly once before get().
+  static void init(caf::actor_system& sys,manager_config config);
 
   /// Returns the singleton instance. Crashes if not yet initialized.
-  static manager& get() {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (!instance_) {
-      throw std::runtime_error("CUDA manager used before initialization\n  Please place caf::cuda::manager::init() at the top of CAF_MAIN\n");
-    }
-    return *instance_;
-  }
+  static manager& get();
 
   /// Deletes the singleton if needed (optional).
-  static void shutdown() {
-    std::lock_guard<std::mutex> guard(mutex_);
-    delete instance_;
-    instance_ = nullptr;
-  }
+  //deletes the scheduler actor as well if it exists
+  static void shutdown();
+  caf::actor get_scheduler_actor();
+  
 
   // Prevent copy/assignment
   manager(const manager&) = delete;
@@ -202,6 +190,8 @@ private:
 
   static manager* instance_;
   static std::mutex mutex_;
+  bool scheduler_on = false;
+  caf::actor scheduler_actor;
 };
 
 } // namespace caf::cuda
