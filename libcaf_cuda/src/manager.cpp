@@ -12,13 +12,7 @@ namespace caf::cuda {
 	std::mutex manager::mutex_;
 
 
-namespace caf::cuda {
 
-// --------------------------------
-// Static members
-// --------------------------------
-manager* manager::instance_ = nullptr;
-std::mutex manager::mutex_;
 
 // --------------------------------
 // Static init (no config)
@@ -249,7 +243,7 @@ program_ptr manager::create_program_from_fatbin(const std::string& filename,
 // Returns true on success; on failure prints log and returns false
 bool manager::compile_nvrtc_program(const char* source, CUdevice device, std::vector<char>& ptx_out) {
 
-	return caf::cuda::compile_nvrtc_program(source,device,ptx_out);
+	return compile_nvrtc_program(source,device,ptx_out);
 }
 
 
