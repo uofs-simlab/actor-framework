@@ -1,3 +1,4 @@
+#include "caf/cuda/control-layer/all-control-layer.hpp"
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
 #include "caf/cuda/control-layer/green_light_behavior.hpp"
 #include "caf/cuda/control-layer/red_light_behavior.hpp"
