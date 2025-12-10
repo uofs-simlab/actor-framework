@@ -1,3 +1,4 @@
+#pragma once
 /*
  * A class that is meant to enable users to configure 
  * the caf cuda library
