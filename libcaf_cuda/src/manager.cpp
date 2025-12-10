@@ -56,8 +56,8 @@ void manager::init(caf::actor_system& sys, manager_config config) {
     instance_->scheduler_on = config.getSchedulerOn();
 
     if (instance_->scheduler_on) {
-        instance_->scheduler_actor =
-            sys.spawn(actor_from_state<scheduler_actor_state>);
+        instance_->scheduler_actor_handle =
+            sys.spawn(scheduler_actor);
     }
 }
 
@@ -88,7 +88,7 @@ void manager::shutdown() {
 
     if (instance_->scheduler_on) {
         anon_send_exit(
-            instance_->scheduler_actor,
+            instance_->scheduler_actor_handle,
             caf::exit_reason::user_shutdown
         );
     }
@@ -101,13 +101,14 @@ void manager::shutdown() {
 // Static getter for scheduler actor
 // --------------------------------
 caf::actor manager::get_scheduler_actor() {
-    std::lock_guard<std::mutex> guard(mutex_);
+    	//this is a read only data no need for lock
+	//std::lock_guard<std::mutex> guard(mutex_);
 
     if (!instance_) {
         throw std::runtime_error("CUDA manager not initialized");
     }
 
-    return instance_->scheduler_actor;
+    return instance_->scheduler_actor_handle;
 }
 
 

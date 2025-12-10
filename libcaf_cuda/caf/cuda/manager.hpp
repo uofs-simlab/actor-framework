@@ -191,7 +191,7 @@ private:
   static manager* instance_;
   static std::mutex mutex_;
   bool scheduler_on = false;
-  caf::actor scheduler_actor;
+  caf::actor scheduler_actor_handle;
 };
 
 } // namespace caf::cuda
