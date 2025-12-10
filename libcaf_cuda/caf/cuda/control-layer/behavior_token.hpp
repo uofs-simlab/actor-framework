@@ -1,23 +1,23 @@
+#pragma once
 #include "caf/cuda/control-layer/token.hpp"
 #include <string>
 
-
 namespace caf::cuda {
 
-	class behavior_token : token {
-	
-		public:
-			behavior_token(std::string behavior) :
-				behavior_(behavior) {}
+class behavior_token : public token {
+public:
+    explicit behavior_token(std::string n) : name_(std::move(n)) {}
 
-			int getType() override {return BEHAVIOR;}
-			String getBehavior() {return behavior_;}
-		private:
-			std::string behavior_;
+    const std::string& name() const { return name_; }
 
+    // override getType() from token
+    int getType() override { return BEHAVIOR; }
 
-	};
+private:
+    std::string name_;
+};
 
+using behavior_token_ptr = caf::intrusive_ptr<behavior_token>;
 
+} // namespace caf::cuda
 
-}//namespace caf::cuda
