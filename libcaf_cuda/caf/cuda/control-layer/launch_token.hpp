@@ -1,7 +1,9 @@
 #pragma once
 #include <caf/all.hpp>  // For caf::actor, caf::intrusive_ptr 
+#include "caf/cuda/program.hpp"
 #include "caf/cuda/control-layer/token.hpp"
 #include "caf/cuda/nd_range.hpp"  // For nd_range (full def needed for member)
+
 
 namespace caf::cuda {
 class program; 
