@@ -1,6 +1,5 @@
 #pragma once
 #include <atomic>
-#include "caf/cuda/all.hpp"
 #include <caf/intrusive_ptr.hpp>
 #include <caf/ref_counted.hpp>
 
