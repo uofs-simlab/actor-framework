@@ -27,11 +27,16 @@ public:
   CUfunction get_kernel(int device_id);
 
     friend void intrusive_ptr_add_ref(const program* p) noexcept {
-        p->ref_count_.fetch_add(1, std::memory_order_relaxed);
+        //p->ref_count_.fetch_add(1, std::memory_order_relaxed);
     }
     friend void intrusive_ptr_release(const program* p) noexcept {
-        if (p->ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1)
-            delete p;
+        if (p->ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+	   //WARNING TURNING THIS ON FOR SOME REASON, CAUSES SEGFAUTLS
+	   //I HAVE NO IDEA WHY 
+	   //TODO FIX THIS 
+	   // std::cout<< "Deleting\n";
+           // delete p;
+	}
     }
 
 
