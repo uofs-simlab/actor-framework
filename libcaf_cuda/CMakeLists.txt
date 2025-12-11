@@ -25,6 +25,7 @@ set(LIBCAF_CUDA_SRCS
   src/control-layer/scheduler_actor.cpp
   src/control-layer/red_light_behavior.cpp
   src/control-layer/green_light_behavior.cpp
+  src/control-layer/token_factory.cpp
 )
 
 # -- add targets ---------------------------------------------------------------
