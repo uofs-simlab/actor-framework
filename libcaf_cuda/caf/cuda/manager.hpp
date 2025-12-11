@@ -21,7 +21,6 @@
 #include "caf/cuda/actor_facade.hpp"
 #include "caf/cuda/platform.hpp"
 #include "caf/cuda/manager_config.hpp"
-#include "caf/cuda/control-layer/scheduler_actor.hpp"
 
 //A class that just acts as a user interface
 //and a system initialization for cuda 
