@@ -1,12 +1,12 @@
 #pragma once
 #include "caf/cuda/control-layer/token.hpp"
-#include "caf/cuda/control-layer/launch_token.hpp"
-#include <caf/actor.hpp>
-#include "caf/cuda/all.hpp"
+#include "caf/cuda/control-layer/launch_token.hpp"  // Full include for constructor param
+#include <caf/actor.hpp>  // For caf::actor
+#include "caf/cuda/nd_range.hpp"  // For nd_range
 #include <atomic>
+#include <string>  // For std::string (if not from elsewhere)
 
 namespace caf::cuda {
-
 class launch_response_token : public token {
 public:
     // Construct manually
@@ -19,7 +19,6 @@ public:
           memory_usage_(memory_usage),
           id_(std::move(id)),
           released_(false) {}
-
     // Construct from a launch_token
     launch_response_token(caf::actor receiver, const launch_token& token)
         : receiver_(std::move(receiver)),
@@ -27,16 +26,12 @@ public:
           memory_usage_(token.getMemoryUsage()),
           id_(token.getId()),
           released_(false) {}
-
     ~launch_response_token() {
         release();
     }
-
     int getType() override { return LAUNCH_RESPONSE; }
-
     const nd_range& getRange() const { return range_; }
     int getMemoryUsage() const { return memory_usage_; }
-
     // Return requested number of CUDA blocks
     int getBlocks() const {
         return static_cast<int>(
@@ -45,16 +40,13 @@ public:
             range_.getGridDimZ()
         );
     }
-
     const std::string& getId() const { return id_; }
-
     void release() {
         bool expected = false;
         if (released_.compare_exchange_strong(expected, true)) {
             caf::anon_mail(id_, getBlocks()).urgent().send(receiver_);
         }
     }
-
 private:
     caf::actor receiver_;
     nd_range range_;
@@ -62,6 +54,4 @@ private:
     std::string id_;
     std::atomic<bool> released_;
 };
-
 } // namespace caf::cuda
-
