@@ -17,8 +17,6 @@ namespace caf::cuda {
         // handle current token immediately
         // (demo: just print)
     }
-};
-
 
 } // namespace caf::cuda
 
