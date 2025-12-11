@@ -14,7 +14,9 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) 
 
     // populate the table
     static red_light_behavior red_behavior;
-    self->state().table.add("green", &GREEN_BEHAVIOR);
+    static green_light_behavior green_behavior;
+
+    self->state().table.add("green", &green_behavior);
     self->state().table.add("red", &red_behavior);
 
     // default behavior
