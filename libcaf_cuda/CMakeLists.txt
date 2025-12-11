@@ -23,6 +23,7 @@ set(LIBCAF_CUDA_SRCS
   src/scheduler.cpp
   src/streampool.cpp
   src/control-layer/scheduler_actor.cpp
+  src/control-layer/red_light_behavior.cpp
 )
 
 # -- add targets ---------------------------------------------------------------
