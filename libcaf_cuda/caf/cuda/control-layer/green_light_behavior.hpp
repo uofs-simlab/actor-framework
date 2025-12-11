@@ -8,6 +8,7 @@ public:
     void schedule() override;
 
     void receive(scheduler_actor_state* state, const token_ptr& tok) override; 
+    void init(scheduler_actor_state* state); 
 };
 
 
