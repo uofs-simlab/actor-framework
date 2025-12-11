@@ -6,6 +6,7 @@
 #include "caf/cuda/control-layer/behavior_token.hpp"
 #include "caf/cuda/control-layer/behavior.hpp"
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
+#include "caf/cuda/control-layer/token_factory.hpp"
 
 CAF_BEGIN_TYPE_ID_BLOCK(cuda_control, caf::first_custom_type_id + 200)
 // You can also use  caf::id_block::core::end  instead of the +200 if you prefer
