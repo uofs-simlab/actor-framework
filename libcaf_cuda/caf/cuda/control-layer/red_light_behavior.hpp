@@ -9,12 +9,11 @@ public:
         // scheduling logic, if needed
     }
 
-    void receive(scheduler_actor_state* state, const token_ptr& tok) override {
-        state->queue.push(tok); // enqueue everything
-    }
+    void receive(scheduler_actor_state* state, const token_ptr& tok) override;
+
+    ~red_light_behavior() noexcept override;
 };
 
-inline red_light_behavior RED_BEHAVIOR;
 
 } // namespace caf::cuda
 
