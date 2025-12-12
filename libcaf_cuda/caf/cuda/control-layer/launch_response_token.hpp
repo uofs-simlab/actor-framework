@@ -3,11 +3,12 @@
 #include "caf/cuda/control-layer/launch_token.hpp"  // Full include for constructor param
 #include <caf/actor.hpp>  // For caf::actor
 #include "caf/cuda/nd_range.hpp"  // For nd_range
+#include "caf/cuda/global_export.hpp"
 #include <atomic>
 #include <string>  // For std::string (if not from elsewhere)
 
 namespace caf::cuda {
-class launch_response_token : public token {
+class CAF_CUDA_EXPORT launch_response_token : public token {
 public:
     // Construct manually
     launch_response_token(caf::actor receiver,

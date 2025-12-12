@@ -3,13 +3,14 @@
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/control-layer/token.hpp"
 #include "caf/cuda/nd_range.hpp"  // For nd_range (full def needed for member)
+#include "caf/cuda/global_export.hpp"
 
 
 namespace caf::cuda {
 class program; 
 using program_ptr = caf::intrusive_ptr<program>;  
 
-class launch_token : public token {
+class CAF_CUDA_EXPORT launch_token : public token {
 public:
     launch_token(program_ptr prog,
                  nd_range range,

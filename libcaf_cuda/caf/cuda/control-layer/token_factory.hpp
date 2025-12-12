@@ -1,5 +1,6 @@
 #pragma once
 
+#include "caf/cuda/global_export.hpp" //here to export files
 #include "caf/cuda/control-layer/token.hpp"
 #include "caf/cuda/control-layer/launch_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
@@ -10,7 +11,7 @@
 namespace caf::cuda {
 
 /// Creates a launch_token (used by users when submitting kernels)
-token_ptr make_launch_token(program_ptr prog,
+CAF_CUDA_EXPORT token_ptr make_launch_token(program_ptr prog,
                             nd_range range,
                             int memory_usage,
                             std::string id,
@@ -18,10 +19,10 @@ token_ptr make_launch_token(program_ptr prog,
 
 /// Creates a launch_response_token (created internally by the scheduler
 /// when it accepts a kernel launch request)
-token_ptr make_launch_response_token(actor scheduler_or_proxy,
+CAF_CUDA_EXPORT token_ptr make_launch_response_token(actor scheduler_or_proxy,
                                      const launch_token& orig);
 
 /// Creates a behavior_token (special — returns its own strong ptr type)
-behavior_token_ptr make_behavior_token(std::string name);
+CAF_CUDA_EXPORT behavior_token_ptr make_behavior_token(std::string name);
 
 } // namespace caf::cuda

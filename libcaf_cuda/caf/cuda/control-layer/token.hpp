@@ -2,6 +2,7 @@
 #include <atomic>
 #include <caf/intrusive_ptr.hpp>
 #include <caf/ref_counted.hpp>
+#include "caf/cuda/global_export.hpp"
 
 //types of tokens
 #define LAUNCH 1
@@ -13,7 +14,7 @@
 namespace caf::cuda {
 
 // Base token interface
-class token : public caf::ref_counted {
+class CAF_CUDA_EXPORT token : public caf::ref_counted {
 public:
     virtual ~token() = default;
     virtual int getType() = 0;
