@@ -44,7 +44,10 @@ public:
     void release() {
         bool expected = false;
         if (released_.compare_exchange_strong(expected, true)) {
-            caf::anon_mail(id_, getBlocks()).urgent().send(receiver_);
+            	//the real message commented out for testing 
+		//caf::anon_mail(id_, getBlocks()).urgent().send(receiver_);
+		//test message
+		caf::anon_mail("Hello world from me").urgent().send(receiver_);
         }
     }
 private:
