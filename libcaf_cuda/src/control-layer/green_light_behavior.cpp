@@ -9,15 +9,22 @@ namespace caf::cuda {
     }
 
     void green_light_behavior::receive(scheduler_actor_state* state, const token_ptr& tok)    {
-        // flush the queue
-        while (!state->queue.empty()) {
-            auto queued = state->queue.front();
-            state->queue.pop();
-            // respond to queued token (demo: just print)
-        }
+         // flush the queue
+    while (!state->queue.empty()) {
+        token_ptr queued = state->queue.front();
+        state->queue.pop();
 
-        // handle current token immediately
-        // (demo: just print)
+        if (queued->getType() == LAUNCH) {
+            // manually downcast raw pointer
+            caf::intrusive_ptr<launch_token> ltok(static_cast<launch_token*>(queued.get()));
+
+            // dereference to pass reference to factory function
+            token_ptr response = make_launch_response_token(state->self, *ltok);
+            anon_mail(response).send(ltok->getReplyActor());
+        }
+    }
+
+
     }
 
    void green_light_behavior::init(scheduler_actor_state * state) {
