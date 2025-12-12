@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <numeric>
 #include <random>
+#include <unistd.h>
 #include "caf/actor_registry.hpp"
 //#include <caf/atoms.hpp>
 
@@ -81,8 +82,8 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 	
   	caf::actor scheduler = mgr.get_scheduler_actor();
-	token_ptr launch_token = make_launch_token(self -> program,
-			self -> dims,
+	caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(self ->state().program,
+			self -> state().dims,
 			0,
 			"hello",
 			self
@@ -91,20 +92,20 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 
 	return {
 
-	  [=] (token_ptr launch_response_token) {
+	  [=] (caf::cuda::token_ptr launch_response_token) {
 	  
 		  //assume N = 1024
 		  int N = self -> state().N;
-		  std::vector<int> matrixA;
-		  maxtrixA.reserve(N);
-		  std::vector<int> matrixB;
-		  matrixB.reserve(N);
+		  std::vector<int> matrix1;
+		  matrix1.reserve(N);
+		  std::vector<int> matrix2;
+		  matrix2.reserve(N);
 
-		  self -> mail(matrixA,matrixB,N).send(self);
+		  self -> mail(matrix1,matrix2,N).send(self);
 	 
 		 //token should drop out of scope now, triggering a response 
 	  
-	  }
+	  },
 
     // 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
     [=](const std::vector<int> matrixA,
@@ -173,7 +174,7 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
     actors.push_back(sys.spawn(mmul_actor_fun));
   }
   
-  sleep(1000);
+  sleep(1);
   }
 
   //caf::anon_mail(matrix_size, actors).send(actors[0]);
