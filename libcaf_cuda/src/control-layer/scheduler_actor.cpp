@@ -32,8 +32,13 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) 
         },
         [=](const behavior_token& tok) {
             auto* next = self->state().table.get(tok);
-            if (next)
-                self->state().current_behavior = next;  // swap behavior
+            if (next) {
+                
+		    self->state().current_behavior -> cleanup(&self->state()); //cleanup current behavior
+		    self->state().current_behavior = next;  // swap behavior
+		    self->state().current_behavior -> init(&self->state()); //init new current behavior
+		
+	    }
         },
 	[=](std::string word) {
 		std::cout << "Received message " << word << "\n";
