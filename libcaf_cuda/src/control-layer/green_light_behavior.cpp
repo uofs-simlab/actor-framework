@@ -14,15 +14,17 @@ namespace caf::cuda {
         token_ptr queued = state->queue.front();
         state->queue.pop();
 
-        if (queued->getType() == LAUNCH) {
-            // manually downcast raw pointer
-            caf::intrusive_ptr<launch_token> ltok(static_cast<launch_token*>(queued.get()));
+ if (queued->getType() == LAUNCH) {
+      // safe: we've checked the runtime type
+      caf::cuda::launch_token& lt = static_cast<caf::cuda::launch_token&>(*queued);
 
-            // dereference to pass reference to factory function
-            token_ptr response = make_launch_response_token(state->self, *ltok);
-            anon_mail(response).send(ltok->getReplyActor());
-        }
+      // create the response using a reference to the existing object
+      caf::cuda::token_ptr response = make_launch_response_token(state->self, lt);
+
+      // send response to the reply actor stored in launch_token
+      anon_mail(response).send(lt.getReplyActor());
     }
+  }
 
 
     }
