@@ -96,9 +96,9 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 	  
 		  //assume N = 1024
 		  int N = self -> state().N;
-		  std::vector<int> matrix1;
+		  std::vector<int> matrix1(N*N);
 		  matrix1.reserve(N);
-		  std::vector<int> matrix2;
+		  std::vector<int> matrix2(N*N);
 		  matrix2.reserve(N);
 
 		  self -> mail(matrix1,matrix2,N).send(self);
@@ -191,7 +191,7 @@ void caf_main(caf::actor_system& sys) {
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
 
-  run_mmul_test(sys,100,4000);
+  run_mmul_test(sys,100,1);
   //run_async_mmul_test(sys,100,1);
   //run_async_mmul_perf_test(sys,1024,200);
 
