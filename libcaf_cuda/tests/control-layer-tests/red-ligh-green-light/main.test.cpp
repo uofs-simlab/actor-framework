@@ -93,7 +93,8 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 	return {
 
 	  [=] (caf::cuda::token_ptr launch_response_token) {
-	  
+	 
+		  std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
 		  //assume N = 1024
 		  int N = self -> state().N;
 		  std::vector<int> matrix1(N*N);
@@ -101,6 +102,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 		  std::vector<int> matrix2(N*N);
 		  matrix2.reserve(N);
 
+		  std::cout << "GPU ACTOR sending data to compute\n";
 		  self -> mail(matrix1,matrix2,N).send(self);
 	 
 		 //token should drop out of scope now, triggering a response 
@@ -112,6 +114,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
         const std::vector<int> matrixB, int N) {
  
 
+		  std::cout << "GPU ACTOR  computing\n";
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 
   //create program and dims   
@@ -129,6 +132,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
     auto tempC = mmul.run(program,dims,self -> state().id,arg1,arg2,arg3,arg4);
     std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
 
+		  std::cout << "GPU ACTOR done  computing\n";
     //verify its own result 
     self -> mail(matrixA,matrixB,matrixC,N).send(self);
 
@@ -138,6 +142,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
     [=](const std::vector<int>& matrixA,
         const std::vector<int>& matrixB, const std::vector<int> matrixC, int N) {
        
+		  std::cout << "GPU ACTOR  verfiying\n";
 	 std::vector<int> result(N*N);
 
 	 serial_matrix_multiply(matrixA,matrixB,result,N);
@@ -181,6 +186,113 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
 
    sys.await_all_actors_done();
 }
+// Stateful actor behavior
+// tests if mem_ptr can be sent correctly
+caf::behavior mmul_actor_fun2(caf::stateful_actor<mmul_actor_state>* self) {
+  
+
+  caf::cuda::manager& mgr = caf::cuda::manager::get();
+/*		
+  caf::cuda::token_ptr bad_launch_token = caf::cuda::make_launch_token(self ->state().program,
+			self -> state().dims,
+			0,
+			"hello",
+			self
+			);
+
+	self -> mail(bad_launch_token).send(scheduler);
+			*/
+
+  	caf::actor scheduler = mgr.get_scheduler_actor();
+	caf::cuda::mem_ptr<int> launch_token = caf::cuda::make_mem_ptr(16);
+			
+	self -> mail(launch_token).send(scheduler);
+
+	self -> mail("Stay alive\n").send(self);
+
+
+
+	return {
+
+		[=] (std::string hello){
+		while(1) {
+	
+		std::cout << "Staying alive\n";
+		sleep(1);
+	}	
+		},
+	  [=] (caf::cuda::token_ptr launch_response_token) {
+	 
+		  std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
+		  //assume N = 1024
+		  int N = self -> state().N;
+		  std::vector<int> matrix1(N*N);
+		  matrix1.reserve(N);
+		  std::vector<int> matrix2(N*N);
+		  matrix2.reserve(N);
+
+		  std::cout << "GPU ACTOR sending data to compute\n";
+		  self -> mail(matrix1,matrix2,N).send(self);
+	 
+		 //token should drop out of scope now, triggering a response 
+	  
+	  },
+
+    // 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
+    [=](const std::vector<int> matrixA,
+        const std::vector<int> matrixB, int N) {
+ 
+
+		  std::cout << "GPU ACTOR  computing\n";
+  caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+  //create program and dims   
+  auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
+  const int THREADS = 32;
+  const int BLOCKS = (N + THREADS - 1) / THREADS;
+  caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+
+    //create args
+    auto arg1 = caf::cuda::create_in_arg(matrixA);
+    auto arg2 = caf::cuda::create_in_arg(matrixB);
+    auto arg3 = caf::cuda::create_out_arg(N*N);
+    auto arg4 = caf::cuda::create_in_arg(N);
+
+    auto tempC = mmul.run(program,dims,self -> state().id,arg1,arg2,arg3,arg4);
+    std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
+
+		  std::cout << "GPU ACTOR done  computing\n";
+    //verify its own result 
+    self -> mail(matrixA,matrixB,matrixC,N).send(self);
+
+    },
+
+    // 3rd handler: CPU atom + matrices + N
+    [=](const std::vector<int>& matrixA,
+        const std::vector<int>& matrixB, const std::vector<int> matrixC, int N) {
+       
+		  std::cout << "GPU ACTOR  verfiying\n";
+	 std::vector<int> result(N*N);
+
+	 serial_matrix_multiply(matrixA,matrixB,result,N);
+
+	 if (result == matrixC) {
+	 
+		 std::cout << "actor with id " <<  self->state().id << " references match\n";
+	 
+	 }
+
+	 else {
+	    std::cout << "actor with id " <<  self->state().id << " references did not match\n";
+	 }
+
+	 self-> quit();
+
+    }
+  };
+}
+
+
 
 
 
@@ -191,15 +303,10 @@ void caf_main(caf::actor_system& sys) {
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
 
-  run_mmul_test(sys,100,1);
-  //run_async_mmul_test(sys,100,1);
-  //run_async_mmul_perf_test(sys,1024,200);
+	 //caf::init_global_meta_objects<caf::id_block::cuda_control>();
 
-  // run the async (no-shared) suite:
-  //benchmark_async_perf_all(sys);
-
-  // run the shared-memory suite:
-  //benchmark_shared_perf_all(sys);
+	sys.spawn(mmul_actor_fun2);
+  //run_mmul_test(sys,100,1);
 }
 
 
