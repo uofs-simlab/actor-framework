@@ -41,7 +41,7 @@ protected:
   }
 
 private:
- mutable std::atomic<size_t> ref_count_{1};
+ mutable std::atomic<size_t> ref_count_{0};
 
 
 };
