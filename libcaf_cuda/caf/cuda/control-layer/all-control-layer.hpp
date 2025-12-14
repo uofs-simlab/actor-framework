@@ -13,10 +13,10 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda_control, caf::first_custom_type_id + 200)
 
   CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::token))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::token>))  
-CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::behavior_token))
+//CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::behavior_token))
   CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::behavior_token>)) // ← and this one too if you ever use it
-	CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::launch_token))
-  CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::launch_response_token))
+	//CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::launch_token))
+  //CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::launch_response_token))
 
   // Very commonly needed as well – add them now so you don’t hit the error later
 
