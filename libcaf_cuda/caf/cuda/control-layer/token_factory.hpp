@@ -7,6 +7,7 @@
 #include "caf/cuda/control-layer/behavior_token.hpp"
 #include <caf/actor.hpp>
 #include <string>
+#include "caf/cuda/mem_ref.hpp"
 
 namespace caf::cuda {
 
@@ -24,5 +25,6 @@ CAF_CUDA_EXPORT token_ptr make_launch_response_token(actor scheduler_or_proxy,
 
 /// Creates a behavior_token (special — returns its own strong ptr type)
 CAF_CUDA_EXPORT behavior_token_ptr make_behavior_token(std::string name);
+CAF_CUDA_EXPORT mem_ptr<int> make_mem_ptr(size_t num_elements);
 
 } // namespace caf::cuda
