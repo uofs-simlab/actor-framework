@@ -26,6 +26,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) 
 
     // default behavior
     self->state().current_behavior = self->state().table.get(behavior_token("green"));
+    self->state().current_behavior -> init(&self->state());
 
     return {
         [=](const token_ptr& tok) {
