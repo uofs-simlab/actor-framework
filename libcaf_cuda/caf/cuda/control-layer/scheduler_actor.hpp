@@ -6,6 +6,7 @@
 #include "caf/cuda/control-layer/behavior_table.hpp"
 #include "caf/cuda/control-layer/behavior_token.hpp"
 #include <queue>
+#include "caf/cuda/global_export.hpp"
 
 /*
  * The scheduler actor 
@@ -13,5 +14,5 @@
  */
 
 namespace caf::cuda {
-caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state> * self);
+caf::behavior CAF_CUDA_EXPORT scheduler_actor(caf::stateful_actor<scheduler_actor_state> * self);
 }//namespace caf::cuda
