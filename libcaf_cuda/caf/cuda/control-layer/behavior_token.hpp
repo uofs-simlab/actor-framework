@@ -8,10 +8,11 @@ class behavior_token : public token {
 public:
     explicit behavior_token(std::string n) : name_(std::move(n)) {}
 
+    behavior_token() = default;
     const std::string& name() const { return name_; }
 
     // override getType() from token
-    int getType() override { return BEHAVIOR; }
+    int getType() const override { return BEHAVIOR; }
 
 private:
     std::string name_;

@@ -10,8 +10,12 @@
 namespace caf::cuda {
 class CAF_CUDA_EXPORT launch_response_token : public token {
 public:
-    // Construct manually
-    launch_response_token(caf::actor receiver,
+
+	//only here to be complaint with CAFS type if system DO NOT USE 
+	launch_response_token() = default;
+
+    // Construct manually    
+launch_response_token(caf::actor receiver,
                           nd_range range,
                           int memory_usage,
                           std::string id)
@@ -30,7 +34,7 @@ public:
     ~launch_response_token() {
         release();
     }
-    int getType() override { return LAUNCH_RESPONSE; }
+    int getType() const override { return LAUNCH_RESPONSE; }
     const nd_range& getRange() const { return range_; }
     int getMemoryUsage() const { return memory_usage_; }
     // Return requested number of CUDA blocks

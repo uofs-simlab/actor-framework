@@ -12,7 +12,12 @@ using program_ptr = caf::intrusive_ptr<program>;
 
 class CAF_CUDA_EXPORT launch_token : public token {
 public:
-    launch_token(program_ptr prog,
+
+	//only here to be complaint with CAFS type if system DO NOT USE 
+	launch_token() = default;
+    
+	
+	launch_token(program_ptr prog,
                  nd_range range,
                  int memory_usage,
                  std::string id,
@@ -22,7 +27,7 @@ public:
           memory_usage_(memory_usage),
           id_(std::move(id)),
           reply_handle_(receiver) {}  // Fixed missing )
-    int getType() override { return LAUNCH; }
+    int getType() const override { return LAUNCH; }
     const program_ptr& getProgram() const { return program_; }
     const nd_range& getRange() const { return range_; }
     int getMemoryUsage() const { return memory_usage_; }
