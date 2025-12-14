@@ -305,8 +305,8 @@ void caf_main(caf::actor_system& sys) {
 
 	 //caf::init_global_meta_objects<caf::id_block::cuda_control>();
 
-	sys.spawn(mmul_actor_fun2);
-  //run_mmul_test(sys,100,1);
+//	sys.spawn(mmul_actor_fun2);
+  run_mmul_test(sys,100,1);
 }
 
 
