@@ -4,6 +4,7 @@
 #include <map>
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
 #include "caf/cuda/manager_config.hpp"
+#include "caf/cuda/control-layer/all-control-layer.hpp"
 
 
 namespace caf::cuda {
@@ -52,6 +53,7 @@ void manager::init(caf::actor_system& sys, manager_config config) {
     instance_ = new manager(sys);
 
     caf::init_global_meta_objects<caf::id_block::cuda>();
+    caf::init_global_meta_objects<caf::id_block::cuda_control>();
 
     instance_->scheduler_on = config.getSchedulerOn();
 
