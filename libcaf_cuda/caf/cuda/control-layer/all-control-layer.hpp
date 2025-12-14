@@ -2,27 +2,31 @@
 
 #include "caf/cuda/all.hpp"
 
-// Control-layer object types (local-only, ref-counted)
+// Control-layer object types
 #include "caf/cuda/control-layer/token.hpp"
 #include "caf/cuda/control-layer/launch_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
 #include "caf/cuda/control-layer/behavior_token.hpp"
 
-// Control-layer logic
 #include "caf/cuda/control-layer/behavior.hpp"
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
 #include "caf/cuda/control-layer/token_factory.hpp"
 
 // -----------------------------------------------------------------------------
-// NO TYPE ID BLOCK
-//
-// These control-layer types are:
-//   - local-only
-//   - never serialized
-//   - never sent over the network
-//   - ref-counted and non-copyable
-//
-// Therefore they must NOT be registered.
+// Type IDs (required for typed behaviors)
+// -----------------------------------------------------------------------------
+
+CAF_BEGIN_TYPE_ID_BLOCK(cuda_control, caf::first_custom_type_id + 200)
+
+CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::token>))
+CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::behavior_token>))
+CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::launch_token>))
+CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::launch_response_token>))
+
+CAF_END_TYPE_ID_BLOCK(cuda_control)
+
+// -----------------------------------------------------------------------------
+// Unsafe: explicitly local-only, never serialized
 // -----------------------------------------------------------------------------
 
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::token)
@@ -30,7 +34,6 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::behavior_token)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::launch_token)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::launch_response_token)
 
-// And most importantly:
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::behavior_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::launch_token>)
