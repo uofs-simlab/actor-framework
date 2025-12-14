@@ -19,7 +19,7 @@ class CAF_CUDA_EXPORT token : public caf::ref_counted {
 public:
    virtual ~token() {
     // Print ref count when destructor runs
-    size_t count = ref_count.load(std::memory_order_acquire);
+    size_t count = ref_count_.load(std::memory_order_acquire);
     std::cout << "token object getting deleted, ref_count = " << count << "\n";
 }
 
@@ -29,21 +29,23 @@ public:
     virtual int getType() const {return -1;}
 
 protected:
- mutable std::atomic<size_t> ref_count{0}; // start at 1 for make_counted
 
-friend  void intrusive_ptr_add_ref(const token* p) noexcept {
-    std::cout << "[add_ref] old count = " << p->ref_count << "\n";
-    ++p->ref_count;
-    std::cout << "[add_ref] new count = " << p->ref_count << "\n";
-}
+ friend void intrusive_ptr_add_ref(token* p) noexcept {
+    p->ref_count_.fetch_add(1, std::memory_order_relaxed);
+  }
 
-friend void intrusive_ptr_release(const token* p) noexcept {
-    std::cout << "[release] old count = " << p->ref_count << "\n";
-    --p->ref_count;
-    std::cout << "[release] new count = " << p->ref_count << "\n";
-    if (p->ref_count == 0) std::cout << "token object getting deleted\n";
-}
+  friend void intrusive_ptr_release(token* p) noexcept {
+    if (p->ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1)
+      delete p;
+  
+  }
+
+private:
+ mutable std::atomic<size_t> ref_count_{1};
+
+
 };
+
 
 using token_ptr = caf::intrusive_ptr<token>;
 
