@@ -20,7 +20,7 @@ namespace caf::cuda {
 	   //send a request to change behavior to green light after 5 seconds
     	   anon_mail(green_light)
 		   .delay(std::chrono::seconds(5))
-		   .send(state -> self);	
+		   .send(state -> self);
     }
 
 } // namespace caf::cuda
