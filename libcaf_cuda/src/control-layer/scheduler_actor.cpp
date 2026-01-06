@@ -46,7 +46,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) 
 	    }
         },
 	[=](std::string word) {
-		std::cout << "Received message " << word << "\n";
+		//std::cout << "Received message " << word << "\n";
 	},
 	 [=](caf::cuda::mem_ptr<int> token) {
             if (!token) {
