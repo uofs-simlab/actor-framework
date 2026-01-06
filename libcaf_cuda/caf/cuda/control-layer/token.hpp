@@ -20,7 +20,7 @@ public:
    virtual ~token() {
     // Print ref count when destructor runs
     size_t count = ref_count_.load(std::memory_order_acquire);
-    std::cout << "token object getting deleted, ref_count = " << count << "\n";
+    //std::cout << "token object getting deleted, ref_count = " << count << "\n";
 }
 
     //should only be used by caf's type id system
