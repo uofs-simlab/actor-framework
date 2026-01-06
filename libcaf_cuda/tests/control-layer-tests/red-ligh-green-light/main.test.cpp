@@ -94,7 +94,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 
 	  [=] (caf::cuda::token_ptr launch_response_token) {
 	 
-		  std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
+		  //std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
 		  //assume N = 1024
 		  int N = self -> state().N;
 		  std::vector<int> matrix1(N*N);
@@ -102,7 +102,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 		  std::vector<int> matrix2(N*N);
 		  matrix2.reserve(N);
 
-		  std::cout << "GPU ACTOR sending data to compute\n";
+		  //std::cout << "GPU ACTOR sending data to compute\n";
 		  self -> mail(matrix1,matrix2,N).send(self);
 	 
 		 //token should drop out of scope now, triggering a response 
@@ -110,11 +110,11 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 	  },
 
     // 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
-    [=](const std::vector<int> matrixA,
-        const std::vector<int> matrixB, int N) {
+    [=](const std::vector<int>& matrixA,
+        const std::vector<int>& matrixB, int N) {
  
 
-		  std::cout << "GPU ACTOR  computing\n";
+		  //std::cout << "GPU ACTOR  computing\n";
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 
   //create program and dims   
@@ -140,7 +140,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 
     // 3rd handler: CPU atom + matrices + N
     [=](const std::vector<int>& matrixA,
-        const std::vector<int>& matrixB, const std::vector<int> matrixC, int N) {
+        const std::vector<int>& matrixB, const std::vector<int>& matrixC, int N) {
        
 		  std::cout << "GPU ACTOR  verfiying\n";
 	 std::vector<int> result(N*N);
@@ -171,7 +171,7 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
     return;
   }
 
-  int limit = 5;
+  int limit = 1;
 
   for (int i = 0; i < limit; i++) {
   // Spawn num_actors actors running the mmul behavior
@@ -180,12 +180,16 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
   for (int i = 0; i < num_actors; ++i) {
     actors.push_back(sys.spawn(mmul_actor_fun));
   }
-  
-  sleep(1);
+ 
+  std::cout << "Sleeping\n"; 
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  std::cout << "Done Sleeping\n"; 
   }
 
-  std::cout << "Beginning Shutdown in 2 seconds\n";
-  sleep(2);
+  std::cout << "Beginning Shutdown in 10 seconds\n";
+  std::cout << "Sleeping\n"; 
+  std::this_thread::sleep_for(std::chrono::seconds(10));
+  std::cout << "Done Sleeping\n"; 
   caf::cuda::manager::shutdown();
 
   //caf::anon_mail(matrix_size, actors).send(actors[0]);
@@ -312,7 +316,7 @@ void caf_main(caf::actor_system& sys) {
 	 //caf::init_global_meta_objects<caf::id_block::cuda_control>();
 
 //	sys.spawn(mmul_actor_fun2);
-  run_mmul_test(sys,100,1);
+  run_mmul_test(sys,100,10);
 }
 
 
