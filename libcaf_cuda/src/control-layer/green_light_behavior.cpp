@@ -10,7 +10,7 @@ namespace caf::cuda {
 
     void green_light_behavior::receive(scheduler_actor_state* state, const token_ptr& tok)    {
          
-	    std::cout << "Hello from green light processing token\n";
+	    //std::cout << "Hello from green light processing token\n";
 
 	caf::cuda::launch_token& launch = static_cast<caf::cuda::launch_token&>(*tok);
 
@@ -21,7 +21,7 @@ namespace caf::cuda {
       anon_mail(r).send(launch.getReplyActor());
 
 
-      std::cout << "GREEN LIGHT DONE PROCESSING TOKEN\n";
+      //std::cout << "GREEN LIGHT DONE PROCESSING TOKEN\n";
 
 	    // flush the queue
     while (!state->queue.empty()) {
