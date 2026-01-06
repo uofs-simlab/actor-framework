@@ -171,7 +171,9 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
     return;
   }
 
-  while (true) {
+  int limit = 5;
+
+  for (int i = 0; i < limit; i++) {
   // Spawn num_actors actors running the mmul behavior
   std::vector<caf::actor> actors;
   actors.reserve(num_actors);
@@ -181,6 +183,10 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
   
   sleep(1);
   }
+
+  std::cout << "Beginning Shutdown in 2 seconds\n";
+  sleep(2);
+  caf::cuda::manager::shutdown();
 
   //caf::anon_mail(matrix_size, actors).send(actors[0]);
 
