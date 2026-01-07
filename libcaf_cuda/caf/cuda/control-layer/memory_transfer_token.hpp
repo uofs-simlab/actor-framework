@@ -34,7 +34,7 @@ class memory_transfer_token : token {
 		int direction_; 
 
 
-}//memory transfer token class
+};//memory transfer token class
 
 
 }//caf cuda namespace
