@@ -106,8 +106,11 @@ void serial_matrix_multiply(const std::vector<int>& a,
 
 
 // Stateful actor behavior
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::actor exit_actor) {
-  
+caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::actor exit_actor,int N) {
+ 
+
+	//set the value of N correctly to overide the base option.	
+	self->state().N = N;
 
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 	
@@ -170,26 +173,40 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 
     // 3rd handler: CPU atom + matrices + N
     [=](const std::vector<int>& matrixA,
-        const std::vector<int>& matrixB, const std::vector<int>& matrixC, int N) {
-       
-		  std::cout << "GPU ACTOR  verfiying\n";
-	 std::vector<int> result(N*N);
+    const std::vector<int>& matrixB,
+    const std::vector<int>& matrixC,
+    int N) {
 
-	 serial_matrix_multiply(matrixA,matrixB,result,N);
+  using clock = std::chrono::high_resolution_clock;
 
-	 if (result == matrixC) {
-	 
-		 std::cout << "actor with id " <<  self->state().id << " references match\n";
-	 
-	 }
+  auto start = clock::now();
 
-	 else {
-	    std::cout << "actor with id " <<  self->state().id << " references did not match\n";
-	 }
+  std::cout << "GPU ACTOR verifying\n";
 
-	 //signal to the exit actor we are quitting and exit
-	 self->mail(1).send(exit_actor);
-	 self-> quit();
+  std::vector<int> result(N * N);
+
+  serial_matrix_multiply(matrixA, matrixB, result, N);
+
+  if (result == matrixC) {
+    std::cout << "actor with id " << self->state().id
+              << " references match\n";
+  } else {
+    std::cout << "actor with id " << self->state().id
+              << " references did not match\n";
+  }
+
+  auto end = clock::now();
+
+  auto ms =
+    std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+  std::cout << "[TIMING] verification took "
+            << ms << " ms (actor id "
+            << self->state().id << ")\n";
+
+  // signal exit actor and quit
+  self->mail(1).send(exit_actor);
+  self->quit();
 
     }
   };
@@ -212,27 +229,14 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
   std::vector<caf::actor> actors;
   actors.reserve(num_actors);
   for (int i = 0; i < num_actors; ++i) {
-    actors.push_back(sys.spawn(mmul_actor_fun,exit_actor));
+    actors.push_back(sys.spawn(mmul_actor_fun,exit_actor,matrix_size));
   }
 
- /* 
-  std::cout << "Sleeping\n"; 
-  std::this_thread::sleep_for(std::chrono::seconds(1));
-  std::cout << "Done Sleeping\n"; 
-  */
+
+ // std::cout << actors.size() << "\n";
+
   }
 
-  /*
-  std::cout << "Beginning Shutdown in 10 seconds\n";
-  std::cout << "Sleeping\n"; 
-  std::this_thread::sleep_for(std::chrono::seconds(10));
-  std::cout << "Done Sleeping\n"; 
-  
-  
-  caf::cuda::manager::shutdown();
-
-  //caf::anon_mail(matrix_size, actors).send(actors[0]);
-*/
    sys.await_all_actors_done();
 }
 
@@ -247,7 +251,7 @@ void caf_main(caf::actor_system& sys) {
 	 //caf::init_global_meta_objects<caf::id_block::cuda_control>();
 
 //	sys.spawn(mmul_actor_fun2);
-  run_mmul_test(sys,100,10);
+  run_mmul_test(sys,10,10);
 }
 
 
