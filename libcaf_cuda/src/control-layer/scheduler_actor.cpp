@@ -32,7 +32,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) 
         [=](const token_ptr& tok) {
            
 
-		std::cout << "Received token\n";
+	//	std::cout << "Received token\n";
 		self->state().current_behavior->receive(&self->state(), tok);
         },
         [=](const caf::cuda::behavior_token_ptr& tok) {
