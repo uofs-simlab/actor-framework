@@ -31,6 +31,15 @@ behavior_token_ptr make_behavior_token(std::string name)
     return behavior_token_ptr(new behavior_token(std::move(name)));
 }
 
+
+token_ptr make_memory_token(int size,int direction) {
+
+	return token_ptr(new memory_transfer_token(size,direction));
+
+}
+
+
+
 /// Factory function: create a mem_ptr<int> with fake data
  mem_ptr<int> make_mem_ptr(size_t num_elements = 16) {
     if (num_elements == 1) {
