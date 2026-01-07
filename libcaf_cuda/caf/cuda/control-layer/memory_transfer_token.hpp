@@ -1,3 +1,4 @@
+#pragma once
 #include "caf/cuda/control-layer/token.hpp"
 
 
