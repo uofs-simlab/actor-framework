@@ -15,7 +15,7 @@
 
 namespace caf::cuda {
 
-class memory_transfer_token : token {
+class CAF_CUDA_EXPORT memory_transfer_token : public token {
 
 	public:
 		memory_transfer_token(int size,int direction):
