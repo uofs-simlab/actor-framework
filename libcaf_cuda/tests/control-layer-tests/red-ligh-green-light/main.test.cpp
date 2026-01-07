@@ -26,12 +26,14 @@ struct exit_actor_state {
 };
 
 
-caf::behavior exit_actor(caf::stateful_actor<exit_actor_state>* self,int limit) {
+caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int limit) {
 
 
 	return {
 		[=](int num_completed) {
 			self->state().completed += num_completed;
+			
+			std::cout << "Actors finished is " << self->state().completed << "\n";
 			if (self->state().completed >= limit) {
 			
 				caf::cuda::manager::shutdown();
@@ -104,7 +106,7 @@ void serial_matrix_multiply(const std::vector<int>& a,
 
 
 // Stateful actor behavior
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
+caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::actor exit_actor) {
   
 
   caf::cuda::manager& mgr = caf::cuda::manager::get();
@@ -185,6 +187,8 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 	    std::cout << "actor with id " <<  self->state().id << " references did not match\n";
 	 }
 
+	 //signal to the exit actor we are quitting and exit
+	 self->mail(1).send(exit_actor);
 	 self-> quit();
 
     }
@@ -201,27 +205,34 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
 
   int limit = 1;
 
+  caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors);
+
   for (int i = 0; i < limit; i++) {
   // Spawn num_actors actors running the mmul behavior
   std::vector<caf::actor> actors;
   actors.reserve(num_actors);
   for (int i = 0; i < num_actors; ++i) {
-    actors.push_back(sys.spawn(mmul_actor_fun));
+    actors.push_back(sys.spawn(mmul_actor_fun,exit_actor));
   }
- 
+
+ /* 
   std::cout << "Sleeping\n"; 
   std::this_thread::sleep_for(std::chrono::seconds(1));
   std::cout << "Done Sleeping\n"; 
+  */
   }
 
+  /*
   std::cout << "Beginning Shutdown in 10 seconds\n";
   std::cout << "Sleeping\n"; 
   std::this_thread::sleep_for(std::chrono::seconds(10));
   std::cout << "Done Sleeping\n"; 
+  
+  
   caf::cuda::manager::shutdown();
 
   //caf::anon_mail(matrix_size, actors).send(actors[0]);
-
+*/
    sys.await_all_actors_done();
 }
 
