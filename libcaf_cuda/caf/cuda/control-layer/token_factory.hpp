@@ -5,6 +5,7 @@
 #include "caf/cuda/control-layer/launch_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
 #include "caf/cuda/control-layer/behavior_token.hpp"
+#include "caf/cuda/control-layer/memory_transfer_token.hpp"
 #include <caf/actor.hpp>
 #include <string>
 #include "caf/cuda/mem_ref.hpp"
