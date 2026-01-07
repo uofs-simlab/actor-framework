@@ -28,7 +28,7 @@ class memory_transfer_token : token {
 
 		virtual int getType() const {return MEMORY;}
 		int getSize() const {return size_;}
-		int direction const {return direction_;}
+		int getDirection() const {return direction_;}
 	private:
 		int size_;
 		int direction_; 
