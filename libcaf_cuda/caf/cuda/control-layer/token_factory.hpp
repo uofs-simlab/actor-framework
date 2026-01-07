@@ -25,6 +25,15 @@ CAF_CUDA_EXPORT token_ptr make_launch_response_token(actor scheduler_or_proxy,
 
 /// Creates a behavior_token (special — returns its own strong ptr type)
 CAF_CUDA_EXPORT behavior_token_ptr make_behavior_token(std::string name);
+
+//creats a memory transfer token
+CAF_CUDA_EXPORT token_ptr make_memory_token(int size, int direction);
+
+
+//do not use this, for testing only 
 CAF_CUDA_EXPORT mem_ptr<int> make_mem_ptr(size_t num_elements);
+
+
+
 
 } // namespace caf::cuda
