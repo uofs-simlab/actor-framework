@@ -11,6 +11,8 @@
 #include <random>
 #include <unistd.h>
 #include "caf/actor_registry.hpp"
+#include <chrono>
+#include <iostream>
 //#include <caf/atoms.hpp>
 
 
@@ -18,14 +20,40 @@
 using namespace caf;
 using namespace std::chrono_literals;
 
+
+struct exit_actor_state {
+	int completed = 0;
+};
+
+
+caf::behavior exit_actor(caf::stateful_actor<exit_actor_state>* self,int limit) {
+
+
+	return {
+		[=](int num_completed) {
+			self->state().completed += num_completed;
+			if (self->state().completed >= limit) {
+			
+				caf::cuda::manager::shutdown();
+				self->quit();
+			}
+		}
+	};
+
+
+}
+
+
+
+
+
+
 // Define a custom type ID block for custom actors
 CAF_ADD_ATOM(cuda,shared_mem)
 
 
 
 
-#include <chrono>
-#include <iostream>
 
 // Extend your actor state to keep the start time
 struct mmul_actor_state {
