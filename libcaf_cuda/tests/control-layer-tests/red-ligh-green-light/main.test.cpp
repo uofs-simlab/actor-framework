@@ -165,7 +165,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
     auto tempC = mmul.run(program,dims,self -> state().id,arg1,arg2,arg3,arg4);
     std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
 
-		  std::cout << "GPU ACTOR done  computing\n";
+		  //std::cout << "GPU ACTOR done  computing\n";
     //verify its own result 
     self -> mail(matrixA,matrixB,matrixC,N).send(self);
 
@@ -181,7 +181,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 
   auto start = clock::now();
 
-  std::cout << "GPU ACTOR verifying\n";
+  //std::cout << "GPU ACTOR verifying\n";
 
   std::vector<int> result(N * N);
 
@@ -241,17 +241,51 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
 }
 
 
+
+//this test will spawn more actors over time to demonstrate 
+//changing scheduling algorithims at runtime 
+void run_red_light_green_light_test(caf::actor_system& sys, int matrix_size, int num_actors) {
+  if (num_actors < 1) {
+    std::cerr << "[ERROR] Number of actors must be >= 1\n";
+    return;
+  }
+
+  std::cout << "Starting RED LIGHT GREEN LIGHT TEST\n";
+  int limit = 10;
+
+  caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors);
+
+  for (int i = 0; i < limit; i++) {
+  // Spawn num_actors actors running the mmul behavior
+  std::vector<caf::actor> actors;
+  actors.reserve(num_actors);
+  for (int i = 0; i < num_actors; ++i) {
+    actors.push_back(sys.spawn(mmul_actor_fun,exit_actor,matrix_size));
+  }
+
+
+  sleep(1);
+ // std::cout << actors.size() << "\n";
+
+  }
+
+   sys.await_all_actors_done();
+}
+
+
+
 void caf_main(caf::actor_system& sys) {
   
 	
 
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
-
-	 //caf::init_global_meta_objects<caf::id_block::cuda_control>();
-
-//	sys.spawn(mmul_actor_fun2);
-  run_mmul_test(sys,10,10);
+       	run_mmul_test(sys,10,1000);
+	
+	//tests will delete the old manager so will have to reinit if you do this 
+	//in conjunction with each other	
+	caf::cuda::manager::init(sys,man_config);
+	run_red_light_green_light_test(sys,10,1000);
 }
 
 
