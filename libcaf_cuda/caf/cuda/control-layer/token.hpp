@@ -9,7 +9,7 @@
 #define LAUNCH 1
 #define LAUNCH_RESPONSE 2
 #define BEHAVIOR 3
-
+#define MEMORY 4
 
 
 namespace caf::cuda {
