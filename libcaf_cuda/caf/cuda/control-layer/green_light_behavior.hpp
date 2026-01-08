@@ -9,8 +9,8 @@ public:
 
     void receive(scheduler_actor_state* state, const token_ptr& tok) override; 
     void init(scheduler_actor_state* state); 
-    void process_launch_token(const token_ptr& tok);
-    void process_memory_transfer_token(const token_ptr& tok);
+    void process_launch_token(const token_ptr& tok,caf::actor self);
+    void process_memory_transfer_token(const token_ptr& tok, caf::actor self);
 };
 
 
