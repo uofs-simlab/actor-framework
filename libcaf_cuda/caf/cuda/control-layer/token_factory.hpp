@@ -6,6 +6,7 @@
 #include "caf/cuda/control-layer/launch_response_token.hpp"
 #include "caf/cuda/control-layer/behavior_token.hpp"
 #include "caf/cuda/control-layer/memory_transfer_token.hpp"
+#include "caf/cuda/control-layer/memory_response_token.hpp"
 #include <caf/actor.hpp>
 #include <string>
 #include "caf/cuda/mem_ref.hpp"
@@ -29,6 +30,10 @@ CAF_CUDA_EXPORT behavior_token_ptr make_behavior_token(std::string name);
 
 //creats a memory transfer token
 CAF_CUDA_EXPORT token_ptr make_memory_token(int size, int direction,caf::actor replyActor);
+
+CAF_CUDA_EXPORT token_ptr make_memory_response_token(actor receiver,
+                                     const memory_transfer_token& orig);
+
 
 
 //do not use this, for testing only 
