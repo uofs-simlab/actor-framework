@@ -82,13 +82,19 @@ void green_light_behavior::process_launch_token(const token_ptr& tok,caf::actor 
 //--------------------------------------------------
 // process_memory_transfer_token
 //--------------------------------------------------
-void green_light_behavior::process_memory_transfer_token(const token_ptr& tok,caf::actor self) {
+void green_light_behavior::process_memory_transfer_token(const token_ptr& tok,
+                                                         caf::actor self) {
     caf::cuda::memory_transfer_token& mem =
         static_cast<caf::cuda::memory_transfer_token&>(*tok);
 
-    // For now, green light allows immediate forwarding
-    anon_mail(tok).send(mem.getReplyActor());
+    // Create memory response token
+    caf::cuda::token_ptr response =
+        make_memory_response_token(self, mem);
+
+    // Send response to requesting actor
+    anon_mail(response).send(mem.getReplyActor());
 }
+
 
 
 } // namespace caf::cuda
