@@ -28,7 +28,7 @@ CAF_CUDA_EXPORT token_ptr make_launch_response_token(actor scheduler_or_proxy,
 CAF_CUDA_EXPORT behavior_token_ptr make_behavior_token(std::string name);
 
 //creats a memory transfer token
-CAF_CUDA_EXPORT token_ptr make_memory_token(int size, int direction);
+CAF_CUDA_EXPORT token_ptr make_memory_token(int size, int direction,caf::actor replyActor);
 
 
 //do not use this, for testing only 
