@@ -10,8 +10,8 @@ namespace caf::cuda {
 
     void green_light_behavior::receive(scheduler_actor_state* state, const token_ptr& tok)    {
          
-	    //std::cout << "Hello from green light processing token\n";
 
+	if (tok -> getType() == LAUNCH) {
 	caf::cuda::launch_token& launch = static_cast<caf::cuda::launch_token&>(*tok);
 
       // create the response using a reference to the existing object
@@ -19,24 +19,32 @@ namespace caf::cuda {
 
       // send response to the reply actor stored in launch_token
       anon_mail(r).send(launch.getReplyActor());
+	
+     }
 
+	else if (tok -> getType() == MEMORY) {
+	
 
-      //std::cout << "GREEN LIGHT DONE PROCESSING TOKEN\n";
+	
+	}
 
-	    // flush the queue
+	//this may cause an issue if a message is never received then 
+	//we may never end up dequeueing certain requests 
+	//may lead to a deadlock scenario?
     while (!state->queue.empty()) {
         token_ptr queued = state->queue.front();
         state->queue.pop();
 
- if (queued->getType() == LAUNCH) {
-      // safe: we've checked the runtime type
-      caf::cuda::launch_token& lt = static_cast<caf::cuda::launch_token&>(*queued);
+ 
+	if (queued->getType() == LAUNCH) {
+      	// safe: we've checked the runtime type
+      	caf::cuda::launch_token& lt = static_cast<caf::cuda::launch_token&>(*queued);
 
-      // create the response using a reference to the existing object
-      caf::cuda::token_ptr response = make_launch_response_token(state->self, lt);
+      	// create the response using a reference to the existing object
+      	caf::cuda::token_ptr response = make_launch_response_token(state->self, lt);
 
-      // send response to the reply actor stored in launch_token
-      anon_mail(response).send(lt.getReplyActor());
+      	// send response to the reply actor stored in launch_token
+      	anon_mail(response).send(lt.getReplyActor());
     }
   }
 
@@ -56,6 +64,31 @@ namespace caf::cuda {
 	   
     }
 
+//--------------------------------------------------
+// process_launch_token
+//--------------------------------------------------
+void green_light_behavior::process_launch_token(const token_ptr& tok,caf::actor self) {
+    caf::cuda::launch_token& launch =
+        static_cast<caf::cuda::launch_token&>(*tok);
+
+    // Create response token using the existing launch token
+    caf::cuda::token_ptr response =
+        make_launch_response_token(self, launch);
+
+    // Send response to the actor that requested the launch
+    anon_mail(response).send(launch.getReplyActor());
+}
+
+//--------------------------------------------------
+// process_memory_transfer_token
+//--------------------------------------------------
+void green_light_behavior::process_memory_transfer_token(const token_ptr& tok,caf::actor self) {
+    caf::cuda::memory_transfer_token& mem =
+        static_cast<caf::cuda::memory_transfer_token&>(*tok);
+
+    // For now, green light allows immediate forwarding
+    anon_mail(tok).send(mem.getReplyActor());
+}
 
 
 } // namespace caf::cuda
