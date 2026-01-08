@@ -1,6 +1,7 @@
 #pragma once
 
 #include "caf/cuda/command.hpp"
+#include "caf/cuda/memory_command.hpp"
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/nd_range.hpp"
 #include "caf/cuda/platform.hpp"
@@ -129,6 +130,20 @@ public:
                                                    std::forward<Us>(xs)...);
       return cmd->base_enqueue();
   }
+
+    // -------------------------------------------------------------------------
+    // MEMORY TRANSFER
+    // Single transfer per command, returns device buffer
+    // -------------------------------------------------------------------------
+    template <typename T>
+    mem_ptr<raw_t<T>> transfer_memory(int device_number,
+                                      int stream_id,
+                                      T arg)
+    {
+        // stack-allocate memory_command and execute transfer
+        memory_command<T> cmd(device_number, stream_id, std::move(arg));
+        return cmd.enqueue();
+    }
 
   // -------------------------------
   // Destroy streams for a given actor ID
