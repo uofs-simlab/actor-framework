@@ -7,49 +7,33 @@ namespace caf::cuda {
     void green_light_behavior::schedule() {
     //TODO IMPLEMENT
     }
+void green_light_behavior::receive(scheduler_actor_state* state,
+                                   const token_ptr& tok) {
 
-    void green_light_behavior::receive(scheduler_actor_state* state, const token_ptr& tok)    {
-         
+    if (tok->getType() == LAUNCH) {
+        process_launch_token(tok, state->self);
+    }
+    else if (tok->getType() == MEMORY) {
+        process_memory_transfer_token(tok, state->self);
+    }
 
-	if (tok -> getType() == LAUNCH) {
-	caf::cuda::launch_token& launch = static_cast<caf::cuda::launch_token&>(*tok);
-
-      // create the response using a reference to the existing object
-      caf::cuda::token_ptr r = make_launch_response_token(state->self, launch);
-
-      // send response to the reply actor stored in launch_token
-      anon_mail(r).send(launch.getReplyActor());
-	
-     }
-
-	else if (tok -> getType() == MEMORY) {
-	
-
-	
-	}
-
-	//this may cause an issue if a message is never received then 
-	//we may never end up dequeueing certain requests 
-	//may lead to a deadlock scenario?
+    //this may cause an issue if a message is never received then 
+    //we may never end up dequeueing certain requests 
+    //may lead to a deadlock scenario?
     while (!state->queue.empty()) {
         token_ptr queued = state->queue.front();
         state->queue.pop();
 
- 
-	if (queued->getType() == LAUNCH) {
-      	// safe: we've checked the runtime type
-      	caf::cuda::launch_token& lt = static_cast<caf::cuda::launch_token&>(*queued);
-
-      	// create the response using a reference to the existing object
-      	caf::cuda::token_ptr response = make_launch_response_token(state->self, lt);
-
-      	// send response to the reply actor stored in launch_token
-      	anon_mail(response).send(lt.getReplyActor());
+        if (queued->getType() == LAUNCH) {
+            // safe: we've checked the runtime type
+            process_launch_token(queued, state->self);
+        }
+        else if (queued->getType() == MEMORY) {
+            process_memory_transfer_token(queued, state->self);
+        }
     }
-  }
+}
 
-
-    }
 
    void green_light_behavior::init(scheduler_actor_state * state) {
 	   std::cout << "GREEN LIGHT\n";
