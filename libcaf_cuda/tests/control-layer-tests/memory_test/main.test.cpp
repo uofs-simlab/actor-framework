@@ -292,12 +292,12 @@ void caf_main(caf::actor_system& sys) {
 
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
-       	//run_mmul_test(sys,10,1000);
+       	run_mmul_test(sys,10,10);
 	
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
 	//caf::cuda::manager::init(sys,man_config);
-	run_red_light_green_light_test(sys,10,1000);
+	//run_red_light_green_light_test(sys,10,1000);
 }
 
 
