@@ -115,6 +115,14 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 	
   	caf::actor scheduler = mgr.get_scheduler_actor();
+	
+
+	//send a memory transfer token
+	int bytes = N*N * sizeof(int);
+	caf::cuda::token_ptr memory_token = caf::cuda::make_memory_token(bytes,H2D,self);
+	self -> mail(memory_token).send(scheduler);	
+
+	//send a launch token
 	caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(self ->state().program,
 			self -> state().dims,
 			0,
@@ -125,8 +133,9 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 
 	return {
 
-	  [=] (caf::cuda::token_ptr launch_response_token) {
-	 
+	  [=] (caf::cuda::token_ptr response_token) {
+	
+		 if (response_token -> getType() == LAUNCH_RESPONSE) {
 		  //std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
 		  //assume N = 1024
 		  int N = self -> state().N;
@@ -138,8 +147,11 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 		  //std::cout << "GPU ACTOR sending data to compute\n";
 		  self -> mail(matrix1,matrix2,N).send(self);
 	 
+		 }
+		 else {
+			 std::cout << "Got a memory response token\n";
+		 }
 		 //token should drop out of scope now, triggering a response 
-	  
 	  },
 
     // 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
