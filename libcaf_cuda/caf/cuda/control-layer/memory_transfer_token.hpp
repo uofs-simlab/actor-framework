@@ -19,9 +19,10 @@ namespace caf::cuda {
 class CAF_CUDA_EXPORT memory_transfer_token : public token {
 
 	public:
-		memory_transfer_token(int size,int direction):
+		memory_transfer_token(int size,int direction,caf::actor replyActor):
 			size_(size),
-			direction_(direction) {}
+			direction_(direction),
+       			replyActor_(replyActor)	{}
 
 		//only here to ensure that caf can copy the object for message
 		//passing do not use
@@ -30,9 +31,11 @@ class CAF_CUDA_EXPORT memory_transfer_token : public token {
 		virtual int getType() const {return MEMORY;}
 		int getSize() const {return size_;}
 		int getDirection() const {return direction_;}
+		caf::actor getReplyActor() const {return replyActor_;}
 	private:
 		int size_;
 		int direction_; 
+		caf::actor replyActor_;
 
 
 };//memory transfer token class
