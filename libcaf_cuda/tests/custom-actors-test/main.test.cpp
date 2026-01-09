@@ -749,12 +749,42 @@ void benchmark_shared_perf_all(caf::actor_system& sys) {
 }
 
 
+void run_mmul_scaling_tests(caf::actor_system& sys) {
+  const int min_size   = 10;
+  const int max_size   = 1024;
+  const int min_actors = 1;
+  const int max_actors = 1024;
+
+  // Matrix sizes: 10, 32, 64, 128, ..., 1024
+  std::vector<int> matrix_sizes = {10};
+  for (int s = 32; s <= max_size; s *= 2)
+    matrix_sizes.push_back(s);
+
+  // Actor counts: 1, 2, 4, 8, ..., 1024
+  std::vector<int> actor_counts;
+  for (int a = min_actors; a <= max_actors; a *= 2)
+    actor_counts.push_back(a);
+
+  std::cout << "=== MMUL Scaling Tests ===\n";
+
+  for (int size : matrix_sizes) {
+    for (int actors : actor_counts) {
+      std::cout << "\n[RUN] matrix_size=" << size
+                << ", actors=" << actors << "\n";
+
+      run_mmul_test(sys, size, actors);
+    }
+  }
+
+  std::cout << "\n=== MMUL Scaling Tests Complete ===\n";
+}
+
 
 
 void caf_main(caf::actor_system& sys) {
   caf::cuda::manager::init(sys);
 
-  run_mmul_test(sys,10,250);
+  //run_mmul_test(sys,10,250);
   //run_async_mmul_test(sys,100,1);
   //run_async_mmul_perf_test(sys,1024,200);
 
@@ -763,6 +793,8 @@ void caf_main(caf::actor_system& sys) {
 
   // run the shared-memory suite:
   //benchmark_shared_perf_all(sys);
+
+  run_mmul_scaling_tests(sys);
 }
 
 
