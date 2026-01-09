@@ -296,6 +296,38 @@ void run_red_light_green_light_test(caf::actor_system& sys, int matrix_size, int
 }
 
 
+void run_mmul_scaling_tests(caf::actor_system& sys,caf::cuda::manager_config man_config) {
+  const int min_size   = 10;
+  const int max_size   = 1024;
+  const int min_actors = 1;
+  const int max_actors = 1024;
+
+  // Matrix sizes: 10, 32, 64, 128, ..., 1024
+  std::vector<int> matrix_sizes = {10};
+  for (int s = 32; s <= max_size; s *= 2)
+    matrix_sizes.push_back(s);
+
+  // Actor counts: 1, 2, 4, 8, ..., 1024
+  std::vector<int> actor_counts;
+  for (int a = min_actors; a <= max_actors; a *= 2)
+    actor_counts.push_back(a);
+
+  std::cout << "=== MMUL Scaling Tests ===\n";
+
+  for (int size : matrix_sizes) {
+    for (int actors : actor_counts) {
+      std::cout << "\n[RUN] matrix_size=" << size
+                << ", actors=" << actors << "\n";
+
+      run_mmul_test(sys, size, actors);
+	caf::cuda::manager::init(sys,man_config);
+    }
+  }
+
+  std::cout << "\n=== MMUL Scaling Tests Complete ===\n";
+}
+
+
 
 void caf_main(caf::actor_system& sys) {
   
@@ -303,12 +335,16 @@ void caf_main(caf::actor_system& sys) {
 
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
-       	run_mmul_test(sys,10,250);
+       	//run_mmul_test(sys,10,250);
 	
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
 //	caf::cuda::manager::init(sys,man_config);
 //	run_red_light_green_light_test(sys,10,1000);
+	
+	run_mmul_scaling_tests(sys,man_config);
+
+
 }
 
 
