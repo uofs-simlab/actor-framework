@@ -177,9 +177,9 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
     const std::vector<int>& matrixC,
     int N) {
 
-  using clock = std::chrono::high_resolution_clock;
+  //using clock = std::chrono::high_resolution_clock;
 
-  auto start = clock::now();
+ // auto start = clock::now();
 
   //std::cout << "GPU ACTOR verifying\n";
 
@@ -195,14 +195,14 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
               << " references did not match\n";
   }
 
-  auto end = clock::now();
+ // auto end = clock::now();
 
-  auto ms =
-    std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+  //auto ms =
+    //std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-  std::cout << "[TIMING] verification took "
-            << ms << " ms (actor id "
-            << self->state().id << ")\n";
+  //std::cout << "[TIMING] verification took "
+    //        << ms << " ms (actor id "
+      //      << self->state().id << ")\n";
 
   // signal exit actor and quit
   self->mail(1).send(exit_actor);
@@ -213,6 +213,8 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 }
 
 
+#include <chrono>
+#include <iostream>
 
 void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
   if (num_actors < 1) {
@@ -220,25 +222,46 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
     return;
   }
 
+  std::cout << "Starting run mmul test with matrix_size: "
+            << matrix_size << " and num_actors " << num_actors << "\n";
+
   int limit = 1;
 
-  caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors);
+  // ------------------------------------
+  // Start timing
+  // ------------------------------------
+  auto start = std::chrono::steady_clock::now();
+
+  caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
 
   for (int i = 0; i < limit; i++) {
-  // Spawn num_actors actors running the mmul behavior
-  std::vector<caf::actor> actors;
-  actors.reserve(num_actors);
-  for (int i = 0; i < num_actors; ++i) {
-    actors.push_back(sys.spawn(mmul_actor_fun,exit_actor,matrix_size));
+    // Spawn num_actors actors running the mmul behavior
+    std::vector<caf::actor> actors;
+    actors.reserve(num_actors);
+
+    for (int j = 0; j < num_actors; ++j) {
+      actors.push_back(
+        sys.spawn(mmul_actor_fun, exit_actor, matrix_size)
+      );
+    }
   }
 
+  // Wait for all actors to finish
+  sys.await_all_actors_done();
 
- // std::cout << actors.size() << "\n";
+  // ------------------------------------
+  // Stop timing
+  // ------------------------------------
+  auto end = std::chrono::steady_clock::now();
+  auto duration_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-  }
-
-   sys.await_all_actors_done();
+  std::cout << "[MMUL TEST] matrix_size=" << matrix_size
+            << ", actors=" << num_actors
+            << ", iterations=" << limit
+            << ", time=" << duration_ms << " ms\n";
 }
+
 
 
 
@@ -280,12 +303,12 @@ void caf_main(caf::actor_system& sys) {
 
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
-       	//run_mmul_test(sys,10,1000);
+       	run_mmul_test(sys,10,250);
 	
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
-	//caf::cuda::manager::init(sys,man_config);
-	run_red_light_green_light_test(sys,10,1000);
+//	caf::cuda::manager::init(sys,man_config);
+//	run_red_light_green_light_test(sys,10,1000);
 }
 
 
