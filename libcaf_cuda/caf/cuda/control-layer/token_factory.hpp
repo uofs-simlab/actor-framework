@@ -23,7 +23,9 @@ CAF_CUDA_EXPORT token_ptr make_launch_token(program_ptr prog,
 /// Creates a launch_response_token (created internally by the scheduler
 /// when it accepts a kernel launch request)
 CAF_CUDA_EXPORT token_ptr make_launch_response_token(actor scheduler_or_proxy,
-                                     const launch_token& orig);
+                                     const launch_token& orig,
+				     int device_number,
+				     int stream_id);
 
 /// Creates a behavior_token (special — returns its own strong ptr type)
 CAF_CUDA_EXPORT behavior_token_ptr make_behavior_token(std::string name);
@@ -32,7 +34,9 @@ CAF_CUDA_EXPORT behavior_token_ptr make_behavior_token(std::string name);
 CAF_CUDA_EXPORT token_ptr make_memory_token(int size, int direction,caf::actor replyActor);
 
 CAF_CUDA_EXPORT token_ptr make_memory_response_token(actor receiver,
-                                     const memory_transfer_token& orig);
+                                     const memory_transfer_token& orig,
+				     int device_number,
+				     int stream_id);
 
 
 

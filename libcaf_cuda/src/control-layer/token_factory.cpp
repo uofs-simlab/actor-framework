@@ -22,9 +22,11 @@ token_ptr make_launch_token(program_ptr prog,
 }
 
 token_ptr make_launch_response_token(actor receiver,
-                                     const launch_token& orig)
+                                     const launch_token& orig,
+				     int device_number,
+				     int stream_id)
 {
-    return token_ptr(new launch_response_token(receiver, orig));
+    return token_ptr(new launch_response_token(receiver, orig,device_number,stream_id));
 }
 
 behavior_token_ptr make_behavior_token(std::string name)
@@ -40,7 +42,9 @@ token_ptr make_memory_token(int size,int direction,caf::actor replyActor) {
 }
 
 token_ptr make_memory_response_token(actor receiver,
-                                     const memory_transfer_token& orig) {
+                                     const memory_transfer_token& orig,
+				     int device_number,
+				     int stream_id) {
     return token_ptr(new memory_response_token(receiver, orig));
 }
 
