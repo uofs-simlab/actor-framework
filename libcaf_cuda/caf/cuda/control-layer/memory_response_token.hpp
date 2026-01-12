@@ -21,11 +21,16 @@ public:
 
     // Construct from memory_transfer_token
     memory_response_token(caf::actor receiver,
-                          const memory_transfer_token& token)
+                          const memory_transfer_token& token,
+			  int device_num,
+			  int streamId)
         : receiver_(std::move(receiver)),
           size_(token.getSize()),
           direction_(token.getDirection()),
-          released_(false) {}
+          released_(false),
+       	  device_number(device_num),
+	  stream_id(streamId) {}
+
 
     ~memory_response_token() {
         release();
@@ -42,6 +47,9 @@ public:
     int getDirection() const {
         return direction_;
     }
+
+    int getDeviceNumber() const { return device_number;}
+    int getStreamId() const {return stream_id;}
 
     void release() {
         bool expected = false;
@@ -65,6 +73,8 @@ private:
     int size_;
     int direction_;
     std::atomic<bool> released_;
+    int device_number;
+    int stream_id;
 };
 
 } // namespace caf::cuda
