@@ -5,6 +5,8 @@
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/nd_range.hpp"
 #include "caf/cuda/platform.hpp"
+#include "caf/cuda/control-layer/launch_response_token.hpp"
+#include "caf/cuda/control-layer/memory_response_token.hpp"
 
 namespace caf::cuda {
 
@@ -76,6 +78,32 @@ public:
       return cmd->enqueue();
   }
 
+
+  // -------------------------------
+
+  // Synchronous run using launch_response_token
+
+  // stream comes from token
+
+  // -------------------------------
+
+  template <class... Us>
+  auto run(program_ptr program,
+         nd_range dims,
+         launch_response_token token,
+         Us&&... xs)
+  {
+    return run(std::move(program),
+               std::move(dims),
+               /* actor_id = */ token.getStreamId(),
+               /* shared_memory = */ 0,
+               /* device_number = */ token.getDeviceNumber(),
+               std::forward<Us>(xs)...);
+}
+
+
+
+
   // -------------------------------
   // Asynchronous run: actor_id only
   // returns a tuple of mem_ptrs
@@ -131,6 +159,31 @@ public:
       return cmd->base_enqueue();
   }
 
+
+
+   // -------------------------------
+   // Asynchronous run using launch_response_token
+   // stream comes from token
+
+   // -------------------------------
+    template <class... Us>
+    auto run_async(program_ptr program,
+               nd_range dims,
+               launch_response_token token,
+               Us&&... xs)
+    {
+    	return run_async(std::move(program),
+                     std::move(dims),
+                     /* actor_id = */ token.getStreamId(),
+                     /* shared_memory = */ 0,
+                     /* device_number = */ token.getDeviceNumber(),
+                      std::forward<Us>(xs)...);
+
+    }
+
+
+
+
     // -------------------------------------------------------------------------
     // MEMORY TRANSFER
     // Single transfer per command, returns device buffer
@@ -145,6 +198,21 @@ public:
         return cmd.enqueue();
     }
 
+   // -------------------------------------------------------------------------
+    // MEMORY TRANSFER
+    // Single transfer per command, returns device buffer
+    // can transfer memory with a response token
+    // -------------------------------------------------------------------------
+    template <typename T>
+    mem_ptr<raw_t<T>> transfer_memory(memory_response_token token,
+                                      T arg)
+    {
+        // stack-allocate memory_command and execute transfer
+        return transfer_memory(token.getDeviceNumber(),token.getStreamId(),arg); 
+    }
+
+
+
   // -------------------------------
   // Destroy streams for a given actor ID
   // -------------------------------
@@ -152,6 +220,12 @@ public:
       auto plat = platform::create();
       plat->release_streams_for_actor(actor_id);
   }
+
+
+
+
+
+
 };
 
 } // namespace caf::cuda
