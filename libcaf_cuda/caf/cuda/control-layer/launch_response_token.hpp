@@ -23,20 +23,29 @@ launch_response_token(caf::actor receiver,
           range_(std::move(range)),
           memory_usage_(memory_usage),
           id_(std::move(id)),
-          released_(false) {}
+          released_(false),
+	  device_number(0),
+	  stream_id(0) {}
+
     // Construct from a launch_token
-    launch_response_token(caf::actor receiver, const launch_token& token)
+    launch_response_token(caf::actor receiver, const launch_token& token,int device_num,int streamId)
         : receiver_(std::move(receiver)),
           range_(token.getRange()),
           memory_usage_(token.getMemoryUsage()),
           id_(token.getId()),
-          released_(false) {}
+          released_(false),
+	  device_number(device_num),
+	  stream_id(streamId) {}
+
     ~launch_response_token() {
         release();
     }
     int getType() const override { return LAUNCH_RESPONSE; }
     const nd_range& getRange() const { return range_; }
     int getMemoryUsage() const { return memory_usage_; }
+    int getDeviceNumber() const {return device_number;}
+    int getStreamId() const {return stream_id;}
+
     // Return requested number of CUDA blocks
     int getBlocks() const {
         return static_cast<int>(
@@ -61,5 +70,7 @@ private:
     int memory_usage_;
     std::string id_;
     std::atomic<bool> released_;
+    int device_number;
+    int stream_id;
 };
 } // namespace caf::cuda
