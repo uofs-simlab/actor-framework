@@ -30,10 +30,10 @@ void green_light_behavior::receive(scheduler_actor_state* state,
 
         if (queued->getType() == LAUNCH) {
             // safe: we've checked the runtime type
-            process_launch_token(queued, state->self);
+            process_launch_token(tok, state->self,state -> device_number,0);
         }
         else if (queued->getType() == MEMORY) {
-            process_memory_transfer_token(queued, state->self);
+            process_memory_transfer_token(tok, state->self,state -> device_number,0);
         }
     }
 }

@@ -45,7 +45,7 @@ token_ptr make_memory_response_token(actor receiver,
                                      const memory_transfer_token& orig,
 				     int device_number,
 				     int stream_id) {
-    return token_ptr(new memory_response_token(receiver, orig));
+    return token_ptr(new memory_response_token(receiver, orig,device_number,stream_id));
 }
 
 
