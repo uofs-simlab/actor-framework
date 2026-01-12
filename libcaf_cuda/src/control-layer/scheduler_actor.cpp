@@ -12,10 +12,13 @@
 
 namespace caf::cuda {
 
-caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) {
+caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self,int device_number) {
 
     //add its self reference
     self -> state().self = self;
+
+    //set device number
+    self -> state().device_number = device_number
 
     // populate the table
     static red_light_behavior red_behavior;
@@ -46,7 +49,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) 
 	    }
         },
 	[=](std::string word) {
-		std::cout << "Received message " << word << "\n";
+	//	std::cout << "Received message " << word << "\n";
 	},
 	 [=](caf::cuda::mem_ptr<int> token) {
             if (!token) {

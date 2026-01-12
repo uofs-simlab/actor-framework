@@ -12,5 +12,6 @@ struct scheduler_actor_state {
     scheduler_actor_behavior* current_behavior = nullptr;
     behavior_table table;
     std::queue<token_ptr> queue;
+    int device_number;
 };
 } // namespace caf::cuda

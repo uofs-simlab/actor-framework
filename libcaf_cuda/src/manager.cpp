@@ -59,7 +59,7 @@ void manager::init(caf::actor_system& sys, manager_config config) {
 
     if (instance_->scheduler_on) {
         instance_->scheduler_actor_handle =
-            sys.spawn(scheduler_actor);
+            sys.spawn(scheduler_actor,0);
     }
 }
 

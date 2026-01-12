@@ -14,5 +14,5 @@
  */
 
 namespace caf::cuda {
-caf::behavior CAF_CUDA_EXPORT scheduler_actor(caf::stateful_actor<scheduler_actor_state> * self);
+caf::behavior CAF_CUDA_EXPORT scheduler_actor(caf::stateful_actor<scheduler_actor_state> * self,int device_number);
 }//namespace caf::cuda
