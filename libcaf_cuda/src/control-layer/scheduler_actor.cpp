@@ -18,7 +18,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self,i
     self -> state().self = self;
 
     //set device number
-    self -> state().device_number = device_number
+    self -> state().device_number = device_number;
 
     // populate the table
     static red_light_behavior red_behavior;
