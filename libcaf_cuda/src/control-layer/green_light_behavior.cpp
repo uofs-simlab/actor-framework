@@ -42,10 +42,11 @@ void green_light_behavior::receive(scheduler_actor_state* state,
 	   behavior_token_ptr red_light = make_behavior_token("red");
 
 	   //send a request to change behavior to green light after 5 seconds
-    	   anon_mail(red_light)
+    	   /*
+	   anon_mail(red_light)
 		   .delay(std::chrono::seconds(5))
 		   .send(state -> self);
-	   
+	   */
     }
 
 //--------------------------------------------------
