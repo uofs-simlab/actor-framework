@@ -127,9 +127,9 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 
 	return {
 
-	  [=] (caf::cuda::token_ptr response_token) {
+	  [=] (caf::cuda::response_token_ptr res_token) {
 	
-		 if (response_token -> getType() == LAUNCH_RESPONSE) {
+		 if (res_token -> getType() == LAUNCH_RESPONSE) {
 		  //std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
 		  //assume N = 1024
 		  int N = self -> state().N;
@@ -139,7 +139,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 		  matrix2.reserve(N);
 
 		  //std::cout << "GPU ACTOR sending data to compute\n";
-		  self -> mail(matrix1,matrix2,response_token,N).send(self);
+		  self -> mail(matrix1,matrix2,res_token,N).send(self);
 	 
 		 }
 		 else {
@@ -151,11 +151,13 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
     // 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
     [=](const std::vector<int>& matrixA,
         const std::vector<int>& matrixB,
-	const caf::cuda::token_ptr& kToken, int N) {
+	const caf::cuda::response_token_ptr& res_token, int N) {
  
 
-	    caf::cuda::launch_response_token& kt =
-		    static_cast<caf::cuda::launch_response_token&>(*kToken);
+	    //caf::cuda::kernel_launch_token kernelToken = caf::intrusive_ptr_cast<caf::cuda::token_ptr>(kToken);
+
+	    //caf::cuda::launch_response_token& kt =
+	//	    static_cast<caf::cuda::launch_response_token&>(*kToken);
 
 		  //std::cout << "GPU ACTOR  computing\n";
 	    caf::cuda::manager& mgr = caf::cuda::manager::get();
@@ -172,7 +174,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
     auto arg3 = caf::cuda::create_out_arg(N*N);
     auto arg4 = caf::cuda::create_in_arg(N);
 
-    auto tempC = mmul.run(program,dims,kt,arg1,arg2,arg3,arg4);
+    auto tempC = mmul.run(program,dims,res_token,arg1,arg2,arg3,arg4);
     std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
 
 		  //std::cout << "GPU ACTOR done  computing\n";
