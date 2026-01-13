@@ -78,7 +78,7 @@ private:
 };
 
 
-using memory_token = caf::instrusive_ptr<memory_response_token>;
+using memory_token = caf::intrusive_ptr<memory_response_token>;
 
 
 } // namespace caf::cuda

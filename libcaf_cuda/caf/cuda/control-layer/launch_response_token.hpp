@@ -75,7 +75,7 @@ private:
 };
 
 
-using kernel_launch_token = caf::instrusive_ptr<launch_response_token>;
+using kernel_launch_token = caf::intrusive_ptr<launch_response_token>;
 
 
 
