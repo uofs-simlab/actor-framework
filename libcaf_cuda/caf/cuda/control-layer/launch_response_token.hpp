@@ -73,4 +73,10 @@ private:
     int device_number;
     int stream_id;
 };
+
+
+using kernel_launch_token = caf::instrusive_ptr<launch_response_token>;
+
+
+
 } // namespace caf::cuda
