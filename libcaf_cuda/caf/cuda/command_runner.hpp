@@ -5,6 +5,7 @@
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/nd_range.hpp"
 #include "caf/cuda/platform.hpp"
+#include "caf/cuda/control-layer/response_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
 #include "caf/cuda/control-layer/memory_response_token.hpp"
 
@@ -90,14 +91,14 @@ public:
   template <class... Us>
   auto run(program_ptr program,
          nd_range dims,
-         launch_response_token& token,
+         const response_token_ptr& token,
          Us&&... xs)
   {
     return run(std::move(program),
                std::move(dims),
-               /* actor_id = */ token.getStreamId(),
+               /* actor_id = */ token ->getStreamId(),
                /* shared_memory = */ 0,
-               /* device_number = */ token.getDeviceNumber(),
+               /* device_number = */ token -> getDeviceNumber(),
                std::forward<Us>(xs)...);
 }
 
@@ -169,14 +170,14 @@ public:
     template <class... Us>
     auto run_async(program_ptr program,
                nd_range dims,
-               launch_response_token& token,
+               const response_token_ptr& token,
                Us&&... xs)
     {
     	return run_async(std::move(program),
                      std::move(dims),
-                     /* actor_id = */ token.getStreamId(),
+                     /* actor_id = */ token -> getStreamId(),
                      /* shared_memory = */ 0,
-                     /* device_number = */ token.getDeviceNumber(),
+                     /* device_number = */ token -> getDeviceNumber(),
                       std::forward<Us>(xs)...);
 
     }
@@ -204,11 +205,11 @@ public:
     // can transfer memory with a response token
     // -------------------------------------------------------------------------
     template <typename T>
-    mem_ptr<raw_t<T>> transfer_memory(memory_response_token& token,
+    mem_ptr<raw_t<T>> transfer_memory(const response_token_ptr& token,
                                       T arg)
     {
         // stack-allocate memory_command and execute transfer
-        return transfer_memory(token.getDeviceNumber(),token.getStreamId(),arg); 
+        return transfer_memory(token -> getDeviceNumber(),token -> getStreamId(),arg); 
     }
 
 
