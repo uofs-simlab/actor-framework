@@ -116,12 +116,6 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 	
   	caf::actor scheduler = mgr.get_scheduler_actor();
 	
-
-	//send a memory transfer token
-	int bytes = N*N * sizeof(int);
-	caf::cuda::token_ptr memory_token = caf::cuda::make_memory_token(bytes,H2D,self);
-	self -> mail(memory_token).send(scheduler);	
-
 	//send a launch token
 	caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(self ->state().program,
 			self -> state().dims,
@@ -145,7 +139,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 		  matrix2.reserve(N);
 
 		  //std::cout << "GPU ACTOR sending data to compute\n";
-		  self -> mail(matrix1,matrix2,N).send(self);
+		  self -> mail(matrix1,matrix2,response_token,N).send(self);
 	 
 		 }
 		 else {
@@ -156,11 +150,15 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 
     // 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
     [=](const std::vector<int>& matrixA,
-        const std::vector<int>& matrixB, int N) {
+        const std::vector<int>& matrixB,
+	const caf::cuda::token_ptr& kToken, int N) {
  
 
+	    caf::cuda::launch_response_token& kt =
+		    static_cast<caf::cuda::launch_response_token&>(*kToken);
+
 		  //std::cout << "GPU ACTOR  computing\n";
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
+	    caf::cuda::manager& mgr = caf::cuda::manager::get();
 
   //create program and dims   
   auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
@@ -174,7 +172,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
     auto arg3 = caf::cuda::create_out_arg(N*N);
     auto arg4 = caf::cuda::create_in_arg(N);
 
-    auto tempC = mmul.run(program,dims,self -> state().id,arg1,arg2,arg3,arg4);
+    auto tempC = mmul.run(program,dims,kt,arg1,arg2,arg3,arg4);
     std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
 
 		  //std::cout << "GPU ACTOR done  computing\n";
@@ -254,37 +252,6 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
 
 
 
-//this test will spawn more actors over time to demonstrate 
-//changing scheduling algorithims at runtime 
-void run_red_light_green_light_test(caf::actor_system& sys, int matrix_size, int num_actors) {
-  if (num_actors < 1) {
-    std::cerr << "[ERROR] Number of actors must be >= 1\n";
-    return;
-  }
-
-  std::cout << "Starting RED LIGHT GREEN LIGHT TEST\n";
-  int limit = 10;
-
-  caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors * limit);
-
-  for (int i = 0; i < limit; i++) {
-  // Spawn num_actors actors running the mmul behavior
-  std::vector<caf::actor> actors;
-  actors.reserve(num_actors);
-  for (int i = 0; i < num_actors; ++i) {
-    actors.push_back(sys.spawn(mmul_actor_fun,exit_actor,matrix_size));
-  }
-
-
-  sleep(1);
- // std::cout << actors.size() << "\n";
-
-  }
-
-   sys.await_all_actors_done();
-}
-
-
 
 void caf_main(caf::actor_system& sys) {
   
@@ -297,7 +264,6 @@ void caf_main(caf::actor_system& sys) {
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
 	//caf::cuda::manager::init(sys,man_config);
-	//run_red_light_green_light_test(sys,10,1000);
 }
 
 
