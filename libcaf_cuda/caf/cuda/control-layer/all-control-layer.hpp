@@ -5,6 +5,7 @@
 // Control-layer object types
 #include "caf/cuda/control-layer/token.hpp"
 #include "caf/cuda/control-layer/launch_token.hpp"
+#include "caf/cuda/control-layer/response_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
 #include "caf/cuda/control-layer/behavior_token.hpp"
 #include "caf/cuda/control-layer/memory_transfer_token.hpp"
@@ -24,6 +25,7 @@ CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::behavior_token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::launch_token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::launch_response_token>))
+CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::response_token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::memory_transfer_token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::memory_response_token>))
 
@@ -39,10 +41,12 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::launch_token)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::launch_response_token)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::memory_transfer_token)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::memory_response_token)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::response_token)
 
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::behavior_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::launch_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::launch_response_token>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::response_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::memory_transfer_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::memory_response_token>)
