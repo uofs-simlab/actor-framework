@@ -77,5 +77,9 @@ private:
     int stream_id;
 };
 
+
+using memory_token = caf::instrusive_ptr<memory_response_token>;
+
+
 } // namespace caf::cuda
 
