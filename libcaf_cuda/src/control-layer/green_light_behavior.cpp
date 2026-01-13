@@ -64,7 +64,7 @@ void green_light_behavior::process_launch_token(const token_ptr& tok,
         static_cast<caf::cuda::launch_token&>(*tok);
 
     // Create response token using the existing launch token
-    caf::cuda::token_ptr response =
+    caf::cuda::response_token_ptr response =
         make_launch_response_token(self, launch,device_number,stream_id);
 
     // Send response to the actor that requested the launch
@@ -82,7 +82,7 @@ void green_light_behavior::process_memory_transfer_token(const token_ptr& tok,
         static_cast<caf::cuda::memory_transfer_token&>(*tok);
 
     // Create memory response token
-    caf::cuda::token_ptr response =
+    caf::cuda::response_token_ptr response =
         make_memory_response_token(self, mem,device_number,stream_id);
 
     // Send response to requesting actor
