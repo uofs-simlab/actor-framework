@@ -1,50 +1,54 @@
 #pragma once
-#include "caf/cuda/control-layer/token.hpp"
-#include "caf/cuda/control-layer/launch_token.hpp"  // Full include for constructor param
-#include <caf/actor.hpp>  // For caf::actor
-#include "caf/cuda/nd_range.hpp"  // For nd_range
+#include "caf/cuda/control-layer/response_token.hpp"
+#include "caf/cuda/control-layer/launch_token.hpp"
 #include "caf/cuda/global_export.hpp"
+
+#include <caf/actor.hpp>
 #include <atomic>
-#include <string>  // For std::string (if not from elsewhere)
+#include <string>
+#include "caf/cuda/nd_range.hpp"
 
 namespace caf::cuda {
-class CAF_CUDA_EXPORT launch_response_token : public token {
+
+// -----------------------------------------------------------------------------
+// Launch response token returned after a kernel launch request
+// -----------------------------------------------------------------------------
+class CAF_CUDA_EXPORT launch_response_token : public response_token {
 public:
+    // Only here to be compliant with CAF's type system – DO NOT USE directly
+    launch_response_token() = default;
 
-	//only here to be complaint with CAFS type if system DO NOT USE 
-	launch_response_token() = default;
-
-    // Construct manually    
-launch_response_token(caf::actor receiver,
+    // Construct manually
+    launch_response_token(caf::actor receiver,
                           nd_range range,
                           int memory_usage,
-                          std::string id)
-        : receiver_(std::move(receiver)),
+                          std::string id,
+                          int device_num = 0,
+                          int stream_id = 0)
+        : response_token(std::move(receiver), device_num, stream_id, memory_usage),
           range_(std::move(range)),
-          memory_usage_(memory_usage),
           id_(std::move(id)),
-          released_(false),
-	  device_number(0),
-	  stream_id(0) {}
+          released_(false) {}
 
     // Construct from a launch_token
-    launch_response_token(caf::actor receiver, const launch_token& token,int device_num,int streamId)
-        : receiver_(std::move(receiver)),
+    launch_response_token(caf::actor receiver,
+                          const launch_token& token,
+                          int device_num,
+                          int stream_id)
+        : response_token(std::move(receiver), device_num, stream_id, token.getMemoryUsage()),
           range_(token.getRange()),
-          memory_usage_(token.getMemoryUsage()),
           id_(token.getId()),
-          released_(false),
-	  device_number(device_num),
-	  stream_id(streamId) {}
+          released_(false) {}
 
     ~launch_response_token() {
         release();
     }
+
     int getType() const override { return LAUNCH_RESPONSE; }
+
     const nd_range& getRange() const { return range_; }
-    int getMemoryUsage() const { return memory_usage_; }
-    int getDeviceNumber() const {return device_number;}
-    int getStreamId() const {return stream_id;}
+
+    const std::string& getId() const { return id_; }
 
     // Return requested number of CUDA blocks
     int getBlocks() const {
@@ -54,29 +58,29 @@ launch_response_token(caf::actor receiver,
             range_.getGridDimZ()
         );
     }
-    const std::string& getId() const { return id_; }
-    void release() {
+
+    void release() override {
         bool expected = false;
-        if (released_.compare_exchange_strong(expected, true)) {
-            	//the real message commented out for testing 
-		//caf::anon_mail(id_, getBlocks()).urgent().send(receiver_);
-		//test message
-		caf::anon_mail("Hello world from me").urgent().send(receiver_);
+
+        // ONLY send if we successfully transition false → true
+        if (!released_.compare_exchange_strong(expected, true)) {
+            return; // already released → do nothing
         }
+
+        // Real message (commented for testing)
+        // caf::anon_mail(id_, memorySize()).urgent().send(receiver_);
+
+        // Test message
+        caf::anon_mail("Hello world from launch response").urgent().send(receiver_);
     }
+
 private:
-    caf::actor receiver_;
     nd_range range_;
-    int memory_usage_;
     std::string id_;
     std::atomic<bool> released_;
-    int device_number;
-    int stream_id;
 };
-
 
 using kernel_launch_token = caf::intrusive_ptr<launch_response_token>;
 
-
-
 } // namespace caf::cuda
+

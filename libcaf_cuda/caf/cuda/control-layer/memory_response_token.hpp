@@ -1,11 +1,5 @@
 #pragma once
-
-//this class is meant to act as a response issued by the scheduler
-//actor authorizing memory transfer as needed 
-
-#pragma once
-
-#include "caf/cuda/control-layer/token.hpp"
+#include "caf/cuda/control-layer/response_token.hpp"
 #include "caf/cuda/control-layer/memory_transfer_token.hpp"
 #include "caf/cuda/global_export.hpp"
 
@@ -14,7 +8,10 @@
 
 namespace caf::cuda {
 
-class CAF_CUDA_EXPORT memory_response_token : public token {
+// -----------------------------------------------------------------------------
+// Memory response issued by the scheduler / actor authorizing memory transfer
+// -----------------------------------------------------------------------------
+class CAF_CUDA_EXPORT memory_response_token : public response_token {
 public:
     // Required by CAF – do not use directly
     memory_response_token() = default;
@@ -22,15 +19,11 @@ public:
     // Construct from memory_transfer_token
     memory_response_token(caf::actor receiver,
                           const memory_transfer_token& token,
-			  int device_num,
-			  int streamId)
-        : receiver_(std::move(receiver)),
-          size_(token.getSize()),
+                          int device_num,
+                          int stream_id)
+        : response_token(std::move(receiver), device_num, stream_id, token.getSize()),
           direction_(token.getDirection()),
-          released_(false),
-       	  device_number(device_num),
-	  stream_id(streamId) {}
-
+          released_(false) {}
 
     ~memory_response_token() {
         release();
@@ -40,18 +33,11 @@ public:
         return MEMORY_RESPONSE;
     }
 
-    int getSize() const {
-        return size_;
-    }
-
     int getDirection() const {
         return direction_;
     }
 
-    int getDeviceNumber() const { return device_number;}
-    int getStreamId() const {return stream_id;}
-
-    void release() {
+    void release() override {
         bool expected = false;
 
         // ONLY send if we successfully transition false → true
@@ -60,7 +46,7 @@ public:
         }
 
         // Real message (commented for testing)
-        // caf::anon_mail(size_, direction_).urgent().send(receiver_);
+        // caf::anon_mail(memorySize(), direction_).urgent().send(receiver_);
 
         // Test message
         caf::anon_mail("Hello world from memory response")
@@ -69,17 +55,11 @@ public:
     }
 
 private:
-    caf::actor receiver_;
-    int size_;
     int direction_;
     std::atomic<bool> released_;
-    int device_number;
-    int stream_id;
 };
 
-
 using memory_token = caf::intrusive_ptr<memory_response_token>;
-
 
 } // namespace caf::cuda
 
