@@ -125,7 +125,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 
 	return {
 
-	  [=] (caf::cuda::token_ptr launch_response_token) {
+	  [=] (caf::cuda::response_token_ptr launch_response_token) {
 	 
 		  //std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
 		  //assume N = 1024
