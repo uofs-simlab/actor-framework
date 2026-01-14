@@ -252,6 +252,150 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
    sys.await_all_actors_done();
 }
 
+// Stateful actor behavior
+caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::actor exit_actor,int N) {
+ 
+
+	//set the value of N correctly to overide the base option.	
+	self->state().N = N;
+
+  caf::cuda::manager& mgr = caf::cuda::manager::get();
+	
+  	caf::actor scheduler = mgr.get_scheduler_actor();
+	
+	//send a launch token
+	caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(self ->state().program,
+			self -> state().dims,
+			0,
+			"hello",
+			self
+			);
+	self -> mail(launch_token).send(scheduler);
+
+	return {
+
+	  [=] (caf::cuda::response_token_ptr res_token) {
+	
+		 if (res_token -> getType() == LAUNCH_RESPONSE) {
+		  int N = self -> state().N;
+
+		  caf::cuda::command_runner<in_out<int>> mem_transfer_command;
+
+
+		  std::vector<int> matrix1(N*N);
+		  std::vector<int> matrix2(N*N);
+
+		  caf::cuda::mem_ptr<int> matrixA = mem_transfer_command.transfer_memory(res_token,in_out<int>{matrix1});
+		  caf::cuda::mem_ptr<int> matrixB = mem_transfer_command.transfer_memory(res_token,in_out<int>{matrix2});
+
+		  //std::cout << "GPU ACTOR sending data to compute\n";
+		  self -> mail(matrixA,matrixB,res_token,N).send(self);
+	 
+		 }
+		 else {
+			 //std::cout << "Got a memory response token\n";
+		 }
+		 //token should drop out of scope now, triggering a response 
+	  },
+
+    // 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
+    [=](const caf::cuda::mem_ptr<int>& matrixA,
+        const caf::cuda::mem_ptr<int>& matrixB,
+	const caf::cuda::response_token_ptr& res_token, int N) {
+ 
+	caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+	//create program and dims   
+ 	auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
+  	const int THREADS = 32;
+  	const int BLOCKS = (N + THREADS - 1) / THREADS;
+  	caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+
+    //create args
+    auto arg3 = caf::cuda::create_out_arg(N*N);
+    auto arg4 = caf::cuda::create_in_arg(N);
+
+    auto temp = mmulAsync.run_async(program,dims,res_token,matrixA,matrixB,arg3,arg4);
+    caf::cuda::mem_ptr<int> matrixC = std::get<2>(temp);
+
+    std::vector<int> matrix1 = matrixA -> copy_to_host();
+    std::vector<int> matrix2 = matrixB -> copy_to_host();
+    std::vector<int> matrix3 = matrixC -> copy_to_host();
+
+		  //std::cout << "GPU ACTOR done  computing\n";
+    //verify its own result 
+    self -> mail(matrix1,matrix2,matrix3,N).send(self);
+
+    },
+
+    // 3rd handler: CPU atom + matrices + N
+    [=](const std::vector<int>& matrixA,
+    const std::vector<int>& matrixB,
+    const std::vector<int>& matrixC,
+    int N) {
+
+  using clock = std::chrono::high_resolution_clock;
+
+  auto start = clock::now();
+
+  //std::cout << "GPU ACTOR verifying\n";
+
+  std::vector<int> result(N * N);
+
+  serial_matrix_multiply(matrixA, matrixB, result, N);
+
+  if (result == matrixC) {
+    std::cout << "actor with id " << self->state().id
+              << " references match\n";
+  } else {
+    std::cout << "actor with id " << self->state().id
+              << " references did not match\n";
+  }
+
+  auto end = clock::now();
+
+  auto ms =
+    std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+  std::cout << "[TIMING] verification took "
+            << ms << " ms (actor id "
+            << self->state().id << ")\n";
+
+  // signal exit actor and quit
+  self->mail(1).send(exit_actor);
+  self->quit();
+
+    }
+  };
+}
+
+
+
+void run_async_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
+  if (num_actors < 1) {
+    std::cerr << "[ERROR] Number of actors must be >= 1\n";
+    return;
+  }
+
+  int limit = 1;
+
+  caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors);
+
+  for (int i = 0; i < limit; i++) {
+  // Spawn num_actors actors running the mmul behavior
+  std::vector<caf::actor> actors;
+  actors.reserve(num_actors);
+  for (int i = 0; i < num_actors; ++i) {
+    actors.push_back(sys.spawn(mmul_async_actor_fun,exit_actor,matrix_size));
+  }
+
+
+ // std::cout << actors.size() << "\n";
+
+  }
+
+   sys.await_all_actors_done();
+}
 
 
 
@@ -261,7 +405,7 @@ void caf_main(caf::actor_system& sys) {
 
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
-       	run_mmul_test(sys,10,10);
+       	run_async_mmul_test(sys,10,1000);
 	
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
