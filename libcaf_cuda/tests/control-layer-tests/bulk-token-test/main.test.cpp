@@ -91,18 +91,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 	//set the value of N correctly to overide the base option.	
 	self->state().N = N;
 
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
-	
-  	caf::actor scheduler = mgr.get_scheduler_actor();
-	caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(self ->state().program,
-			self -> state().dims,
-			0,
-			"hello",
-			self
-			);
-//	self -> mail(launch_token).send(scheduler);
-
-	return {
+  	return {
 
 	  [=] (caf::cuda::response_token_ptr launch_response_token) {
 	 
@@ -195,63 +184,67 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 }
 
 
-caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int limit,int matrix_size) {
+caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,
+                             int limit,
+                             int matrix_size) {
 
-  int N = matrix_size;
-  caf::cuda::program_ptr program = caf::cuda::manager::get().create_program_from_cubin("../mmul.cubin","matrixMul");
-  int THREADS = 32;
-  int BLOCKS = (N + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims = caf::cuda::nd_range(BLOCKS,BLOCKS,1,THREADS,THREADS,THREADS);
+    int N = matrix_size;
+    caf::cuda::program_ptr program = caf::cuda::manager::get()
+                                        .create_program_from_cubin("../mmul.cubin",
+                                                                   "matrixMul");
+    int THREADS = 32;
+    int BLOCKS = (N + THREADS - 1) / THREADS;
+    caf::cuda::nd_range dims = caf::cuda::nd_range(BLOCKS, BLOCKS, 1, THREADS, THREADS, THREADS);
 
-  // ------------------------------------
-  // Start timing
-  // ------------------------------------
-  //  auto start = std::chrono::steady_clock::now();
- 
-       caf::cuda::manager& mgr = caf::cuda::manager::get();
-	
-  	caf::actor scheduler = mgr.get_scheduler_actor();
-
-  
-    int num_actors = limit;
+    caf::cuda::manager& mgr = caf::cuda::manager::get();
+    caf::actor scheduler = mgr.get_scheduler_actor();
     caf::actor exit_actor = self;
-    // Spawn num_actors actors running the mmul behavior
+
+    int num_actors = limit;
     std::vector<caf::actor> actors;
     actors.reserve(num_actors);
-    std::vector<caf::cuda::token_ptr> tokens(num_actors);
-   
+
+    std::vector<caf::cuda::token_ptr> tokens;
+    tokens.reserve(num_actors);
+
+    // --------------------------
+    // Start timing for token creation + send
+    // --------------------------
+    auto t_start = std::chrono::steady_clock::now();
 
     for (int j = 0; j < num_actors; ++j) {
-       caf::actor a = self -> spawn(mmul_actor_fun, exit_actor, matrix_size);
-       actors.push_back(a);
-       caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(program,
-			dims,
-			0,
-			"hello",
-			a
-			);
+        caf::actor a = self->spawn(mmul_actor_fun, exit_actor, matrix_size);
+        actors.push_back(a);
 
-       tokens.emplace_back(launch_token);
-  }
+        caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
+            program, dims, 0, "hello", a);
 
-	self -> mail(tokens).send(scheduler);
+        tokens.emplace_back(std::move(launch_token));
+    }
 
+    self->mail(tokens).send(scheduler);
 
+    auto t_end = std::chrono::steady_clock::now();
+    auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_start).count();
 
-	return {
-		[=](int num_completed) {
-			self->state().completed += num_completed;
-			
-			std::cout << "Actors finished is " << self->state().completed << "\n";
-			if (self->state().completed >= limit) {
-			
-				caf::cuda::manager::shutdown();
-				self->quit();
-			}
-		}
-	};
+    std::cout << "[EXIT] token creation + send took "
+              << elapsed_us << " us for "
+              << tokens.size() << " actors\n";
 
+    // --------------------------
+    // Return the exit actor behavior as before
+    // --------------------------
+    return {
+        [=](int num_completed) {
+            self->state().completed += num_completed;
 
+            std::cout << "Actors finished is " << self->state().completed << "\n";
+            if (self->state().completed >= limit) {
+                caf::cuda::manager::shutdown();
+                self->quit();
+            }
+        }
+    };
 }
 
 
@@ -338,14 +331,14 @@ void caf_main(caf::actor_system& sys) {
 
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
-       	//run_mmul_test(sys,10,250);
+       	run_mmul_test(sys,512,512);
 	
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
 //	caf::cuda::manager::init(sys,man_config);
 //	run_red_light_green_light_test(sys,10,1000);
 	
-	run_mmul_scaling_tests(sys,man_config);
+	//run_mmul_scaling_tests(sys,man_config);
 
 
 }
