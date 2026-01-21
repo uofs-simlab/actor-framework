@@ -26,7 +26,47 @@ struct exit_actor_state {
 };
 
 
-caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int limit) {
+caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int limit,int matrix_size) {
+
+  int N = matrix_size;
+  caf::cuda::program_ptr program = caf::cuda::manager::get().create_program_from_cubin("../mmul.cubin","matrixMul");
+  int THREADS = 32;
+  int BLOCKS = (N + THREADS - 1) / THREADS;
+  caf::cuda::nd_range dims = caf::cuda::nd_range(BLOCKS,BLOCKS,1,THREADS,THREADS,THREADS);
+
+  // ------------------------------------
+  // Start timing
+  // ------------------------------------
+  //  auto start = std::chrono::steady_clock::now();
+ 
+       caf::cuda::manager& mgr = caf::cuda::manager::get();
+	
+  	caf::actor scheduler = mgr.get_scheduler_actor();
+ 
+  
+    caf::actor exit_actor = self;
+    // Spawn num_actors actors running the mmul behavior
+    std::vector<caf::actor> actors;
+    actors.reserve(num_actors);
+    std::vector<caf::cuda::token_ptr> tokens(limit);
+    int num_actors = limit;
+   
+
+    for (int j = 0; j < num_actors; ++j) {
+       caf::actor a = sys.spawn(mmul_actor_fun, exit_actor, matrix_size);
+       actors.push_back(a);
+       caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(program,
+			dims,
+			0,
+			"hello",
+			a
+			);
+
+       tokens.emplace_back(launch_token);
+  }
+
+	self -> mail(tokens).send(scheduler);
+
 
 
 	return {
@@ -121,7 +161,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 			"hello",
 			self
 			);
-	self -> mail(launch_token).send(scheduler);
+//	self -> mail(launch_token).send(scheduler);
 
 	return {
 
@@ -166,8 +206,11 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
     std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
 
 		  //std::cout << "GPU ACTOR done  computing\n";
-    //verify its own result 
-    self -> mail(matrixA,matrixB,matrixC,N).send(self);
+  
+    //do not verify result just exit 
+    self->mail(1).send(exit_actor);
+    self->quit();
+
 
     },
 
