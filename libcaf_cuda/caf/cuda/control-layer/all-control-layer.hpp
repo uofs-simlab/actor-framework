@@ -28,6 +28,7 @@ CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::launch_response_tok
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::response_token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::memory_transfer_token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::memory_response_token>))
+CAF_ADD_TYPE_ID(cuda_control, (std::vector<caf::intrusive_ptr<caf::cuda::token>>))
 
 CAF_END_TYPE_ID_BLOCK(cuda_control)
 
@@ -50,3 +51,4 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::launch_response_toke
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::response_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::memory_transfer_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::memory_response_token>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<caf::intrusive_ptr<caf::cuda::token>>)
