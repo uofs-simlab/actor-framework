@@ -48,6 +48,19 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self,i
 		
 	    }
         },
+
+	[=](std::vector<token_ptr> tokens) {
+	
+		for (int i =0; i<tokens.size();i++) {
+		
+		self->state().current_behavior->receive(&self->state(), tokens[i]);
+
+		
+		}
+
+	},
+
+
 	[=](std::string word) {
 	//	std::cout << "Received message " << word << "\n";
 	},
