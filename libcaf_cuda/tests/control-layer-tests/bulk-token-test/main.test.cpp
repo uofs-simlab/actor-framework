@@ -82,7 +82,7 @@ void serial_matrix_multiply(const std::vector<int>& a,
 
 
 // Stateful actor behavior
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::actor exit_actor,int N) {
+caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::actor exit_actor,int N, const std::vector<int>& matrix1, const std::vector<int>& matrix2) {
  
 
 	//set the value of N correctly to overide the base option.	
@@ -95,10 +95,6 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 		  //std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
 		  //assume N = 1024
 		  int N = self -> state().N;
-		  std::vector<int> matrix1(N*N);
-		  matrix1.reserve(N);
-		  std::vector<int> matrix2(N*N);
-		  matrix2.reserve(N);
 
 		  //std::cout << "GPU ACTOR sending data to compute\n";
 		  self -> mail(matrix1,matrix2,N).send(self);
@@ -210,9 +206,15 @@ caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,
     // ------------------------------------
     // Record exit actor start time
     // ------------------------------------
-    self->state().start_time = std::chrono::steady_clock::now();
-
+    
     int N = matrix_size;
+			  std::vector<int> matrix1(N*N);
+		  std::vector<int> matrix2(N*N);
+
+
+	
+   self->state().start_time = std::chrono::steady_clock::now();
+
     caf::cuda::program_ptr program = caf::cuda::manager::get()
         .create_program_from_cubin("../mmul.cubin", "matrixMul");
 
@@ -247,7 +249,7 @@ caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,
     for (int j = 0; j < num_actors; ++j) {
 
         auto t_spawn_start = std::chrono::steady_clock::now();
-        caf::actor a = self->spawn(mmul_actor_fun, exit_actor, matrix_size);
+        caf::actor a = self->spawn(mmul_actor_fun, exit_actor, matrix_size,matrix1,matrix2);
         actors.push_back(a);
         auto t_spawn_end = std::chrono::steady_clock::now();
 
