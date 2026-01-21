@@ -140,6 +140,14 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
     self->quit();
 
 
+     // print simple timestamp
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::cout << "[GPU ACTOR] actor " << self->state().id
+              << " calling self->quit() at "
+              << std::ctime(&t); // prints human-readable time
+
+
     },
 
     // 3rd handler: CPU atom + matrices + N
@@ -187,6 +195,15 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,
                              int limit,
                              int matrix_size) {
+
+ // print simple timestamp
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::cout << "[exit] actor "
+              << " starting at "
+              << std::ctime(&t); // prints human-readable time
+
+
 
     int N = matrix_size;
     caf::cuda::program_ptr program = caf::cuda::manager::get()
