@@ -275,19 +275,7 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
   // ------------------------------------
   auto start = std::chrono::steady_clock::now();
 
-  caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-  for (int i = 0; i < limit; i++) {
-    // Spawn num_actors actors running the mmul behavior
-    std::vector<caf::actor> actors;
-    actors.reserve(num_actors);
-
-    for (int j = 0; j < num_actors; ++j) {
-      actors.push_back(
-        sys.spawn(mmul_actor_fun, exit_actor, matrix_size)
-      );
-    }
-  }
+  caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors,matrix_size);
 
   // Wait for all actors to finish
   sys.await_all_actors_done();
