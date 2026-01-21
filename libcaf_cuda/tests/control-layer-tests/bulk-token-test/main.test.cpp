@@ -23,6 +23,8 @@ using namespace std::chrono_literals;
 
 struct exit_actor_state {
 	int completed = 0;
+    std::chrono::steady_clock::time_point start_time;
+
 };
 
 
@@ -205,23 +207,20 @@ caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,
                              int limit,
                              int matrix_size) {
 
- // print timestamp in milliseconds
-   // auto now = std::chrono::system_clock::now();
-   // auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(
-     //                         now.time_since_epoch())
-       //                       .count();
-
-    //std::cout << "[exit] actor "
-      //        << " starting at "
-        //      << ms_since_epoch << " ms since epoch\n";
+    // ------------------------------------
+    // Record exit actor start time
+    // ------------------------------------
+    self->state().start_time = std::chrono::steady_clock::now();
 
     int N = matrix_size;
     caf::cuda::program_ptr program = caf::cuda::manager::get()
-                                        .create_program_from_cubin("../mmul.cubin",
-                                                                   "matrixMul");
+        .create_program_from_cubin("../mmul.cubin", "matrixMul");
+
     int THREADS = 32;
     int BLOCKS = (N + THREADS - 1) / THREADS;
-    caf::cuda::nd_range dims = caf::cuda::nd_range(BLOCKS, BLOCKS, 1, THREADS, THREADS, THREADS);
+    caf::cuda::nd_range dims(
+        BLOCKS, BLOCKS, 1,
+        THREADS, THREADS, THREADS);
 
     caf::cuda::manager& mgr = caf::cuda::manager::get();
     caf::actor scheduler = mgr.get_scheduler_actor();
@@ -234,70 +233,91 @@ caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,
     std::vector<caf::cuda::token_ptr> tokens;
     tokens.reserve(num_actors);
 
-    // --------------------------
-    // Start timing for token creation + send
-    // --------------------------
-   auto t_start_all = std::chrono::steady_clock::now();
+    // ------------------------------------
+    // Timing accumulators
+    // ------------------------------------
+    auto t_start_all = std::chrono::steady_clock::now();
 
-long long total_spawn_us = 0;
-long long total_token_us = 0;
+    long long total_spawn_us = 0;
+    long long total_token_us = 0;
 
-for (int j = 0; j < num_actors; ++j) {
-    auto t_spawn_start = std::chrono::steady_clock::now();
-    caf::actor a = self->spawn(mmul_actor_fun, exit_actor, matrix_size);
-    actors.push_back(a);
-    auto t_spawn_end = std::chrono::steady_clock::now();
+    // ------------------------------------
+    // Spawn actors + create launch tokens
+    // ------------------------------------
+    for (int j = 0; j < num_actors; ++j) {
 
-    total_spawn_us +=
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            t_spawn_end - t_spawn_start).count();
+        auto t_spawn_start = std::chrono::steady_clock::now();
+        caf::actor a = self->spawn(mmul_actor_fun, exit_actor, matrix_size);
+        actors.push_back(a);
+        auto t_spawn_end = std::chrono::steady_clock::now();
 
-    auto t_token_start = std::chrono::steady_clock::now();
-    caf::cuda::token_ptr launch_token =
-        caf::cuda::make_launch_token(program, dims, 0, "hello", a);
-    tokens.emplace_back(std::move(launch_token));
-    auto t_token_end = std::chrono::steady_clock::now();
+        total_spawn_us += std::chrono::duration_cast<
+            std::chrono::microseconds>(t_spawn_end - t_spawn_start).count();
 
-    total_token_us +=
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            t_token_end - t_token_start).count();
-}
+        auto t_token_start = std::chrono::steady_clock::now();
+        caf::cuda::token_ptr launch_token =
+            caf::cuda::make_launch_token(program, dims, 0, "hello", a);
+        tokens.emplace_back(std::move(launch_token));
+        auto t_token_end = std::chrono::steady_clock::now();
 
+        total_token_us += std::chrono::duration_cast<
+            std::chrono::microseconds>(t_token_end - t_token_start).count();
+    }
 
-// --------------------------
-// Time sending all tokens
-// --------------------------
-auto t_send_start = std::chrono::steady_clock::now();
-self->mail(tokens).send(scheduler);
-auto t_send_end = std::chrono::steady_clock::now();
-auto send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_send_end - t_send_start).count();
+    // ------------------------------------
+    // Send tokens to scheduler
+    // ------------------------------------
+    auto t_send_start = std::chrono::steady_clock::now();
+    self->mail(tokens).send(scheduler);
+    auto t_send_end = std::chrono::steady_clock::now();
 
-auto t_end_all = std::chrono::steady_clock::now();
-auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_all - t_start_all).count();
+    auto send_ms = std::chrono::duration_cast<
+        std::chrono::milliseconds>(t_send_end - t_send_start).count();
 
-std::cout << "[EXIT] total spawn time: "
-          << total_spawn_us / 1000.0 << " ms\n";
-std::cout << "[EXIT] total launch token creation time: "
-          << total_token_us / 1000.0 << " ms\n";
+    auto t_end_all = std::chrono::steady_clock::now();
+    auto total_ms = std::chrono::duration_cast<
+        std::chrono::milliseconds>(t_end_all - t_start_all).count();
 
-std::cout << "[EXIT] sending tokens took: " << send_ms << " ms\n";
-std::cout << "[EXIT] total elapsed time (spawn + token + send): " << total_ms << " ms for "
-          << num_actors << " actors\n";
-    // --------------------------
-    // Return the exit actor behavior as before
-    // --------------------------
+    // ------------------------------------
+    // Print setup timings
+    // ------------------------------------
+    std::cout << "[EXIT] total spawn time: "
+              << total_spawn_us / 1000.0 << " ms\n";
+
+    std::cout << "[EXIT] total launch token creation time: "
+              << total_token_us / 1000.0 << " ms\n";
+
+    std::cout << "[EXIT] sending tokens took: "
+              << send_ms << " ms\n";
+
+    std::cout << "[EXIT] total elapsed time (spawn + token + send): "
+              << total_ms << " ms for "
+              << num_actors << " actors\n";
+
+    // ------------------------------------
+    // Exit actor behavior
+    // ------------------------------------
     return {
         [=](int num_completed) {
             self->state().completed += num_completed;
 
-            //std::cout << "Actors finished is " << self->state().completed << "\n";
             if (self->state().completed >= limit) {
+
+                auto end_time = std::chrono::steady_clock::now();
+                auto lifetime_ms = std::chrono::duration_cast<
+                    std::chrono::milliseconds>(
+                        end_time - self->state().start_time).count();
+
+                std::cout << "[EXIT] exit actor lifetime: "
+                          << lifetime_ms << " ms\n";
+
                 caf::cuda::manager::shutdown();
                 self->quit();
             }
         }
     };
 }
+
 
 
 
