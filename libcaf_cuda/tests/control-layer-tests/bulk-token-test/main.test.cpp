@@ -26,67 +26,6 @@ struct exit_actor_state {
 };
 
 
-caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int limit,int matrix_size) {
-
-  int N = matrix_size;
-  caf::cuda::program_ptr program = caf::cuda::manager::get().create_program_from_cubin("../mmul.cubin","matrixMul");
-  int THREADS = 32;
-  int BLOCKS = (N + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims = caf::cuda::nd_range(BLOCKS,BLOCKS,1,THREADS,THREADS,THREADS);
-
-  // ------------------------------------
-  // Start timing
-  // ------------------------------------
-  //  auto start = std::chrono::steady_clock::now();
- 
-       caf::cuda::manager& mgr = caf::cuda::manager::get();
-	
-  	caf::actor scheduler = mgr.get_scheduler_actor();
- 
-  
-    caf::actor exit_actor = self;
-    // Spawn num_actors actors running the mmul behavior
-    std::vector<caf::actor> actors;
-    actors.reserve(num_actors);
-    std::vector<caf::cuda::token_ptr> tokens(limit);
-    int num_actors = limit;
-   
-
-    for (int j = 0; j < num_actors; ++j) {
-       caf::actor a = sys.spawn(mmul_actor_fun, exit_actor, matrix_size);
-       actors.push_back(a);
-       caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(program,
-			dims,
-			0,
-			"hello",
-			a
-			);
-
-       tokens.emplace_back(launch_token);
-  }
-
-	self -> mail(tokens).send(scheduler);
-
-
-
-	return {
-		[=](int num_completed) {
-			self->state().completed += num_completed;
-			
-			std::cout << "Actors finished is " << self->state().completed << "\n";
-			if (self->state().completed >= limit) {
-			
-				caf::cuda::manager::shutdown();
-				self->quit();
-			}
-		}
-	};
-
-
-}
-
-
-
 
 
 
@@ -256,6 +195,72 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::ac
 }
 
 
+caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int limit,int matrix_size) {
+
+  int N = matrix_size;
+  caf::cuda::program_ptr program = caf::cuda::manager::get().create_program_from_cubin("../mmul.cubin","matrixMul");
+  int THREADS = 32;
+  int BLOCKS = (N + THREADS - 1) / THREADS;
+  caf::cuda::nd_range dims = caf::cuda::nd_range(BLOCKS,BLOCKS,1,THREADS,THREADS,THREADS);
+
+  // ------------------------------------
+  // Start timing
+  // ------------------------------------
+  //  auto start = std::chrono::steady_clock::now();
+ 
+       caf::cuda::manager& mgr = caf::cuda::manager::get();
+	
+  	caf::actor scheduler = mgr.get_scheduler_actor();
+
+  
+    int num_actors = limit;
+    caf::actor exit_actor = self;
+    // Spawn num_actors actors running the mmul behavior
+    std::vector<caf::actor> actors;
+    actors.reserve(num_actors);
+    std::vector<caf::cuda::token_ptr> tokens(num_actors);
+   
+
+    for (int j = 0; j < num_actors; ++j) {
+       caf::actor a = self -> spawn(mmul_actor_fun, exit_actor, matrix_size);
+       actors.push_back(a);
+       caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(program,
+			dims,
+			0,
+			"hello",
+			a
+			);
+
+       tokens.emplace_back(launch_token);
+  }
+
+	self -> mail(tokens).send(scheduler);
+
+
+
+	return {
+		[=](int num_completed) {
+			self->state().completed += num_completed;
+			
+			std::cout << "Actors finished is " << self->state().completed << "\n";
+			if (self->state().completed >= limit) {
+			
+				caf::cuda::manager::shutdown();
+				self->quit();
+			}
+		}
+	};
+
+
+}
+
+
+
+
+
+
+
+
 #include <chrono>
 #include <iostream>
 
@@ -291,39 +296,6 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
             << ", actors=" << num_actors
             << ", iterations=" << limit
             << ", time=" << duration_ms << " ms\n";
-}
-
-
-
-
-//this test will spawn more actors over time to demonstrate 
-//changing scheduling algorithims at runtime 
-void run_red_light_green_light_test(caf::actor_system& sys, int matrix_size, int num_actors) {
-  if (num_actors < 1) {
-    std::cerr << "[ERROR] Number of actors must be >= 1\n";
-    return;
-  }
-
-  std::cout << "Starting RED LIGHT GREEN LIGHT TEST\n";
-  int limit = 10;
-
-  caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors * limit);
-
-  for (int i = 0; i < limit; i++) {
-  // Spawn num_actors actors running the mmul behavior
-  std::vector<caf::actor> actors;
-  actors.reserve(num_actors);
-  for (int i = 0; i < num_actors; ++i) {
-    actors.push_back(sys.spawn(mmul_actor_fun,exit_actor,matrix_size));
-  }
-
-
-  sleep(1);
- // std::cout << actors.size() << "\n";
-
-  }
-
-   sys.await_all_actors_done();
 }
 
 
