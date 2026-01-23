@@ -66,6 +66,74 @@ void test_device_display_info([[maybe_unused]] caf::actor_system& sys) {
     }
 }
 
+
+void test_print_mmul_occupancy([[maybe_unused]] caf::actor_system& sys) {
+  using namespace caf::cuda;
+
+  auto& mgr = manager::get();
+  auto dev = mgr.find_device(0);
+
+  if (!dev) {
+    std::cerr << "[mmul occupancy] No CUDA device found\n";
+    return;
+  }
+
+  program_ptr prog;
+  try {
+    prog = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+  } catch (const std::exception& e) {
+    std::cerr << "[mmul occupancy] Failed to load cubin: "
+              << e.what() << "\n";
+    return;
+  }
+
+  // Example problem size (does not affect occupancy directly)
+  constexpr int N = 1024;
+  constexpr int THREADS = 32;
+  const int BLOCKS = (N + THREADS - 1) / THREADS;
+
+  nd_range dims(
+      BLOCKS, BLOCKS, 1,
+      THREADS, THREADS, 1
+  );
+
+  try {
+    int blocks_per_sm =
+        dev->max_active_blocks_per_sm(prog, dims);
+
+    std::cout << "\n[mmul occupancy]\n";
+    std::cout << "Device ID              : " << dev->getId() << "\n";
+    std::cout << "Kernel                  : matrixMul\n";
+    std::cout << "Threads per block       : "
+              << dims.getBlockDimX() * dims.getBlockDimY() * dims.getBlockDimZ()
+              << "\n";
+    std::cout << "Block dims              : ("
+              << dims.getBlockDimX() << ", "
+              << dims.getBlockDimY() << ", "
+              << dims.getBlockDimZ() << ")\n";
+    std::cout << "Grid dims               : ("
+              << dims.getGridDimX() << ", "
+              << dims.getGridDimY() << ", "
+              << dims.getGridDimZ() << ")\n";
+    std::cout << "Max active blocks / SM  : "
+              << blocks_per_sm << "\n";
+    std::cout << "Total active blocks     : "
+              << blocks_per_sm * dev->num_sms() << "\n\n";
+
+  } catch (const std::exception& e) {
+    std::cerr << "[mmul occupancy] Error querying occupancy: "
+              << e.what() << "\n";
+  }
+}
+
+
+
+
+
+
+
+
+
 // Return codes: 0 = PASS, 1 = SKIPPED, 2 = FAIL
 int run_test(const Test& test, caf::actor_system& sys) {
     std::cout << "Running test: " << test.name << "... ";
@@ -89,7 +157,8 @@ int run_test(const Test& test, caf::actor_system& sys) {
 
 // Test registry — add more tests here as needed.
 const std::vector<Test> tests = {
-    {"test_device_display_info", test_device_display_info}
+    {"test_device_display_info", test_device_display_info},
+    {"test_print_mmul_occupancy", test_print_mmul_occupancy}
 };
 
 // CAF main function to run tests
