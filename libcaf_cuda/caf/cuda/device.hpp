@@ -85,6 +85,14 @@ public:
   }
 
 
+  //given a program/kernel and dimesions 
+  //returns the max blocks that can be on an SM 
+  int max_active_blocks_per_sm(const program_ptr& prog, const nd_range& range,
+		  size_t dynamic_smem_bytes = 0) const; 
+
+
+
+
   //returns the CUStream associated with the actor id 
   CUstream get_stream_for_actor(int actor_id) {
     return stream_table_.get_stream(actor_id);
