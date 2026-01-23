@@ -14,6 +14,15 @@ public:
     void add(const std::string& name, scheduler_actor_behavior* beh) {
         table_[name] = beh;
     }
+ 
+    // Destructor: clean up all owned behaviors
+    ~behavior_table() {
+        for (auto& [name, beh] : table_) {
+            delete beh;
+        }
+        table_.clear();  // optional, but good hygiene
+    }
+ 
     scheduler_actor_behavior* get(const behavior_token& tok) const {
         auto it = table_.find(tok.name());
         return it != table_.end() ? it->second : nullptr;
