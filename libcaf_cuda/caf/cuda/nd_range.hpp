@@ -52,7 +52,7 @@ public:
   const dim_vec& getBlockDims() const { return blockDim; }
 
   // Returns total number of threads per block
-  [[nodiscard]] constexpr size_t get_num_threads() const noexcept {
+  [[nodiscard]]  size_t get_num_threads() const noexcept {
 	  return blockDim[0] * blockDim[1] * blockDim[2];
   }
 
