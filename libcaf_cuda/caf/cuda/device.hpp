@@ -23,7 +23,7 @@
 
 namespace caf::cuda {
 
-class device : public caf::ref_counted {
+class CAF_CUDA_EXPORT device : public caf::ref_counted {
 public:
   using device_ptr = caf::intrusive_ptr<device>;
 
