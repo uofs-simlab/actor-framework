@@ -18,6 +18,7 @@ set(LIBCAF_CUDA_SRCS
   src/manager.cpp
   src/platform.cpp
   src/program.cpp
+  src/device.cpp
   src/helpers.cpp
   src/test.cpp
   src/scheduler.cpp
