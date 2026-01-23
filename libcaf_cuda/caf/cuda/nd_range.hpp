@@ -51,6 +51,12 @@ public:
   const dim_vec& getGridDims() const { return gridDim; }
   const dim_vec& getBlockDims() const { return blockDim; }
 
+  // Returns total number of threads per block
+  [[nodiscard]] constexpr size_t get_num_threads() const noexcept {
+	  return blockDim[0] * blockDim[1] * blockDim[2];
+  }
+
+
   ~nd_range() {
   //no-op
   }
