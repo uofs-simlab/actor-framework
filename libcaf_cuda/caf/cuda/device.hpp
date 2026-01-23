@@ -33,7 +33,8 @@ public:
       id_(id),
       name_(name),
       stream_table_(context, stream_pool_size) {
-  }
+ 	      init_device_properties();
+      }
 
   ~device() {
     check(cuCtxDestroy(context_), "cuCtxDestroy");
@@ -52,6 +53,37 @@ public:
   int getStreamId() {return 0;}
 
   CUcontext getContext(int) { return context_; }
+
+
+  // Number of streaming multiprocessors (SMs)
+  int num_sms() const noexcept { return sm_count_; }
+
+  // Warp size (usually 32)
+  int warp_size() const noexcept { return warp_size_; }
+
+  // Maximum threads per SM
+  int max_threads_per_sm() const noexcept { return max_threads_per_sm_; }
+
+  // Derived: warps per SM
+  int warps_per_sm() const noexcept { return warps_per_sm_; }
+
+  // Derived: total warps on the device
+  int total_warps() const noexcept { return total_warps_; }
+
+  // Total device memory in bytes
+  std::size_t total_memory_bytes() const noexcept { return total_mem_bytes_; }
+
+  // Convenience: total memory in megabytes
+  double total_memory_mb() const noexcept { return static_cast<double>(total_mem_bytes_) / (1024.0 * 1024.0); }
+
+  // Short human-readable device summary
+  std::string device_summary() const {
+	  return std::string(name_) + " (id=" + std::to_string(id_) + ") - SMs: " + std::to_string(sm_count_) +
+		  ", warp_size: " + std::to_string(warp_size_) +
+		  ", max_threads/SM: " + std::to_string(max_threads_per_sm_) +
+		  ", total_mem(MB): " + std::to_string(total_memory_mb());
+  }
+
 
   //returns the CUStream associated with the actor id 
   CUstream get_stream_for_actor(int actor_id) {
@@ -253,6 +285,48 @@ private:
   const char* name_;
   DeviceStreamTable stream_table_;
   std::mutex stream_mutex_;
+
+  // Cached GPU properties (queried once during construction)
+  int sm_count_ = 0;
+  int warp_size_ = 0;
+  int max_threads_per_sm_ = 0;
+  int warps_per_sm_ = 0;
+  int total_warps_ = 0;
+  std::size_t total_mem_bytes_ = 0;
+
+  // Initialize and cache device properties. Called once from constructor.
+  void init_device_properties() {
+	  CUresult res;
+	  int tmp = 0;
+
+	  // Number of SMs
+	  res = cuDeviceGetAttribute(&tmp, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device_);
+	  if (res == CUDA_SUCCESS) sm_count_ = tmp;
+	  else { const char* n = nullptr; cuGetErrorName(res, &n); throw std::runtime_error(std::string("cuDeviceGetAttribute(MULTIPROCESSOR_COUNT) failed: ") + (n ? n : "unknown")); }
+
+	  // Warp size
+	  res = cuDeviceGetAttribute(&tmp, CU_DEVICE_ATTRIBUTE_WARP_SIZE, device_);
+	  if (res == CUDA_SUCCESS) warp_size_ = tmp;
+	  else { const char* n = nullptr; cuGetErrorName(res, &n); throw std::runtime_error(std::string("cuDeviceGetAttribute(WARP_SIZE) failed: ") + (n ? n : "unknown")); }
+
+	  // Max threads per SM
+	  res = cuDeviceGetAttribute(&tmp, CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR, device_);
+	  if (res == CUDA_SUCCESS) max_threads_per_sm_ = tmp;
+	  else { const char* n = nullptr; cuGetErrorName(res, &n); throw std::runtime_error(std::string("cuDeviceGetAttribute(MAX_THREADS_PER_MULTIPROCESSOR) failed: ") + (n ? n : "unknown")); }
+
+	  // Derived values
+	  if (warp_size_ > 0 && max_threads_per_sm_ > 0) {
+		  warps_per_sm_ = std::max(1, max_threads_per_sm_ / warp_size_);
+		  total_warps_ = warps_per_sm_ * sm_count_;
+	  }
+
+	  // Total memory
+	  size_t bytes = 0;
+	  res = cuDeviceTotalMem(&bytes, device_);
+	  if (res == CUDA_SUCCESS) total_mem_bytes_ = bytes;
+	  else { const char* n = nullptr; cuGetErrorName(res, &n); throw std::runtime_error(std::string("cuDeviceTotalMem failed: ") + (n ? n : "unknown")); }
+  }
+
 
   // === Memory handling ===
   
