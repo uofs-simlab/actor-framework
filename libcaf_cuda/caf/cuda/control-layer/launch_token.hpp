@@ -31,7 +31,7 @@ public:
     const program_ptr& getProgram() const { return program_; }
     const nd_range& getRange() const { return range_; }
     int getMemoryUsage() const { return memory_usage_; }
-    caf::actor getReplyActor() { return reply_handle_; }
+    caf::actor getReplyActor() const { return reply_handle_; }
     // Return requested number of CUDA blocks (gridDimX * gridDimY * gridDimZ)
     int getBlocks() const {
         return static_cast<int>(
