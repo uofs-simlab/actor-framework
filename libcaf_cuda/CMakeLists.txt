@@ -22,6 +22,7 @@ set(LIBCAF_CUDA_SRCS
   src/test.cpp
   src/scheduler.cpp
   src/streampool.cpp
+  src/control-layer/behavior.cpp
   src/control-layer/scheduler_actor.cpp
   src/control-layer/red_light_behavior.cpp
   src/control-layer/green_light_behavior.cpp
