@@ -33,7 +33,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
             // std::cout << "Received token\n";
             state.current_behavior->receive(tok);
         },
-        [=](const caf::cuda::behavior_token_ptr& tok) {
+        [&state](const caf::cuda::behavior_token_ptr& tok) {
             auto* next = state.table.get(*tok);
             if (next) {
                 state.current_behavior->on_exit();   // cleanup current behavior

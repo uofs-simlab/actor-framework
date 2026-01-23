@@ -11,6 +11,10 @@ public:
     void receive(const token_ptr& tok) override;
     ~red_light_behavior() noexcept override;
 
+protected:
+    virtual void process_launch_token(const token_ptr& tok, int stream_id);
+    virtual void process_memory_transfer_token(const token_ptr& tok, int stream_id);
+
 };
 
 } // namespace caf::cuda
