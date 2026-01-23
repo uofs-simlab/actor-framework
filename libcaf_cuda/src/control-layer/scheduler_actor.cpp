@@ -20,9 +20,13 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
     // set device number
     state.device_number = device_number;
 
+    static red_light_behavior red_behavior(state);
+    static green_light_behavior green_behavior(state);
+
+
     // populate the behavior table
-    state.table.add("green", new green_light_behavior(state));
-    state.table.add("red",   new red_light_behavior(state));
+    state.table.add("red", &red_behavior);
+    state.table.add("green",   &green_behavior);
 
     // default behavior
     state.current_behavior = state.table.get(behavior_token("green"));
