@@ -23,7 +23,7 @@ public:
   /// Copy constructor from another heuristic_function
   /// Copies all internal heuristic values 
   heuristic_function(const heuristic_function& other)
-    : values_(other.values__) {}
+    : values_(other.values_) {}
 
   /// Virtual destructor (required for polymorphic base classes)
   virtual ~heuristic_function() = default;
