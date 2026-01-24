@@ -13,6 +13,7 @@
 #include <vector>
 #include <string>
 #include <stdexcept>
+#include <cassert>
 
 using namespace caf::cuda;
 
@@ -113,72 +114,57 @@ void test_kernel_graph_push_pop([[maybe_unused]] caf::actor_system& sys) {
 
 
 // 3) Test core_heuristic_function
-void test_core_heuristic_function([[maybe_unused]] caf::actor_system& sys) {
-    std::cout << "\n[core_heuristic_function test]\n";
+#include <cassert>  // for assert
 
+void test_core_heuristic_function([[maybe_unused]] caf::actor_system& sys) {
     caf::cuda::manager::init(sys);
     auto& mgr = manager::get();
     auto dev = mgr.find_device(0);
 
     if (!dev) {
-        std::cerr << "No CUDA device found, skipping test\n";
+        // Skip test if no CUDA device
         return;
     }
 
-    // Create two programs
     auto prog1 = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
     auto prog2 = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
-    // nd_ranges
     nd_range r1(32, 32, 1, 32, 32, 1);
     nd_range r2(16, 16, 1, 16, 16, 1);
 
     core_heuristic_function h(dev);
 
-    // ------------------------------------------------------------
-    std::cout << "\n[Test] same program + same nd_range\n";
+    // Same program + same nd_range: cost should be consistent
     int cost1 = h.getCost(prog1, r1);
     int cost2 = h.getCost(prog1, r1);
+    assert(cost1 == cost2);
 
-    std::cout << "cost #1: " << cost1 << "\n";
-    std::cout << "cost #2: " << cost2 << "\n";
-
-    // ------------------------------------------------------------
-    std::cout << "\n[Test] same program + different nd_range\n";
+    // Same program + different nd_range: cost should differ or be independent
     int cost3 = h.getCost(prog1, r2);
+    assert(cost1 != ERROR_CODE);
+    assert(cost3 != ERROR_CODE);
 
-    std::cout << "cost r1: " << cost1 << "\n";
-    std::cout << "cost r2: " << cost3 << "\n";
-
-    // ------------------------------------------------------------
-    std::cout << "\n[Test] different program_ptr + same nd_range\n";
+    // Different program + same nd_range: cost may differ
     int cost4 = h.getCost(prog2, r1);
+    assert(cost4 != ERROR_CODE);
 
-    std::cout << "prog1 cost: " << cost1 << "\n";
-    std::cout << "prog2 cost: " << cost4 << "\n";
-    std::cout << "(program_ptr identity differs: " << (&(*prog1) != &(*prog2)) << ")\n";
-
-    // ------------------------------------------------------------
-    std::cout << "\n[Test] cache stability (repeated calls)\n";
+    // Cache stability: repeated calls give same result
     int cost5 = h.getCost(prog1, r1);
     int cost6 = h.getCost(prog1, r1);
+    assert(cost5 == cost6);
 
-    std::cout << "repeat #1: " << cost5 << "\n";
-    std::cout << "repeat #2: " << cost6 << "\n";
-
-    // ------------------------------------------------------------
-    std::cout << "\n[Test] copy constructor preserves cache\n";
+    // Copy constructor preserves cache
     core_heuristic_function h_copy(dev, h);
-
     int cost7 = h_copy.getCost(prog1, r1);
     int cost8 = h_copy.getCost(prog1, r2);
 
-    std::cout << "original r1: " << cost1 << ", copied r1: " << cost7 << "\n";
-    std::cout << "original r2: " << cost3 << ", copied r2: " << cost8 << "\n";
+    // Should match the original costs
+    assert(cost7 == cost1);
+    assert(cost8 == cost3);
 
-    std::cout << "\n[core_heuristic_function test complete]\n";
     caf::cuda::manager::shutdown();
 }
+
 
 
 
