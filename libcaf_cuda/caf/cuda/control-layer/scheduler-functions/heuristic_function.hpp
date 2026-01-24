@@ -33,7 +33,7 @@ public:
   /// @param range Kernel execution configuration
   /// @return Cost metric (interpretation left to implementation)
   virtual int getCost(const program_ptr& prog,
-                      const nd_range& range) const = 0;
+                      const nd_range& range) = 0;
 
 protected:
   /// Heuristic-specific values
