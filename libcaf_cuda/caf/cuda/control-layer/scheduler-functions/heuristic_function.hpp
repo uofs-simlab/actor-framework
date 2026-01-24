@@ -6,6 +6,10 @@
 #include <unordered_map>
 #include <string>
 
+
+#define ERROR_CODE -999999
+
+
 namespace caf::cuda {
 
 // Abstract heuristic function object.
