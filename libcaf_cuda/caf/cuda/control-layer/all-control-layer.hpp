@@ -14,6 +14,8 @@
 #include "caf/cuda/control-layer/behavior.hpp"
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
 #include "caf/cuda/control-layer/token_factory.hpp"
+#include "caf/cuda/control-layer/scheduler-functions/heuristic_function.hpp"
+#include "caf/cuda/control-layer/scheduler-functions/core_heuristic_function.hpp"
 
 // -----------------------------------------------------------------------------
 // Type IDs (required for typed behaviors)
