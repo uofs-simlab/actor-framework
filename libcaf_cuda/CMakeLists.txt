@@ -14,21 +14,8 @@ file(GLOB_RECURSE CAF_CUDA_HEADERS "caf/*.hpp")
 
 
 # list cpp files excluding platform-dependent files
-set(LIBCAF_CUDA_SRCS
-  src/manager.cpp
-  src/platform.cpp
-  src/program.cpp
-  src/device.cpp
-  src/helpers.cpp
-  src/test.cpp
-  src/scheduler.cpp
-  src/streampool.cpp
-  src/control-layer/behavior.cpp
-  src/control-layer/behavior_table.cpp
-  src/control-layer/scheduler_actor.cpp
-  src/control-layer/red_light_behavior.cpp
-  src/control-layer/green_light_behavior.cpp
-  src/control-layer/token_factory.cpp
+file(GLOB_RECURSE LIBCAF_CUDA_SRCS
+    src/*.cpp
 )
 
 # -- add targets ---------------------------------------------------------------
