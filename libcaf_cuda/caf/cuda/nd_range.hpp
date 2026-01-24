@@ -58,7 +58,23 @@ public:
 
 
   ~nd_range() {
-  //no-op
+	  //no-op
+  }
+
+
+  // Returns a stable string representation of grid + block dims
+
+  [[nodiscard]] std::string to_string() const {
+	  std::ostringstream oss;
+	  oss << "grid("
+		  << gridDim[0] << ","
+		  << gridDim[1] << ","
+		  << gridDim[2] << ")"
+		  << "_block("
+		  << blockDim[0] << ","
+		  << blockDim[1] << ","
+		  << blockDim[2] << ")";
+	  return oss.str();
   }
 
 
