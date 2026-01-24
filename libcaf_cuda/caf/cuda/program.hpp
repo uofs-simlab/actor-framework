@@ -39,6 +39,7 @@ public:
 	}
     }
 
+    std::string getName() {return name_;}
 
 private:
   /// Internal helper to load the kernel modules on all devices.
