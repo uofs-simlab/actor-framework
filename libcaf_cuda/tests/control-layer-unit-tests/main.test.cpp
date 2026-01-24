@@ -6,7 +6,7 @@
 
 #include <caf/all.hpp>
 #include <caf/actor_system.hpp>
-#include "caf/cuda/kernel_graph.hpp"
+#include "caf/cuda/control-layer/kernel_graph.hpp"
 #include <iostream>
 #include <vector>
 #include <string>
@@ -98,7 +98,7 @@ void test_kernel_graph_push_pop([[maybe_unused]] caf::actor_system& sys) {
 
     // getOperation should remove and return the element (nullptr expected)
     auto popped = g.getOperation();
-    (void)popped; // we don't inspect the token itself in this test
+    //(void)popped; // we don't inspect the token itself in this test
 
     // after popping, graph should be empty again
     if (!g.empty()) {
