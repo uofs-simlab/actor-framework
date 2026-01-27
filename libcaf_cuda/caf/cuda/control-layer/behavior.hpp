@@ -31,6 +31,12 @@ public:
     virtual void schedule() = 0;
     virtual void receive(const token_ptr& tok) = 0;
 
+    virtual void reclaim(int value, int memory_returned,int runtime) {
+	    //default implementation is to do nothing, this should be overidden
+	    //by children classes 
+    }
+
+
 protected:
     scheduler_actor_state& state_;
 
