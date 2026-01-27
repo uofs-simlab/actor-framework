@@ -11,6 +11,7 @@ public:
     void on_enter() override;
     void schedule() override;
     void receive(const token_ptr& tok) override;
+    void reclaim(int value /*blocks consumed*/,int memory_returned,int time) override; 
     core_usage_behavior() {
 	    init_state();
     }
@@ -18,7 +19,8 @@ public:
 private:
    dev_ptr device_;
    core_heuristic_function heuristic;
-    
+   int total_SM;
+   int available_SM; 
     
     void init_state();
 
