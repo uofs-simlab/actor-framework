@@ -33,7 +33,16 @@ public:
   /// @param range Kernel execution configuration
   /// @return Cost metric (interpretation left to implementation)
   virtual int getCost(const program_ptr& prog,
-                      const nd_range& range) = 0;
+		  const nd_range& range) = 0;
+
+
+  /// Token-based cost function (default implementation)
+  virtual int getCost(const token_ptr& tok) {
+	  // Assume type checking is done elsewhere
+	  const auto& launch = static_cast<const launch_token&>(*tok);
+	  return getCost(launch.getProgram(), launch.getRange());
+  }
+
 
 protected:
   /// Heuristic-specific values
