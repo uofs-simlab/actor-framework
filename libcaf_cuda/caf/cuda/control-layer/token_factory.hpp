@@ -18,7 +18,8 @@ CAF_CUDA_EXPORT token_ptr make_launch_token(program_ptr prog,
                             nd_range range,
                             int memory_usage,
                             std::string id,
-                            actor reply_to);
+                            actor reply_to,
+			    int dependency = INDEPENDENT);
 
 /// Creates a launch_response_token (created internally by the scheduler
 /// when it accepts a kernel launch request)
@@ -31,7 +32,10 @@ CAF_CUDA_EXPORT response_token_ptr make_launch_response_token(actor scheduler_or
 CAF_CUDA_EXPORT behavior_token_ptr make_behavior_token(std::string name);
 
 //creats a memory transfer token
-CAF_CUDA_EXPORT token_ptr make_memory_token(int size, int direction,caf::actor replyActor);
+CAF_CUDA_EXPORT token_ptr make_memory_token(int size,
+	       	int direction,
+		caf::actor replyActor,
+		int dependency = INDEPENDENT);
 
 CAF_CUDA_EXPORT response_token_ptr make_memory_response_token(actor receiver,
                                      const memory_transfer_token& orig,
