@@ -1,5 +1,7 @@
 #pragma once
 #include "caf/cuda/control-layer/behavior.hpp"
+#include "caf/cuda/control-layer/scheduler-functions/core_usage_heuristic.hpp"
+#include "caf/cuda/device.hpp"
 
 namespace caf::cuda {
 
@@ -9,6 +11,17 @@ public:
     void on_enter() override;
     void schedule() override;
     void receive(const token_ptr& tok) override;
+    core_usage_behavior() {
+	    init_state();
+    }
+
+private:
+   dev_ptr device_;
+   core_heuristic_function heuristic;
+    
+    
+    void init_state();
+
 
 };
 
