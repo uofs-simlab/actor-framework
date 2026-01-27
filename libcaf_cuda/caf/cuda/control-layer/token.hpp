@@ -12,6 +12,9 @@
 #define MEMORY 4
 #define MEMORY_RESPONSE 5
 
+//dependency tags
+#define INDEPENDENT -1
+
 namespace caf::cuda {
 
 // Base token interface
@@ -24,9 +27,17 @@ public:
 }
 
     //should only be used by caf's type id system
-    token() = default;
+  //  token() = default;
+
+    explicit  token(int dependency = INDEPENDENT)
+    : dependency_(dependency) {}
 
     virtual int getType() const {return -1;}
+
+  // Dependency API
+  virtual int getDependency() const { return dependency_; }
+  bool isIndependent() const { return dependency_ == INDEPENDENT; }
+
 
 protected:
 
@@ -42,6 +53,7 @@ protected:
 
 private:
  mutable std::atomic<size_t> ref_count_{0};
+ int dependency_ = INDEPENDENT;
 
 
 };
