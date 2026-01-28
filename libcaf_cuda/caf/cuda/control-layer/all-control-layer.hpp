@@ -17,7 +17,7 @@
 #include "caf/cuda/control-layer/scheduler-functions/heuristic_function.hpp"
 #include "caf/cuda/control-layer/scheduler-functions/core_heuristic_function.hpp"
 #include "caf/cuda/control-layer/kernel_graph.hpp"
-
+#include "caf/cuda/control-layer/core_usage_behavior.hpp"
 
 // -----------------------------------------------------------------------------
 // Type IDs (required for typed behaviors)
