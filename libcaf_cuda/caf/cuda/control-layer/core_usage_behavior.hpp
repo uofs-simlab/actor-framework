@@ -11,7 +11,7 @@ public:
     void on_enter() override;
     void schedule() override;
     void receive(const token_ptr& tok) override;
-    void reclaim(int value /*blocks consumed*/,int memory_returned,int time) override; 
+    void reclaim(int value /*blocks consumed*/,int memory_returned,int time,int dependency) override; 
 
 private:
    device_ptr device_;
