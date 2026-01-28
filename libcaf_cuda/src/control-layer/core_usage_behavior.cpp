@@ -6,7 +6,9 @@
 namespace caf::cuda {
 
 core_usage_behavior::core_usage__behavior(scheduler_actor_state& state)
-    : scheduler_actor_behavior(state) {}
+    : scheduler_actor_behavior(state) {
+	    init_state();
+    }
 
 
 

@@ -1,6 +1,6 @@
 #pragma once
 #include "caf/cuda/control-layer/behavior.hpp"
-#include "caf/cuda/control-layer/scheduler-functions/core_usage_heuristic.hpp"
+#include "caf/cuda/control-layer/scheduler-functions/core_heuristic_function.hpp"
 #include "caf/cuda/device.hpp"
 
 namespace caf::cuda {
@@ -12,16 +12,14 @@ public:
     void schedule() override;
     void receive(const token_ptr& tok) override;
     void reclaim(int value /*blocks consumed*/,int memory_returned,int time) override; 
-    core_usage_behavior() {
-	    init_state();
-    }
 
 private:
-   dev_ptr device_;
+   device_ptr device_;
    core_heuristic_function heuristic;
    int total_SM;
    int available_SM; 
-    
+   int available_memory; //in bytes 
+
     void init_state();
 
 
