@@ -10,9 +10,11 @@ core_usage_behavior::core_usage_behavior(scheduler_actor_state& state)
 	    init_state();
     }
 
+core_usage_behavior::~core_usage_behavior() = default;
+
 void core_usage_behavior::init_state() {
 
-	dev = manager::get().find_device(state-> device_number);
+	device_ = manager::get().find_device(state-> device_number);
 	heuristic = core_heuristic_function(device_);
 	total_SM =  device_ -> num_sms();
 	available_SM = total_SM;

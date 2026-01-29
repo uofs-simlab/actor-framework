@@ -14,6 +14,7 @@ public:
     void schedule() override;
     void receive(const token_ptr& tok) override;
     void reclaim(int value /*blocks consumed*/,int memory_returned,int time,int dependency) override; 
+    ~core_usage_behavior() override;   // 👈 ADD THIS
 
 private:
    device_ptr device_;
