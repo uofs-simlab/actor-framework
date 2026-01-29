@@ -16,5 +16,6 @@ struct scheduler_actor_state {
     std::queue<token_ptr> queue; // here for legacy prototype schedulers
     std::vector<kernel_graph> operations; //more modern dependency based data structure 
     int device_number;
+    int num_streams; // number of streams that can be used by the scheduler
 };
 } // namespace caf::cuda
