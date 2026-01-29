@@ -241,7 +241,7 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
 
   //change the scheduler to core_usage
   anon_mail(
-	caf::cuda::behavior_token("core_usage")
+	caf::cuda::make_behavior_token("core_usage")
 	).send(mgr.get_scheduler_actor());
 
   // CREATE ONCE
