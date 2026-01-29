@@ -10,6 +10,10 @@ core_usage_behavior::core_usage_behavior(scheduler_actor_state& state)
     init_state();
 }
 
+core_usage_behavior::~core_usage_behavior(){
+
+}
+
 void core_usage_behavior::init_state() {
     device_ = manager::get().find_device(state_.device_number);
     heuristic.emplace(device_);
