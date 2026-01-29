@@ -41,6 +41,7 @@ private:
    void rank(); //this should rank the graphs (high to low) for best canidates
 
    int get_next_stream(); // this should return the next stream based on some decisions
+   void dummy_schedule(); //just a test scheduler algorthim do not use seriously
 
 };
 

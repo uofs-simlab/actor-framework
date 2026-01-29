@@ -23,11 +23,15 @@ void core_usage_behavior::init_state() {
 
 void core_usage_behavior::on_enter() {
 	//TODO implement 
+	//
+
 }
 
 
 void core_usage_behavior::schedule() {
     //TODO IMPLEMENT
+
+	dummy_schedule();
 }
 
 void core_usage_behavior::receive(const token_ptr& tok) {
@@ -76,6 +80,50 @@ void core_usage_behavior::create_new_graph(token_ptr& token) {
 
 
 }
+
+
+
+void core_usage_behavior::dummy_schedule() {
+    /*
+     * 1. Drain independent graphs fully.
+     *    These can be erased once empty.
+     */
+    for (auto it = independent_graphs.begin();
+         it != independent_graphs.end(); ) {
+
+        kernel_graph& graph = *it;
+
+        while (!graph.empty()) {
+            token_ptr tok = graph.getOperation();
+            if (!tok)
+                break;
+
+            if (tok->getType() == LAUNCH) {
+                process_launch_token(tok, graph.get_stream_id());
+            }
+            // ignore other token types for now
+        }
+
+        // independent graphs can be deleted once drained
+        it = independent_graphs.erase(it);
+    }
+
+    /*
+     * 2. Drain dependency graphs, but DO NOT delete them.
+     */
+    for (auto& [dep, graph] : graphs) {
+        while (!graph.empty()) {
+            token_ptr tok = graph.getOperation();
+            if (!tok)
+                break;
+
+            if (tok->getType() == LAUNCH) {
+                process_launch_token(tok, graph.get_stream_id());
+            }
+        }
+    }
+}
+
 
 
 
