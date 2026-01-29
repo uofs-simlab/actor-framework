@@ -27,6 +27,13 @@ void core_usage_behavior::on_enter() {
 
 }
 
+void core_usage_behavior::reclaim(
+    int /*value*/,
+    int /*memory_returned*/,
+    int /*time*/,
+    int /*dependency*/) {
+    // intentionally empty for now
+}
 
 void core_usage_behavior::schedule() {
     //TODO IMPLEMENT
