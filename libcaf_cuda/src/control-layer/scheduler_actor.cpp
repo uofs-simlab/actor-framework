@@ -39,14 +39,25 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
             // std::cout << "Received token\n";
             state.current_behavior->receive(tok);
         },
-        [&state](const caf::cuda::behavior_token_ptr& tok) {
-            auto* next = state.table.get(*tok);
-            if (next) {
-                state.current_behavior->on_exit();   // cleanup current behavior
-                state.current_behavior = next;       // swap behavior
-                state.current_behavior->on_enter();  // init new current behavior
-            }
-        },
+        [&state](const caf::cuda::behavior_token_ptr& tok) -> bool {
+    auto* next = state.table.get(*tok);
+    if (next) {
+        if (next != state.current_behavior) {
+            state.current_behavior->on_exit();   // cleanup current behavior
+            state.current_behavior = next;       // swap behavior
+            state.current_behavior->on_enter();  // init new behavior
+            std::cout << "[INFO] Behavior changed to: " << tok->name() << "\n";
+            return true; // behavior changed
+        } else {
+            std::cout << "[INFO] Behavior already active: " << tok->name() << "\n";
+            return false; // behavior was already current
+        }
+    } else {
+        std::cout << "[WARN] No behavior found for token: " << tok->name() << "\n";
+        return false; // no change
+    }
+	}
+	,
         [=](std::vector<token_ptr> tokens) {
             for (size_t i = 0; i < tokens.size(); ++i) {
                 state.current_behavior->receive(tokens[i]);
