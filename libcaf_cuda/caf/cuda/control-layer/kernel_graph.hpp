@@ -50,6 +50,10 @@ public:
         return operations.empty();
     }
 
+    int stream_id() const noexcept { return stream_id_; }
+
+
+
 private:
     int device_number_;
     int stream_id_;
