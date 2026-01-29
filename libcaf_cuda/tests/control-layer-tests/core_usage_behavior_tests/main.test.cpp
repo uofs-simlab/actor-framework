@@ -239,6 +239,11 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
 
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 
+  //change the scheduler to core_usage
+  anon_mail(
+	caf::cuda::behavior_token("core_usage")
+	).send(mgr.get_scheduler_actor());
+
   // CREATE ONCE
   auto program =
       mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
