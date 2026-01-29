@@ -25,7 +25,7 @@ private:
    int available_memory; //in bytes 
    int num_tokens = 0;
    
-   int num_streams = state -> num_streams;
+   int num_streams = 0;
    int current_stream = 0;
 
 
