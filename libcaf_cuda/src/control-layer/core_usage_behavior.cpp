@@ -27,46 +27,18 @@ void core_usage_behavior::on_enter() {
     // TODO implement
 }
 
-void core_usage_behavior::reclaim(int, int, int, int) {
-    // intentionally empty for now
+void core_usage_behavior::reclaim(int blocks_consumed,
+	       	int memory_returned,
+	       	int time,
+	       	int dependency_number) {
+
+	available_SM += blocks_consumed;
+	available_memory+= memory_returned;
+	//will eventually do something with the dependency number and stalling or maybe not
+	schedule();
+
 }
 
-void core_usage_behavior::schedule() {
-  
-  //if there is only 2 kernels to consider then rerank  	
-  if (best_graphs.size() <= 2) {
-        rank(5);
-        if (best_graphs.empty())
-            return;
-    }
-
-
-    // Greedy: largest-cost first
-    for (int i = static_cast<int>(best_graphs.size()) - 1; i >= 0; --i) {
-        kernel_graph* graph = best_graphs[i];
-        if (!graph || graph->empty())
-            continue;
-
-        token_ptr tok = graph->peek();
-        if (!tok || tok->getType() != LAUNCH)
-            continue;
-
-        int cost = heuristic->getCost(tok);
-        if (cost == ERROR_CODE)
-            continue;
-
-        if (available_SM >= cost) {
-            tok = graph->getOperation();
-            process_launch_token(tok, graph->stream_id());
-            best_graphs.erase(best_graphs.begin() + i);
-        }
-    }
-
-    //again re-rank if we have less than 2 operations to consider
-    if (best_graphs.size() <= 2) {
-        rank(5);
-    }
-}
 
 
 
@@ -74,7 +46,6 @@ void core_usage_behavior::process_launch_token(const token_ptr& tok,int stream_i
 
 	scheduler_actor_behavior::process_launch_token(tok,stream_id);
 	available_SM -= heuristic->getCost(tok);
-
 }
 
 
@@ -193,6 +164,42 @@ void core_usage_behavior::rank(std::size_t max_best = 5) {
 }
 
 
+void core_usage_behavior::schedule() {
+  
+  //if there is only 2 kernels to consider then rerank  	
+  if (best_graphs.size() <= 2) {
+        rank(5);
+        if (best_graphs.empty())
+            return;
+    }
+
+
+    // Greedy: largest-cost first
+    for (int i = static_cast<int>(best_graphs.size()) - 1; i >= 0; --i) {
+        kernel_graph* graph = best_graphs[i];
+        if (!graph || graph->empty())
+            continue;
+
+        token_ptr tok = graph->peek();
+        if (!tok || tok->getType() != LAUNCH)
+            continue;
+
+        int cost = heuristic->getCost(tok);
+        if (cost == ERROR_CODE)
+            continue;
+
+        if (available_SM >= cost) {
+            tok = graph->getOperation();
+            process_launch_token(tok, graph->stream_id());
+            best_graphs.erase(best_graphs.begin() + i);
+        }
+    }
+
+    //again re-rank if we have less than 2 operations to consider
+    if (best_graphs.size() <= 2) {
+        rank(5);
+    }
+}
 
 
 } // namespace caf::cuda
