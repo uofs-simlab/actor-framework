@@ -31,14 +31,25 @@ void core_usage_behavior::reclaim(int, int, int, int) {
     // intentionally empty for now
 }
 
-void core_usage_behavior::schedule() {
-    dummy_schedule();
+void core_usage_behavior::schedule() {	
+	//dummy_schedule();
 }
 
 void core_usage_behavior::receive(const token_ptr& tok) {
     if (tok->getType() == LAUNCH) {
         create_new_graph(tok);
-        schedule();
+	if (available_SM -  heuristic->getCost(tok) < 0) {schedule();}
+	else {
+		if (tok->isIndependent()) 
+		{
+			process_launch_token(tok,get_next_stream());
+			return;
+		}
+
+		int stream = graphs[tok->getDependency()].stream_id();
+		process_launch_token(tok,stream);
+	}
+
     } else if (tok->getType() == MEMORY) {
         process_memory_transfer_token(tok, 0);
     }
@@ -90,7 +101,11 @@ void core_usage_behavior::dummy_schedule() {
 }
 
 void core_usage_behavior::rank(std::size_t max_best = 5) {
-    best_graphs.clear();
+   
+   //TODO INCORPORATE GRAPH STATUS INTO THIS EVENTUALLY
+   //AND FIGURE OUT A WAY TO CUT OUT EMPTY GRAPHS	
+	
+   best_graphs.clear();
 
     struct candidate {
         int cost;
