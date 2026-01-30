@@ -6,6 +6,11 @@
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/control-layer/scheduler-functions/heuristic_function.hpp"
 
+/*
+ * will return a value indicating 
+ * how much blocks a kernel with dimensions will consume
+ */
+
 namespace caf::cuda {
 
 class sm_usage_heuristic : public heuristic_function {

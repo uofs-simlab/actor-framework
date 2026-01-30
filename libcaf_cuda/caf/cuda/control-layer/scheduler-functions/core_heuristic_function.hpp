@@ -7,6 +7,11 @@
 #include "caf/cuda/nd_range.hpp"
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/control-layer/scheduler-functions/heuristic_function.hpp"
+/*
+ * Was originally supposed to estimate core usage 
+ * but it just tells how much blocks can fit into 1 SM
+ */
+
 
 namespace caf::cuda {
 
