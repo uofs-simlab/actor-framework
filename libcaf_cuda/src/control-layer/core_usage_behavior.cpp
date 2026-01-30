@@ -89,4 +89,50 @@ void core_usage_behavior::dummy_schedule() {
     }
 }
 
+void core_usage_behavior::rank(std::size_t max_best = 5) {
+    best_graphs.clear();
+
+    struct candidate {
+        int cost;
+        kernel_graph* graph;
+    };
+
+    std::vector<candidate> candidates;
+    candidates.reserve(graphs.size());
+
+    // Step 1: gather all candidate graphs
+    for (auto& [dep, graph] : graphs) {
+        if (graph.empty())
+            continue;
+
+        token_ptr tok = graph.peek();  // non-destructive
+        if (!tok || tok->getType() != LAUNCH)
+            continue;
+
+        int cost = heuristic->getCost(tok);
+        if (cost == ERROR_CODE)
+            continue;
+
+        candidates.push_back({cost, &graph});
+    }
+
+    if (candidates.empty())
+        return;
+
+    // Step 2: sort by ascending cost (cheap kernels first)
+    std::sort(candidates.begin(), candidates.end(),
+              [](const candidate& a, const candidate& b) {
+                  return a.cost < b.cost;
+              });
+
+    // Step 3: keep top N candidates
+    const std::size_t limit = std::min(max_best, candidates.size());
+    for (std::size_t i = 0; i < limit; ++i) {
+        best_graphs.push_back(candidates[i].graph);
+    }
+}
+
+
+
+
 } // namespace caf::cuda
