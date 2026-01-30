@@ -21,6 +21,14 @@ public:
     : heuristic_function(other),
       dev_(dev) {}
 
+
+  //mostly here to please the c++ compiler
+  int getCost(const token_ptr& tok) override {
+    return heuristic_function::getCost(tok); // call base
+  }
+
+
+
   int getCost(const program_ptr& prog,
               const nd_range& range) override {
     try {
