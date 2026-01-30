@@ -56,6 +56,11 @@ public:
 	  return blockDim[0] * blockDim[1] * blockDim[2];
   }
 
+ //get number of blocks in total
+ size_t get_num_blocks() const noexcept {
+	  return gridDim[0] * gridDim[1] * gridDim[2];
+ }
+
 
   ~nd_range() {
 	  //no-op
