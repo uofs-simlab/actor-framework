@@ -47,8 +47,10 @@ void core_usage_behavior::process_launch_token(const token_ptr& tok,int stream_i
 void core_usage_behavior::receive(const token_ptr& tok) {
     if (tok->getType() == LAUNCH) {
         create_new_graph(tok);
-	if (available_SM -  heuristic->getCost(tok) < 0) {schedule();}
-	else {
+	
+	//if we have the resources to dispatch, just do it right away 
+	if (available_SM -  heuristic->getCost(tok) > 0)
+	 {
 		if (tok->isIndependent()) 
 		{
 			process_launch_token(tok,get_next_stream());
