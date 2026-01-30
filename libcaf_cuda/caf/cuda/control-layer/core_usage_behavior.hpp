@@ -1,7 +1,8 @@
 #pragma once
 #include "caf/cuda/control-layer/behavior.hpp"
 #include "caf/cuda/control-layer/kernel_graph.hpp"
-#include "caf/cuda/control-layer/scheduler-functions/core_heuristic_function.hpp"
+//#include "caf/cuda/control-layer/scheduler-functions/core_heuristic_function.hpp"
+#include "caf/cuda/control-layer/scheduler-functions/sm_usage_heuristic.hpp"
 #include "caf/cuda/device.hpp"
 #include <unordered_map>
 #include <optional>
@@ -25,7 +26,7 @@ private:
    device_ptr device_;
    //core_heuristic_function heuristic;
   
-   std::optional<core_heuristic_function> heuristic;
+   std::optional<sm_usage_heuristic> heuristic;
 
 
 
