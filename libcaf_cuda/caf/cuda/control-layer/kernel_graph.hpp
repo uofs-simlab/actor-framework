@@ -25,6 +25,14 @@ public:
           stream_id_(stream_id),
           dependency_number_(dependency_number) {}
 
+
+        // Convenience constructor for independent graphs
+    kernel_graph(int device_number, int stream_id)
+        : device_number_(device_number),
+          stream_id_(stream_id),
+          dependency_number_(INDEPENDENT) {}
+
+
     // returns the next operation/token_ptr that can be dequeued
     token_ptr peek() const {
         if (operations.empty())
@@ -51,13 +59,15 @@ public:
     }
 
     int stream_id() const noexcept { return stream_id_; }
-
+    void set_status(int s) noexcept {status = s;}
+    int get_status() const noexcept {return status;}
 
 
 private:
     int device_number_;
     int stream_id_;
     int dependency_number_;
+    int status = READY;
     std::vector<token_ptr> operations;
 };
 
