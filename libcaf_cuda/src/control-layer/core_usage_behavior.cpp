@@ -35,6 +35,15 @@ void core_usage_behavior::schedule() {
 	//dummy_schedule();
 }
 
+
+void core_usage_behavior::process_launch_token(const token_ptr& tok,int stream_id )  {
+
+	scheduler_actor_behavior::process_launch_token(tok,stream_id);
+	available_SM -= heuristic->getCost(tok);
+
+}
+
+
 void core_usage_behavior::receive(const token_ptr& tok) {
     if (tok->getType() == LAUNCH) {
         create_new_graph(tok);

@@ -17,6 +17,10 @@ public:
     void reclaim(int value /*blocks consumed*/,int memory_returned,int time,int dependency) override; 
     ~core_usage_behavior() override;  
 
+
+protected:
+   void process_launch_token(const token_ptr& tok, int stream_id) override;
+
 private:
    device_ptr device_;
    //core_heuristic_function heuristic;
