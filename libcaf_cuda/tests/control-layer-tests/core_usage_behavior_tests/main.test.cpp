@@ -17,6 +17,7 @@
 
 
 
+
 using namespace caf;
 using namespace std::chrono_literals;
 
@@ -310,8 +311,6 @@ void run_mmul_test_no_scheduler(caf::actor_system& sys, int matrix_size, int num
   sys.await_all_actors_done();
 }
 
-
-
 template <class Fn>
 double time_run(Fn&& fn) {
   auto start = std::chrono::steady_clock::now();
@@ -321,11 +320,8 @@ double time_run(Fn&& fn) {
   return elapsed.count();
 }
 
-
-
 void run_mmul_scaling_tests(caf::actor_system& sys,
                             caf::cuda::manager_config man_config) {
-  const int min_size   = 10;
   const int max_size   = 1024;
   const int min_actors = 1;
   const int max_actors = 1024;
@@ -335,49 +331,56 @@ void run_mmul_scaling_tests(caf::actor_system& sys,
   for (int s = 32; s <= max_size; s *= 2)
     matrix_sizes.push_back(s);
 
-  // Actor counts: 1, 2, 4, ..., 1024
+  // Actor counts: 1, 2, 4, 8, ..., 1024
   std::vector<int> actor_counts;
   for (int a = min_actors; a <= max_actors; a *= 2)
     actor_counts.push_back(a);
 
   std::cout << "=== MMUL Scaling Tests ===\n";
-  std::cout << "Columns:\n";
-  std::cout << "matrix_size actors scheduler_time(s) no_scheduler_time(s)\n";
+  std::cout << "Format:\n";
+  std::cout << "scheduler matrix_size actors time_seconds\n";
 
   for (int size : matrix_sizes) {
     for (int actors : actor_counts) {
 
-      std::cout << "\n[RUN] matrix_size=" << size
-                << ", actors=" << actors << "\n";
-
-      /* ---------------- Scheduler enabled ---------------- */
+      /* ================= Scheduler enabled ================= */
       caf::cuda::manager::init(sys, man_config);
+
+      std::cout << "\n[RUN] scheduler=core_usage "
+                << "matrix_size=" << size
+                << " actors=" << actors << "\n";
 
       double sched_time = time_run([&] {
         run_mmul_test(sys, size, actors);
       });
 
-      /* ---------------- No scheduler ---------------- */
+      std::cout << std::fixed << std::setprecision(6)
+                << "RESULT core_usage "
+                << size << " "
+                << actors << " "
+                << sched_time << "\n";
+
+      /* ================= No scheduler ================= */
       caf::cuda::manager::init(sys, man_config);
+
+      std::cout << "\n[RUN] scheduler=none "
+                << "matrix_size=" << size
+                << " actors=" << actors << "\n";
 
       double no_sched_time = time_run([&] {
         run_mmul_test_no_scheduler(sys, size, actors);
       });
 
       std::cout << std::fixed << std::setprecision(6)
-                << "RESULT "
+                << "RESULT none "
                 << size << " "
                 << actors << " "
-                << sched_time << " "
                 << no_sched_time << "\n";
     }
   }
 
   std::cout << "\n=== MMUL Scaling Tests Complete ===\n";
 }
-
-
-
 
 
 void caf_main(caf::actor_system& sys) {
