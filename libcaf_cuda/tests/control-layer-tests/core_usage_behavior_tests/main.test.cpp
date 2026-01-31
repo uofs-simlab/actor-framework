@@ -232,6 +232,106 @@ caf::behavior mmul_actor_fun(
 
 
 
+
+
+// this actor will not verify its results
+// great for performance analysis 
+caf::behavior mmul_actor_fun_no_verify(
+    caf::stateful_actor<mmul_actor_state>* self,
+    caf::actor exit_actor,
+    int N,
+    caf::cuda::program_ptr program,
+    caf::cuda::nd_range dims)
+{
+
+	//set the value of N correctly to overide the base option.	
+	self->state().N = N;
+
+	caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+	caf::actor scheduler = mgr.get_scheduler_actor();
+
+	//send a launch token
+	caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
+			program,
+			dims,
+			0,
+			"hello",
+			self
+			);
+	self -> mail(launch_token).send(scheduler);
+
+	return {
+
+		[=] (caf::cuda::response_token_ptr res_token) {
+
+			if (res_token -> getType() == LAUNCH_RESPONSE) {
+				//std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
+				//assume N = 1024
+				int N = self -> state().N;
+				std::vector<int> matrix1(N*N);
+				matrix1.reserve(N);
+				std::vector<int> matrix2(N*N);
+				matrix2.reserve(N);
+
+				//std::cout << "GPU ACTOR sending data to compute\n";
+				self -> mail(matrix1,matrix2,res_token,N).send(self);
+
+			}
+			else {
+				std::cout << "Got a memory response token\n";
+			}
+			//token should drop out of scope now, triggering a response 
+		},
+
+			// 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
+			[=](const std::vector<int>& matrixA,
+					const std::vector<int>& matrixB,
+					const caf::cuda::response_token_ptr& res_token, int N) {
+
+
+				//caf::cuda::kernel_launch_token kernelToken = caf::intrusive_ptr_cast<caf::cuda::token_ptr>(kToken);
+
+				//caf::cuda::launch_response_token& kt =
+				//	    static_cast<caf::cuda::launch_response_token&>(*kToken);
+
+				//std::cout << "GPU ACTOR  computing\n";
+				caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+				//create program and dims   
+				auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
+				const int THREADS = 32;
+				const int BLOCKS = (N + THREADS - 1) / THREADS;
+				caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+
+				//create args
+				auto arg1 = caf::cuda::create_in_arg(matrixA);
+				auto arg2 = caf::cuda::create_in_arg(matrixB);
+				auto arg3 = caf::cuda::create_out_arg(N*N);
+				auto arg4 = caf::cuda::create_in_arg(N);
+
+				auto tempC = mmul.run(program,dims,res_token,arg1,arg2,arg3,arg4);
+				std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
+
+				//std::cout << "GPU ACTOR done  computing\n";
+				// signal exit actor and quit
+				self->mail(1).send(exit_actor);
+				self->quit();
+
+			}
+
+				
+	};
+}
+
+
+
+
+
+
+
+
+
 void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
   if (num_actors < 1) {
     std::cerr << "[ERROR] Number of actors must be >= 1\n";
