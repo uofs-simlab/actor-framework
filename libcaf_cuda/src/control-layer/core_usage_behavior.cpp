@@ -33,7 +33,7 @@ void core_usage_behavior::reclaim(int blocks_consumed,
 	       	int time,
 	       	int dependency_number) {
 
-	std::cout << "blocks is " <<  blocks_consumed << "\n";
+	//std::cout << "blocks is " <<  blocks_consumed << "\n";
 	available_SM += blocks_consumed;
 	available_memory+= memory_returned;
 	//will eventually do something with the dependency number and stalling or maybe not
@@ -126,26 +126,39 @@ void core_usage_behavior::dummy_schedule() {
 }
 
 void core_usage_behavior::rank(std::size_t max_best = 5) {
-   
-   //TODO INCORPORATE GRAPH STATUS INTO THIS EVENTUALLY
-   //AND FIGURE OUT A WAY TO CUT OUT EMPTY GRAPHS	
-	
-   best_graphs.clear();
+    best_graphs.clear();
 
+    //TODO FIGURE OUT A WAY TO PUT STATUS IN HERE AND 
+    //CUT OUT EMPTY GRAPHS
     struct candidate {
         int cost;
         kernel_graph* graph;
     };
 
     std::vector<candidate> candidates;
-    candidates.reserve(graphs.size());
 
-    // Step 1: gather all candidate graphs
+    // Step 1: gather all candidate graphs from dependent graphs
     for (auto& [dep, graph] : graphs) {
         if (graph.empty())
             continue;
 
         token_ptr tok = graph.peek();  // non-destructive
+        if (!tok || tok->getType() != LAUNCH)
+            continue;
+
+        int cost = heuristic->getCost(tok);
+        if (cost == ERROR_CODE)
+            continue;
+
+        candidates.push_back({cost, &graph});
+    }
+
+    // Step 1b: gather all candidate graphs from independent_graphs
+    for (auto& graph : independent_graphs) {
+        if (graph.empty())
+            continue;
+
+        token_ptr tok = graph.peek();
         if (!tok || tok->getType() != LAUNCH)
             continue;
 
@@ -173,28 +186,28 @@ void core_usage_behavior::rank(std::size_t max_best = 5) {
 }
 
 
-void core_usage_behavior::schedule() {
-  
-  //if there is only 2 kernels to consider then rerank  	
-  if (best_graphs.size() <= 2) {
-        rank(5);
-        if (best_graphs.empty())
-            return;
-    }
 
+void core_usage_behavior::schedule() {
+    // If there are only 2 kernels to consider then rerank
+    if (best_graphs.size() <= 2) {
+        rank(5);
+        if (best_graphs.empty()) {
+            return;
+        }
+    }
 
     // Greedy: largest-cost first
     for (int i = static_cast<int>(best_graphs.size()) - 1; i >= 0; --i) {
         kernel_graph* graph = best_graphs[i];
-        if (!graph || graph->empty())
+        if (!graph || graph->empty()) 
             continue;
 
         token_ptr tok = graph->peek();
-        if (!tok || tok->getType() != LAUNCH)
+        if (!tok || tok->getType() != LAUNCH) 
             continue;
 
         int cost = heuristic->getCost(tok);
-        if (cost == ERROR_CODE)
+        if (cost == ERROR_CODE) 
             continue;
 
         if (available_SM >= cost) {
@@ -204,11 +217,10 @@ void core_usage_behavior::schedule() {
         }
     }
 
-    //again re-rank if we have less than 2 operations to consider
+    // Re-rank if we have less than 2 operations left
     if (best_graphs.size() <= 2) {
         rank(5);
     }
 }
-
 
 } // namespace caf::cuda
