@@ -33,6 +33,7 @@ void core_usage_behavior::reclaim(int blocks_consumed,
 	       	int time,
 	       	int dependency_number) {
 
+	std::cout << "blocks is " <<  blocks_consumed << "\n";
 	available_SM += blocks_consumed;
 	available_memory+= memory_returned;
 	//will eventually do something with the dependency number and stalling or maybe not
@@ -62,7 +63,7 @@ void core_usage_behavior::receive(const token_ptr& tok) {
         create_new_graph(tok);
 	
 	//if we have the resources to dispatch, just do it right away 
-	if (available_SM -  heuristic->getCost(tok) > 0)
+	if (available_SM -  heuristic->getCost(tok) >= 0)
 	 {
 		if (tok->isIndependent()) 
 		{
