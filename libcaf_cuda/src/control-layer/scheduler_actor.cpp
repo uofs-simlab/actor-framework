@@ -47,6 +47,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
             state.current_behavior->on_exit();   // cleanup current behavior
             state.current_behavior = next;       // swap behavior
             state.current_behavior->on_enter();  // init new behavior
+            std::cout << "[INFO] Behavior changed to: " << state.current_behavior->name() << "\n";
 	    return true; // behavior changed
         } else {
             std::cout << "[INFO] Behavior already active: " << state.current_behavior->name() << "\n";
@@ -58,31 +59,22 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
     }
 	}
 	,
-        [=](std::vector<token_ptr> tokens) {
+        [&](std::vector<token_ptr> tokens) {
             for (size_t i = 0; i < tokens.size(); ++i) {
                 state.current_behavior->receive(tokens[i]);
             }
         },
+
+	//can send the scheduler a message if you want 
+	//it is more than happy to print it out for you 
         [=](std::string word) {
-            // std::cout << "Received message " << word << "\n";
+             std::cout << "Received message " << word << "\n";
         },
-        [=](caf::cuda::mem_ptr<int> token) {
-            if (!token) {
-                std::cout << "Received null mem_ptr\n";
-                return;
-            }
-            if (token->is_scalar()) {
-                std::cout << "Received mem_ptr with scalar value: "
-                          << *token->host_scalar_ptr() << "\n";
-            } else {
-                std::cout << "Received mem_ptr with "
-                          << token->size() << " elements\n";
-                // Optional: print fake data if testing copy_to_host
-                // auto host_data = token->copy_to_host();
-                // for (auto v : host_data) std::cout << v << " ";
-                // std::cout << "\n";
-            }
-        }
+	
+	//message handler for reclaim
+	[&](int value, int memory,int runtime,int dependency) {	
+		state.current_behavior->reclaim(value,memory,runtime,dependency);
+	}
     };
 }
 
