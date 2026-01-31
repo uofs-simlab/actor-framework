@@ -24,12 +24,21 @@ token_ptr make_launch_token(program_ptr prog,
 }
 
 response_token_ptr make_launch_response_token(actor receiver,
-                                     const launch_token& orig,
-				     int device_number,
-				     int stream_id)
+                                              const launch_token& orig,
+                                              int device_number,
+                                              int stream_id,
+                                              int reclaim_value,
+                                              int reclaim_runtime)
 {
-    return response_token_ptr(new launch_response_token(receiver, orig,device_number,stream_id));
+    return response_token_ptr(
+        new launch_response_token(receiver,
+                                  orig,
+                                  device_number,
+                                  stream_id,
+                                  reclaim_value,
+                                  reclaim_runtime));
 }
+
 
 behavior_token_ptr make_behavior_token(std::string name)
 {

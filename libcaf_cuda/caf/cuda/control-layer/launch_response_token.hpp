@@ -15,30 +15,46 @@ namespace caf::cuda {
 // -----------------------------------------------------------------------------
 class CAF_CUDA_EXPORT launch_response_token : public response_token {
 public:
-    // Only here to be compliant with CAF's type system – DO NOT USE directly
+    // Default constructor – only for CAF compliance
     launch_response_token() = default;
 
-    // Construct manually
+    // Construct manually (full control over reclaim fields)
     launch_response_token(caf::actor receiver,
                           nd_range range,
                           int memory_usage,
                           std::string id,
                           int device_num = 0,
-                          int stream_id = 0)
+                          int stream_id = 0,
+                          int reclaim_value = 0,
+                          int reclaim_memory_returned = 0,
+                          int reclaim_runtime = 0,
+                          int reclaim_dependency = 0)
         : response_token(std::move(receiver), device_num, stream_id, memory_usage),
           range_(std::move(range)),
           id_(std::move(id)),
-          released_(false) {}
+          released_(false),
+          reclaim_value_(reclaim_value),
+          reclaim_memory_returned_(reclaim_memory_returned),
+          reclaim_runtime_(reclaim_runtime),
+          reclaim_dependency_(reclaim_dependency) {}
 
     // Construct from a launch_token
+    // Memory returned and dependency are copied from launch_token
     launch_response_token(caf::actor receiver,
                           const launch_token& token,
                           int device_num,
-                          int stream_id)
+                          int stream_id,
+                          int reclaim_value = 0,
+                          int reclaim_runtime = 0)
         : response_token(std::move(receiver), device_num, stream_id, token.getMemoryUsage()),
           range_(token.getRange()),
           id_(token.getId()),
-          released_(false) {}
+          released_(false),
+          reclaim_value_(reclaim_value),
+          reclaim_memory_returned_(token.getMemoryUsage()), // copy from launch_token
+          reclaim_runtime_(reclaim_runtime),
+          reclaim_dependency_(token.getDependency())        // copy from launch_token
+    {}
 
     ~launch_response_token() {
         release();
@@ -59,25 +75,43 @@ public:
         );
     }
 
+    // Release and send reclaim information exactly once
     void release() override {
         bool expected = false;
 
-        // ONLY send if we successfully transition false → true
         if (!released_.compare_exchange_strong(expected, true)) {
-            return; // already released → do nothing
+            return; // already released
         }
 
-        // Real message (commented for testing)
-        // caf::anon_mail(id_, memorySize()).urgent().send(receiver_);
-
-        // Test message
-        caf::anon_mail("Hello world from launch response").urgent().send(receiver_);
+        try {
+            // Send a message containing all four reclaim fields
+            caf::anon_mail(
+                           reclaim_value_,
+                           reclaim_memory_returned_,
+                           reclaim_runtime_,
+                           reclaim_dependency_).urgent().send(receiver_);
+        } catch (...) {
+            // swallow exceptions — destructor safe
+        }
     }
+
+    // Accessors for reclaim fields
+    int reclaim_value() const { return reclaim_value_; }
+    int reclaim_memory_returned() const { return reclaim_memory_returned_; }
+    int reclaim_runtime() const { return reclaim_runtime_; }
+    int reclaim_dependency() const { return reclaim_dependency_; }
+
 
 private:
     nd_range range_;
     std::string id_;
     std::atomic<bool> released_;
+
+    // Reclaim fields
+    int reclaim_value_ = 0;
+    int reclaim_memory_returned_ = 0;
+    int reclaim_runtime_ = 0;
+    int reclaim_dependency_ = 0;
 };
 
 using kernel_launch_token = caf::intrusive_ptr<launch_response_token>;
