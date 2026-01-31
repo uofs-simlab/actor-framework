@@ -269,14 +269,123 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
 }
 
 
+void run_mmul_test_no_scheduler(caf::actor_system& sys, int matrix_size, int num_actors) {
+  if (num_actors < 1) {
+    std::cerr << "[ERROR] Number of actors must be >= 1\n";
+    return;
+  }
+
+  caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+  /*
+  //change the scheduler to core_usage
+  anon_mail(
+	caf::cuda::make_behavior_token("core_usage")
+	).send(mgr.get_scheduler_actor());
+
+  */
+
+
+  // CREATE ONCE
+  auto program =
+      mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+  const int THREADS = 32;
+  const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
+  caf::cuda::nd_range dims(
+      BLOCKS, BLOCKS, 1,
+      THREADS, THREADS, 1);
+
+  caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
+
+  for (int i = 0; i < num_actors; ++i) {
+    sys.spawn(
+        mmul_actor_fun,
+        exit_actor,
+        matrix_size,
+        program,
+        dims);
+  }
+
+  sys.await_all_actors_done();
+}
+
+
+
+template <class Fn>
+double time_run(Fn&& fn) {
+  auto start = std::chrono::steady_clock::now();
+  fn();
+  auto end = std::chrono::steady_clock::now();
+  std::chrono::duration<double> elapsed = end - start;
+  return elapsed.count();
+}
+
+
+
+void run_mmul_scaling_tests(caf::actor_system& sys,
+                            caf::cuda::manager_config man_config) {
+  const int min_size   = 10;
+  const int max_size   = 1024;
+  const int min_actors = 1;
+  const int max_actors = 1024;
+
+  // Matrix sizes: 10, 32, 64, 128, ..., 1024
+  std::vector<int> matrix_sizes = {10};
+  for (int s = 32; s <= max_size; s *= 2)
+    matrix_sizes.push_back(s);
+
+  // Actor counts: 1, 2, 4, ..., 1024
+  std::vector<int> actor_counts;
+  for (int a = min_actors; a <= max_actors; a *= 2)
+    actor_counts.push_back(a);
+
+  std::cout << "=== MMUL Scaling Tests ===\n";
+  std::cout << "Columns:\n";
+  std::cout << "matrix_size actors scheduler_time(s) no_scheduler_time(s)\n";
+
+  for (int size : matrix_sizes) {
+    for (int actors : actor_counts) {
+
+      std::cout << "\n[RUN] matrix_size=" << size
+                << ", actors=" << actors << "\n";
+
+      /* ---------------- Scheduler enabled ---------------- */
+      caf::cuda::manager::init(sys, man_config);
+
+      double sched_time = time_run([&] {
+        run_mmul_test(sys, size, actors);
+      });
+
+      /* ---------------- No scheduler ---------------- */
+      caf::cuda::manager::init(sys, man_config);
+
+      double no_sched_time = time_run([&] {
+        run_mmul_test_no_scheduler(sys, size, actors);
+      });
+
+      std::cout << std::fixed << std::setprecision(6)
+                << "RESULT "
+                << size << " "
+                << actors << " "
+                << sched_time << " "
+                << no_sched_time << "\n";
+    }
+  }
+
+  std::cout << "\n=== MMUL Scaling Tests Complete ===\n";
+}
+
+
+
+
+
 void caf_main(caf::actor_system& sys) {
   
-	
-
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
-	caf::cuda::manager::init(sys,man_config);
-       	run_mmul_test(sys,10,500);
-	
+	//caf::cuda::manager::init(sys,man_config);
+       	//run_mmul_test(sys,512,512);	
+	run_mmul_scaling_tests(sys,man_config);
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
 	//caf::cuda::manager::init(sys,man_config);
