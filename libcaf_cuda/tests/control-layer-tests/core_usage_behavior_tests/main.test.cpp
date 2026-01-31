@@ -358,12 +358,21 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
   caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
 
   for (int i = 0; i < num_actors; ++i) {
+    /*
     sys.spawn(
         mmul_actor_fun,
         exit_actor,
         matrix_size,
         program,
         dims);
+    */
+      sys.spawn(
+        mmul_actor_fun_no_verify,
+        exit_actor,
+        matrix_size,
+        program,
+        dims);
+    
   }
 
   sys.await_all_actors_done();
@@ -400,12 +409,23 @@ void run_mmul_test_no_scheduler(caf::actor_system& sys, int matrix_size, int num
   caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
 
   for (int i = 0; i < num_actors; ++i) {
-    sys.spawn(
+    
+	sys.spawn(
+        mmul_actor_fun_no_verify,
+        exit_actor,
+        matrix_size,
+        program,
+        dims);
+    
+  
+	/*  
+sys.spawn(
         mmul_actor_fun,
         exit_actor,
         matrix_size,
         program,
         dims);
+  */
   }
 
   sys.await_all_actors_done();
@@ -486,8 +506,8 @@ void run_mmul_scaling_tests(caf::actor_system& sys,
 void caf_main(caf::actor_system& sys) {
   
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
-	//caf::cuda::manager::init(sys,man_config);
-       	//run_mmul_test(sys,512,512);	
+//	caf::cuda::manager::init(sys,man_config);
+  //     	run_mmul_test(sys,512,10);	
 	run_mmul_scaling_tests(sys,man_config);
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
