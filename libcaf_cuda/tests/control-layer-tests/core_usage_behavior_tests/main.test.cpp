@@ -299,11 +299,6 @@ caf::behavior mmul_actor_fun_no_verify(
 				caf::cuda::manager& mgr = caf::cuda::manager::get();
 
 				//create program and dims   
-				auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
-				const int THREADS = 32;
-				const int BLOCKS = (N + THREADS - 1) / THREADS;
-				caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
 				//create args
 				auto arg1 = caf::cuda::create_in_arg(matrixA);
 				auto arg2 = caf::cuda::create_in_arg(matrixB);
@@ -323,6 +318,64 @@ caf::behavior mmul_actor_fun_no_verify(
 				
 	};
 }
+
+
+
+// Stateful actor behavior
+// this actor does not invoke the scheduler at all 
+caf::behavior mmul_actor_fun_no_schedule(
+    caf::stateful_actor<mmul_actor_state>* self,
+    caf::actor exit_actor,
+    int N,
+    caf::cuda::program_ptr program,
+    caf::cuda::nd_range dims) {
+
+    self->state().N = N;
+
+    std::vector<int> matrix1(N * N);
+    std::vector<int> matrix2(N * N);
+
+    // send initial mail to self
+    self->mail(matrix1, matrix2, N).send(self);
+
+    return {
+        // GPU atom + matrices + N
+        [=](const std::vector<int>& matrixA,
+            const std::vector<int>& matrixB,
+            int N_local) {   // avoid shadowing outer N
+            caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+            auto arg1 = caf::cuda::create_in_arg(matrixA);
+            auto arg2 = caf::cuda::create_in_arg(matrixB);
+            auto arg3 = caf::cuda::create_out_arg(N_local * N_local);
+            auto arg4 = caf::cuda::create_in_arg(N_local);
+
+            auto tempC = mmul.run(program, dims, self->state().id, arg1, arg2, arg3, arg4);
+            std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
+
+            self->quit();
+        },
+
+        // CPU verification
+        [=](const std::vector<int>& matrixA,
+            const std::vector<int>& matrixB,
+            const std::vector<int>& matrixC,
+            int N_local) {
+
+            std::vector<int> result(N_local * N_local);
+            serial_matrix_multiply(matrixA, matrixB, result, N_local);
+
+            if (result == matrixC) {
+                std::cout << "actor with id " << self->state().id << " references match\n";
+            } else {
+                std::cout << "actor with id " << self->state().id << " references did not match\n";
+            }
+
+            self->quit();
+        }
+    };
+}
+
 
 
 
@@ -506,9 +559,9 @@ void run_mmul_scaling_tests(caf::actor_system& sys,
 void caf_main(caf::actor_system& sys) {
   
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
-//	caf::cuda::manager::init(sys,man_config);
-  //     	run_mmul_test(sys,512,10);	
-	run_mmul_scaling_tests(sys,man_config);
+	caf::cuda::manager::init(sys,man_config);
+       //	run_mmul_test(sys,256,1000);	
+//	run_mmul_scaling_tests(sys,man_config);
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
 	//caf::cuda::manager::init(sys,man_config);
