@@ -9,7 +9,7 @@ public:
     void on_enter() override;
     void schedule() override;
     void receive(const token_ptr& tok) override;
-
+    std::string name() const override {return "green\n";}
 };
 
 } // namespace caf::cuda
