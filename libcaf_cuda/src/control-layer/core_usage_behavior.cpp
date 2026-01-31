@@ -25,6 +25,7 @@ void core_usage_behavior::init_state() {
 
 void core_usage_behavior::on_enter() {
     // TODO implement
+	//std::cout << "Hello\n";
 }
 
 void core_usage_behavior::reclaim(int blocks_consumed,
@@ -44,13 +45,20 @@ void core_usage_behavior::reclaim(int blocks_consumed,
 
 void core_usage_behavior::process_launch_token(const token_ptr& tok,int stream_id )  {
 
-	scheduler_actor_behavior::process_launch_token(tok,stream_id);
-	available_SM -= heuristic->getCost(tok);
+	int cost = heuristic -> getCost(tok);
+
+	const auto& launch = static_cast<const launch_token&>(*tok);
+	auto response = make_launch_response_token(state_.self, launch, state_.device_number, stream_id,cost);
+	anon_mail(response).send(launch.getReplyActor());
+	available_SM -= cost;
 }
 
 
 void core_usage_behavior::receive(const token_ptr& tok) {
-    if (tok->getType() == LAUNCH) {
+
+	//std::cout <<"YARRRRRRRRRRRRRRRRRRRRR\n ";
+    
+	if (tok->getType() == LAUNCH) {
         create_new_graph(tok);
 	
 	//if we have the resources to dispatch, just do it right away 
