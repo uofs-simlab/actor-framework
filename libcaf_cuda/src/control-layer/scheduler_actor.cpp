@@ -35,21 +35,21 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
     state.current_behavior->on_enter();
 
     return {
-        [=](const token_ptr& tok) {
+        [&](const token_ptr& tok) {
             // std::cout << "Received token\n";
             state.current_behavior->receive(tok);
         },
-        [&state](const caf::cuda::behavior_token_ptr& tok) -> bool {
+        
+   [&state](const caf::cuda::behavior_token_ptr& tok) -> bool {
     auto* next = state.table.get(*tok);
     if (next) {
         if (next != state.current_behavior) {
             state.current_behavior->on_exit();   // cleanup current behavior
             state.current_behavior = next;       // swap behavior
             state.current_behavior->on_enter();  // init new behavior
-            std::cout << "[INFO] Behavior changed to: " << tok->name() << "\n";
-            return true; // behavior changed
+	    return true; // behavior changed
         } else {
-            std::cout << "[INFO] Behavior already active: " << tok->name() << "\n";
+            std::cout << "[INFO] Behavior already active: " << state.current_behavior->name() << "\n";
             return false; // behavior was already current
         }
     } else {
