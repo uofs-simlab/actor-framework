@@ -607,16 +607,142 @@ void run_mmul_scaling_tests(caf::actor_system& sys,
 
     std::cout << "\n=== MMUL Scaling Tests Complete ===\n";
 }
+void run_mmul_mixed_batch_one_mode(
+    caf::actor_system& sys,
+    const std::vector<int>& sizes,
+    int num_actors,
+    bool use_scheduler_actor,
+    bool use_core_usage_behavior,
+    bool randomize = false)
+{
+    caf::cuda::manager& mgr = caf::cuda::manager::get(); // SAFE NOW
+
+    if (use_scheduler_actor && use_core_usage_behavior) {
+        anon_mail(caf::cuda::make_behavior_token("core_usage"))
+            .send(mgr.get_scheduler_actor());
+    }
+
+    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
+
+    std::mt19937 rng(123456);
+    std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
+
+    const int THREADS = 32;
+
+    for (int i = 0; i < num_actors; ++i) {
+        int N = randomize ? sizes[dist(rng)] : sizes[i % sizes.size()];
+        int BLOCKS = (N + THREADS - 1) / THREADS;
+
+        caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+
+        if (use_scheduler_actor) {
+            sys.spawn(
+                mmul_actor_fun_no_verify,
+                exit_actor,
+                N,
+                program,
+                dims);
+        } else {
+            sys.spawn(
+                mmul_actor_fun_no_schedule,
+                exit_actor,
+                N,
+                program,
+                dims);
+        }
+    }
+
+    sys.await_all_actors_done();
+}
+
+
+
+
+void run_mmul_mixed_batch_comparison(
+    caf::actor_system& sys,
+    const std::vector<int>& sizes,
+    int num_actors)
+{
+    std::cout << "\n=== MMUL Mixed-Size Batch Comparison ===\n";
+    std::cout << "scheduler actors sizes time_seconds\n\n";
+
+    /* ================= core_usage ================= */
+    {
+        caf::cuda::manager_config cfg(true);
+        caf::cuda::manager::init(sys, cfg);
+
+        double t = time_run([&] {
+            run_mmul_mixed_batch_one_mode(
+                sys, sizes, num_actors,
+                /*use_scheduler_actor=*/true,
+                /*use_core_usage_behavior=*/true);
+        });
+
+        std::cout << "RESULT core_usage "
+                  << num_actors << " "
+                  << t << "\n";
+
+        caf::cuda::manager::shutdown();
+    }
+
+    /* ================= green-light only ================= */
+    {
+        caf::cuda::manager_config cfg(true);
+        caf::cuda::manager::init(sys, cfg);
+
+        double t = time_run([&] {
+            run_mmul_mixed_batch_one_mode(
+                sys, sizes, num_actors,
+                /*use_scheduler_actor=*/true,
+                /*use_core_usage_behavior=*/false);
+        });
+
+        std::cout << "RESULT green_light_only "
+                  << num_actors << " "
+                  << t << "\n";
+
+        caf::cuda::manager::shutdown();
+    }
+
+    /* ================= no scheduler ================= */
+    {
+        caf::cuda::manager_config cfg(false);
+        caf::cuda::manager::init(sys, cfg);
+
+        double t = time_run([&] {
+            run_mmul_mixed_batch_one_mode(
+                sys, sizes, num_actors,
+                /*use_scheduler_actor=*/false,
+                /*use_core_usage_behavior=*/false);
+        });
+
+        std::cout << "RESULT none "
+                  << num_actors << " "
+                  << t << "\n";
+
+        caf::cuda::manager::shutdown();
+    }
+
+    std::cout << "\n=== Comparison Complete ===\n";
+}
 
 
 
 void caf_main(caf::actor_system& sys) {
   
-	caf::cuda::manager_config man_config(true); //turns the scheduler on
+//	caf::cuda::manager_config man_config(true); //turns the scheduler on
 //	caf::cuda::manager::init(sys,man_config);
        //	run_mmul_test(sys,256,1000);	
-	run_mmul_scaling_tests(sys,man_config);
-	//tests will delete the old manager so will have to reinit if you do this 
+//	run_mmul_scaling_tests(sys,man_config);
+
+   std::vector<int> sizes = {32, 64, 128, 256, 512, 1024};
+    const int num_actors = 200;
+ // Option A: round-robin distribution (deterministic)
+    run_mmul_mixed_batch_comparison(sys, sizes, num_actors);    
+
+//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
 	//caf::cuda::manager::init(sys,man_config);
 }
