@@ -132,95 +132,107 @@ void core_usage_behavior::rank(std::size_t max_best = 5) {
     //CUT OUT EMPTY GRAPHS
     struct candidate {
         int cost;
-        kernel_graph* graph;
+        graph_ref ref;
     };
-
     std::vector<candidate> candidates;
 
-    // Step 1: gather all candidate graphs from dependent graphs
+    // Dependent graphs
     for (auto& [dep, graph] : graphs) {
-        if (graph.empty())
-            continue;
-
-        token_ptr tok = graph.peek();  // non-destructive
-        if (!tok || tok->getType() != LAUNCH)
-            continue;
-
-        int cost = heuristic->getCost(tok);
-        if (cost == ERROR_CODE)
-            continue;
-
-        candidates.push_back({cost, &graph});
-    }
-
-    // Step 1b: gather all candidate graphs from independent_graphs
-    for (auto& graph : independent_graphs) {
-        if (graph.empty())
-            continue;
+        if (graph.empty()) continue;
 
         token_ptr tok = graph.peek();
-        if (!tok || tok->getType() != LAUNCH)
-            continue;
+        if (!tok || tok->getType() != LAUNCH) continue;
 
         int cost = heuristic->getCost(tok);
-        if (cost == ERROR_CODE)
-            continue;
+        if (cost == ERROR_CODE) continue;
 
-        candidates.push_back({cost, &graph});
+        candidates.push_back({cost, graph_ref{graph_ref::kind_t::dependent, dep}});
     }
 
-    if (candidates.empty())
-        return;
+    // Independent graphs
+    for (std::size_t i = 0; i < independent_graphs.size(); ++i) {
+        auto& graph = independent_graphs[i];
+        if (graph.empty()) continue;
 
-    // Step 2: sort by ascending cost (cheap kernels first)
+        token_ptr tok = graph.peek();
+        if (!tok || tok->getType() != LAUNCH) continue;
+
+        int cost = heuristic->getCost(tok);
+        if (cost == ERROR_CODE) continue;
+
+        candidates.push_back({cost, graph_ref{graph_ref::kind_t::independent, -1, i}});
+    }
+
+    if (candidates.empty()) return;
+
+    // Sort by ascending cost
     std::sort(candidates.begin(), candidates.end(),
               [](const candidate& a, const candidate& b) {
                   return a.cost < b.cost;
               });
 
-    // Step 3: keep top N candidates
-    const std::size_t limit = std::min(max_best, candidates.size());
+    // Keep top N
+    const auto limit = std::min(max_best, candidates.size());
     for (std::size_t i = 0; i < limit; ++i) {
-        best_graphs.push_back(candidates[i].graph);
+        best_graphs.push_back(candidates[i].ref);
     }
 }
+
+
+kernel_graph* core_usage_behavior::resolve(const graph_ref& ref) {
+    switch (ref.kind) {
+        case graph_ref::kind_t::dependent: {
+            auto it = graphs.find(ref.dependency);
+            if (it == graphs.end()) return nullptr;
+            return &it->second;
+        }
+        case graph_ref::kind_t::independent: {
+            if (ref.index >= independent_graphs.size()) return nullptr;
+            return &independent_graphs[ref.index];
+        }
+    }
+    return nullptr;
+}
+
 
 
 
 void core_usage_behavior::schedule() {
-    // If there are only 2 kernels to consider then rerank
-    if (best_graphs.size() <= 2) {
-        rank(5);
+    // Re-rank if we have no best graphs
+    if (best_graphs.empty()) {
+        rank(); // uses default max_best
         if (best_graphs.empty()) {
-            return;
+            return; // nothing to schedule
         }
     }
 
-    // Greedy: largest-cost first
+    // iterate backwards so we can safely erase elements
     for (int i = static_cast<int>(best_graphs.size()) - 1; i >= 0; --i) {
-        kernel_graph* graph = best_graphs[i];
-        if (!graph || graph->empty()) 
+        kernel_graph* graph = resolve(best_graphs[i]);
+        if (!graph || graph->empty()) {
+            best_graphs.erase(best_graphs.begin() + i);
             continue;
+        }
 
         token_ptr tok = graph->peek();
-        if (!tok || tok->getType() != LAUNCH) 
-            continue;
+        if (!tok || tok->getType() != LAUNCH) {
+            continue; // leave the graph in best_graphs for next round
+        }
 
         int cost = heuristic->getCost(tok);
-        if (cost == ERROR_CODE) 
-            continue;
+        if (cost == ERROR_CODE) continue;
 
         if (available_SM >= cost) {
             tok = graph->getOperation();
             process_launch_token(tok, graph->stream_id());
+
+            // **remove graph immediately after picking it**
             best_graphs.erase(best_graphs.begin() + i);
         }
     }
-
-    // Re-rank if we have less than 2 operations left
-    if (best_graphs.size() <= 2) {
-        rank(5);
-    }
 }
+
+
+
 
 } // namespace caf::cuda

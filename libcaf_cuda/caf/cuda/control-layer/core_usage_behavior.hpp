@@ -43,7 +43,7 @@ private:
    //data structures to manage dependencies
    std::unordered_map<int,kernel_graph> graphs;
    std::vector<kernel_graph> independent_graphs;
-   std::vector<kernel_graph*> best_graphs; //should contain top 5-10 best selections ideally or something along the lines
+   std::vector<graph_ref> best_graphs; //should contain top 5-10 best selections ideally or something along the lines
 
    void init_state();
    void create_new_graph(const token_ptr& token); //this should either add to indepedent or graphs data structure
@@ -53,7 +53,7 @@ private:
 
    int get_next_stream(); // this should return the next stream based on some decisions
    void dummy_schedule(); //just a test scheduler algorthim do not use seriously
-
+   kernel_graph* resolve(const graph_ref& ref);
 };
 
 } // namespace caf::cuda

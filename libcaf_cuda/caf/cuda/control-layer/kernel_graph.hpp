@@ -71,5 +71,24 @@ private:
     std::vector<token_ptr> operations;
 };
 
+
+
+struct graph_ref {
+    enum class kind_t {
+        dependent,
+        independent
+    };
+
+    kind_t kind;
+
+    // Only valid if kind == dependent
+    int dependency = -1;
+
+    // Only valid if kind == independent
+    std::size_t index = 0;
+};
+
+
+
 } // namespace caf::cuda
 
