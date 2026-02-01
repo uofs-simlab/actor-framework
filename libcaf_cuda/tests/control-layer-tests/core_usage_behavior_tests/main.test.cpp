@@ -730,6 +730,100 @@ void run_mmul_mixed_batch_comparison(
 
 
 
+void test_core_usage_uniform_mmul(
+    caf::actor_system& sys,
+    int matrix_size,
+    int num_actors)
+{
+    std::cout << "\n[TEST] core_usage uniform matrix size\n";
+    std::cout << "N=" << matrix_size
+              << " actors=" << num_actors << "\n";
+
+    caf::cuda::manager_config cfg(true);
+    caf::cuda::manager::init(sys, cfg);
+
+    caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+    // force core_usage behavior
+    anon_mail(caf::cuda::make_behavior_token("core_usage"))
+        .send(mgr.get_scheduler_actor());
+
+    auto program =
+        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+    const int THREADS = 32;
+    const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
+    caf::cuda::nd_range dims(
+        BLOCKS, BLOCKS, 1,
+        THREADS, THREADS, 1);
+
+    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
+
+    for (int i = 0; i < num_actors; ++i) {
+        sys.spawn(
+            mmul_actor_fun_no_verify,
+            exit_actor,
+            matrix_size,
+            program,
+            dims);
+    }
+
+    sys.await_all_actors_done();
+    caf::cuda::manager::shutdown();
+
+    std::cout << "[PASS] core_usage uniform test complete\n";
+}
+
+
+
+void test_core_usage_mixed_mmul(
+    caf::actor_system& sys,
+    const std::vector<int>& sizes,
+    int num_actors)
+{
+    std::cout << "\n[TEST] core_usage mixed matrix sizes\n";
+    std::cout << "actors=" << num_actors << "\n";
+
+    caf::cuda::manager_config cfg(true);
+    caf::cuda::manager::init(sys, cfg);
+
+    caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+    anon_mail(caf::cuda::make_behavior_token("core_usage"))
+        .send(mgr.get_scheduler_actor());
+
+    auto program =
+        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
+
+    const int THREADS = 32;
+
+    for (int i = 0; i < num_actors; ++i) {
+        int N = sizes[i % sizes.size()];
+
+        int BLOCKS = (N + THREADS - 1) / THREADS;
+        caf::cuda::nd_range dims(
+            BLOCKS, BLOCKS, 1,
+            THREADS, THREADS, 1);
+
+        sys.spawn(
+            mmul_actor_fun_no_verify,
+            exit_actor,
+            N,
+            program,
+            dims);
+    }
+
+    sys.await_all_actors_done();
+    caf::cuda::manager::shutdown();
+
+    std::cout << "[PASS] core_usage mixed-size test complete\n";
+}
+
+
+
+
 void caf_main(caf::actor_system& sys) {
   
 //	caf::cuda::manager_config man_config(true); //turns the scheduler on
