@@ -22,7 +22,6 @@ public:
 int getCost(const program_ptr& prog,
             const nd_range& range) override {
 
-  scoped_timer timer("sm_usage_heuristic::getCost");
   try {
     int key = prog->getHash() ^ static_cast<int>(range.getHash());
 
