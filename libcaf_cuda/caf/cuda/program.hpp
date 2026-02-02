@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <functional>
 #include <vector>
 #include <unordered_map>
 #include <atomic>
@@ -41,6 +42,9 @@ public:
 
     std::string getName() {return name_;}
 
+    int getHash() const {return hashValue;}
+
+
 private:
   /// Internal helper to load the kernel modules on all devices.
   void load_kernels(bool is_fatbin);
@@ -49,6 +53,9 @@ private:
   std::vector<char> binary_;               ///< The binary or PTX of the program
   std::unordered_map<int, CUfunction> kernels_; ///< Device ID -> CUfunction mapping
   mutable std::atomic<size_t> ref_count_{0};
+  std::hash<std::string> hasher;
+  int hashValue = 0;
+
 };
 
 /// Alias for an intrusive pointer to a program
