@@ -1,5 +1,6 @@
 #include "caf/cuda/control-layer/all-control-layer.hpp"
 #include "caf/cuda/control-layer/core_usage_behavior.hpp"
+#include "caf/cuda/control-layer/scheduler-functions/profiler.hpp"
 #include "caf/cuda/manager.hpp"
 #include "caf/cuda/device.hpp"
 
