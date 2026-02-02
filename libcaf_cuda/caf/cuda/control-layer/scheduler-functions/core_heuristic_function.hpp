@@ -35,26 +35,27 @@ public:
 
 
   int getCost(const program_ptr& prog,
-              const nd_range& range) override {
-    try {
-      const std::string key =
-        prog->getName() + range.to_string();
+            const nd_range& range) override {
+  try {
+    // Use integer hashes instead of concatenated strings
+    int key = prog->getHash() ^ static_cast<int>(range.getHash());
 
-      auto it = values_.find(key);
-      if (it != values_.end())
-        return it->second;
+    auto it = values_.find(key);
+    if (it != values_.end())
+      return it->second;
 
-      int cost = dev_->max_active_blocks_per_sm(prog, range);
-      values_[key] = cost;
-      return cost;
-    }
-    catch (const std::exception&) {
-      return ERROR_CODE;
-    }
-    catch (...) {
-      return ERROR_CODE;
-    }
+    int cost = dev_->max_active_blocks_per_sm(prog, range);
+    values_[key] = cost;
+    return cost;
   }
+  catch (const std::exception&) {
+    return ERROR_CODE;
+  }
+  catch (...) {
+    return ERROR_CODE;
+  }
+}
+
 
 private:
   device_ptr dev_;

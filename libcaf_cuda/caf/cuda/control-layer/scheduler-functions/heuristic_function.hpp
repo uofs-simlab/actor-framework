@@ -46,7 +46,7 @@ public:
 
 protected:
   /// Heuristic-specific values
-  std::unordered_map<std::string, int> values_;
+  std::unordered_map<int, int> values_;
 };
 
 } // namespace caf::cuda
