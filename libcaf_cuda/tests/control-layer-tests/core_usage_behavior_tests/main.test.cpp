@@ -34,7 +34,7 @@ caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int lim
 		[=](int num_completed) {
 			self->state().completed += num_completed;
 			
-			std::cout << "Actors finished is " << self->state().completed << "\n";
+			//std::cout << "Actors finished is " << self->state().completed << "\n";
 			if (self->state().completed >= limit) {
 			
 				caf::cuda::manager::shutdown();
@@ -345,7 +345,7 @@ caf::behavior mmul_actor_fun_no_schedule(
             int N_local) {   // avoid shadowing outer N
             
 	    
-    	    std::cout << "Hello\n";
+    	    //std::cout << "Hello\n";
 	    caf::cuda::manager& mgr = caf::cuda::manager::get();
 
             auto arg1 = caf::cuda::create_in_arg(matrixA);
@@ -567,7 +567,9 @@ void run_mmul_scaling_tests(caf::actor_system& sys,
             caf::cuda::manager::shutdown(); // make sure manager is cleaned up
 
             /* ================= Scheduler-disabled actor (still uses green-light) ================= */
-            caf::cuda::manager::init(sys, man_config); // init with scheduler
+
+/*
+	    caf::cuda::manager::init(sys, man_config); // init with scheduler
             std::cout << "\n[RUN] scheduler=green_light_only "
                       << "matrix_size=" << size
                       << " actors=" << actors << "\n";
@@ -584,6 +586,7 @@ void run_mmul_scaling_tests(caf::actor_system& sys,
 
             caf::cuda::manager::shutdown();
 
+	    */
             /* ================= No scheduler at all actor ================= */
             caf::cuda::manager_config no_sched_config(false); // disable scheduler
             caf::cuda::manager::init(sys, no_sched_config);
@@ -688,15 +691,18 @@ void run_mmul_mixed_batch_comparison(
     }
 
     /* ================= green-light only ================= */
+   
+    /*
     {
+	    std::cout << "Starting green_light tests\n";
         caf::cuda::manager_config cfg(true);
         caf::cuda::manager::init(sys, cfg);
 
         double t = time_run([&] {
             run_mmul_mixed_batch_one_mode(
                 sys, sizes, num_actors,
-                /*use_scheduler_actor=*/true,
-                /*use_core_usage_behavior=*/false);
+               true,
+                false);
         });
 
         std::cout << "RESULT green_light_only "
@@ -706,6 +712,8 @@ void run_mmul_mixed_batch_comparison(
         caf::cuda::manager::shutdown();
     }
 
+    */
+	
     /* ================= no scheduler ================= */
     {
         caf::cuda::manager_config cfg(false);
@@ -822,19 +830,85 @@ void test_core_usage_mixed_mmul(
 }
 
 
+void run_mmul_fixed_256_batch_comparison(
+    caf::actor_system& sys,
+    int num_actors)
+{
+    // All actors run the same matrix size: 256
+    std::vector<int> sizes(num_actors, 256);
+
+    std::cout << "\n=== MMUL Fixed-Size (256) Batch Comparison ===\n";
+    std::cout << "scheduler actors size time_seconds\n\n";
+
+    /* ================= core_usage ================= */
+    {
+        caf::cuda::manager_config cfg(true);
+        caf::cuda::manager::init(sys, cfg);
+
+        double t = time_run([&] {
+            run_mmul_mixed_batch_one_mode(
+                sys,
+                sizes,
+                num_actors,
+                /*use_scheduler_actor=*/true,
+                /*use_core_usage_behavior=*/true);
+        });
+
+        std::cout << "RESULT core_usage "
+                  << num_actors << " 256 "
+                  << t << "\n";
+
+        caf::cuda::manager::shutdown();
+    }
+
+    /* ================= no scheduler ================= */
+    {
+        caf::cuda::manager_config cfg(false);
+        caf::cuda::manager::init(sys, cfg);
+
+        double t = time_run([&] {
+            run_mmul_mixed_batch_one_mode(
+                sys,
+                sizes,
+                num_actors,
+                /*use_scheduler_actor=*/false,
+                /*use_core_usage_behavior=*/false);
+        });
+
+        std::cout << "RESULT none "
+                  << num_actors << " 256 "
+                  << t << "\n";
+
+        caf::cuda::manager::shutdown();
+    }
+
+    std::cout << "\n=== Fixed-256 Comparison Complete ===\n";
+}
+
+
+
 
 
 void caf_main(caf::actor_system& sys) {
   
-//	caf::cuda::manager_config man_config(true); //turns the scheduler on
-//	caf::cuda::manager::init(sys,man_config);
-       //	run_mmul_test(sys,256,1000);	
-//	run_mmul_scaling_tests(sys,man_config);
+	//caf::cuda::manager_config man_config(true); //turns the scheduler on
+	//caf::cuda::manager::init(sys,man_config);
+        // run_mmul_test(sys,10,64);	
+	//run_mmul_scaling_tests(sys,man_config);
 
    std::vector<int> sizes = {32, 64, 128, 256, 512, 1024};
     const int num_actors = 200;
- // Option A: round-robin distribution (deterministic)
-    run_mmul_mixed_batch_comparison(sys, sizes, num_actors);    
+    //run_mmul_mixed_batch_comparison(sys, sizes, num_actors);    
+
+    run_mmul_fixed_256_batch_comparison(sys, /*num_actors=*/200);
+
+
+	 //test_core_usage_uniform_mmul(sys, 256, 1000);
+
+  //std::vector<int> sizes = {32, 64, 128, 256, 512, 1024};
+    //test_core_usage_mixed_mmul(sys, sizes, 200);
+
+
 
 //tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	
