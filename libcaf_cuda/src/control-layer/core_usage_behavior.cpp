@@ -18,7 +18,7 @@ core_usage_behavior::~core_usage_behavior(){
 void core_usage_behavior::init_state() {
     device_ = manager::get().find_device(state_.device_number);
     heuristic.emplace(device_);
-    total_SM = device_->num_sms();
+    total_SM = device_->num_sms() * 16;
     available_SM = total_SM;
     available_memory = static_cast<int>(device_->total_memory_bytes());
     num_streams = state_.num_streams;
@@ -126,11 +126,11 @@ void core_usage_behavior::dummy_schedule() {
     }
 }
 
-void core_usage_behavior::rank(std::size_t max_best = 5) {
+void core_usage_behavior::rank(std::size_t max_best=5) {
+    scoped_timer timer("core_usage_behavior::rank");
+
     best_graphs.clear();
 
-    //TODO FIGURE OUT A WAY TO PUT STATUS IN HERE AND 
-    //CUT OUT EMPTY GRAPHS
     struct candidate {
         int cost;
         graph_ref ref;
@@ -147,7 +147,8 @@ void core_usage_behavior::rank(std::size_t max_best = 5) {
         int cost = heuristic->getCost(tok);
         if (cost == ERROR_CODE) continue;
 
-        candidates.push_back({cost, graph_ref{graph_ref::kind_t::dependent, dep}});
+        candidates.push_back({cost,
+            graph_ref{graph_ref::kind_t::dependent, dep}});
     }
 
     // Independent graphs
@@ -161,18 +162,17 @@ void core_usage_behavior::rank(std::size_t max_best = 5) {
         int cost = heuristic->getCost(tok);
         if (cost == ERROR_CODE) continue;
 
-        candidates.push_back({cost, graph_ref{graph_ref::kind_t::independent, -1, i}});
+        candidates.push_back({cost,
+            graph_ref{graph_ref::kind_t::independent, -1, i}});
     }
 
     if (candidates.empty()) return;
 
-    // Sort by ascending cost
     std::sort(candidates.begin(), candidates.end(),
               [](const candidate& a, const candidate& b) {
                   return a.cost < b.cost;
               });
 
-    // Keep top N
     const auto limit = std::min(max_best, candidates.size());
     for (std::size_t i = 0; i < limit; ++i) {
         best_graphs.push_back(candidates[i].ref);
@@ -180,7 +180,10 @@ void core_usage_behavior::rank(std::size_t max_best = 5) {
 }
 
 
+
 kernel_graph* core_usage_behavior::resolve(const graph_ref& ref) {
+    //scoped_timer timer("core_usage_behavior::resolve");
+
     switch (ref.kind) {
         case graph_ref::kind_t::dependent: {
             auto it = graphs.find(ref.dependency);
@@ -198,40 +201,50 @@ kernel_graph* core_usage_behavior::resolve(const graph_ref& ref) {
 
 
 
+
 void core_usage_behavior::schedule() {
-    // Re-rank if we have no best graphs
+    scoped_timer timer("core_usage_behavior::schedule");
+
     if (best_graphs.empty()) {
-        rank(); // uses default max_best
+        rank(20); // profiled independently
         if (best_graphs.empty()) {
-            return; // nothing to schedule
+            return;
         }
     }
 
-    // iterate backwards so we can safely erase elements
-    for (int i = static_cast<int>(best_graphs.size()) - 1; i >= 0; --i) {
-        kernel_graph* graph = resolve(best_graphs[i]);
-        if (!graph || graph->empty()) {
-            best_graphs.erase(best_graphs.begin() + i);
-            continue;
-        }
-
-        token_ptr tok = graph->peek();
-        if (!tok || tok->getType() != LAUNCH) {
-            continue; // leave the graph in best_graphs for next round
-        }
-
-        int cost = heuristic->getCost(tok);
-        if (cost == ERROR_CODE) continue;
-
-        if (available_SM >= cost) {
-            tok = graph->getOperation();
-            process_launch_token(tok, graph->stream_id());
-
-            // **remove graph immediately after picking it**
-            best_graphs.erase(best_graphs.begin() + i);
-        }
+   for (std::size_t i = 0; i < best_graphs.size(); ) {
+    kernel_graph* graph = resolve(best_graphs[i]);
+    if (!graph || graph->empty()) {
+        best_graphs.erase(best_graphs.begin() + i);
+        continue; // stay at same index
     }
+
+    token_ptr tok = graph->peek();
+    if (!tok || tok->getType() != LAUNCH) {
+        ++i;
+        continue;
+    }
+
+    int cost = heuristic->getCost(tok);
+    if (cost == ERROR_CODE) {
+        ++i;
+        continue;
+    }
+
+    if (available_SM >= cost) {
+        tok = graph->getOperation();
+        process_launch_token(tok, graph->stream_id());
+
+        best_graphs.erase(best_graphs.begin() + i);
+        continue; // stay at same index
+    }
+
+    ++i;
+
+   }
+
 }
+
 
 
 
