@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <stdexcept>
 #include <iostream>
+#include <string>
+#include <functional>
 
 namespace caf::cuda {
 
@@ -19,7 +21,11 @@ public:
                 static_cast<size_t>(gridZ)},
         blockDim{static_cast<size_t>(blockX),
                  static_cast<size_t>(blockY),
-                 static_cast<size_t>(blockZ)} {}
+                 static_cast<size_t>(blockZ)} {
+		 
+			 computeHash();
+		 
+		 }
 
 
   // Constructor from vectors
@@ -60,7 +66,10 @@ public:
  size_t get_num_blocks() const noexcept {
 	  return gridDim[0] * gridDim[1] * gridDim[2];
  }
-
+ // Returns the precomputed hash
+  [[nodiscard]] size_t getHash() const noexcept {
+    return hashValue_;
+  }
 
   ~nd_range() {
 	  //no-op
@@ -86,8 +95,20 @@ public:
 
 private:
   // Dimensions are stored in order of x, y, z
-  dim_vec gridDim{3};
-  dim_vec blockDim{3};
+  dim_vec gridDim{3,0};
+  dim_vec blockDim{3,0};
+  size_t hashValue_{0}; // store precomputed hash
+
+
+   // Precompute hash from to_string
+  void computeHash() {
+    std::hash<std::string> hasher;
+    hashValue_ = hasher(to_string());
+  }
+
+
+
+
 };
 
 } // namespace caf::cuda
