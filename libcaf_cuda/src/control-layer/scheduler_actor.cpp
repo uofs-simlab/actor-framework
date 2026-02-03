@@ -3,6 +3,7 @@
 #include "caf/cuda/control-layer/green_light_behavior.hpp"
 #include "caf/cuda/control-layer/red_light_behavior.hpp"
 #include "caf/cuda/control-layer/core_usage_behavior.hpp"
+#include "caf/cuda/control-layer/single_usage_behavior.hpp"
 #include <string>
 #include <iostream>
 
@@ -24,15 +25,19 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
     static red_light_behavior red_behavior(state);
     static green_light_behavior green_behavior(state);
     static core_usage_behavior core_behavior(state);
+    static single_usage_behavior single_behavior(state);
 
     // populate the behavior table
     state.table.add("red", &red_behavior);
     state.table.add("green",   &green_behavior);
     state.table.add("core_usage",   &core_behavior);
+    state.table.add("single_usage",   &single_behavior);
 
     // default behavior
     state.current_behavior = state.table.get(behavior_token("green"));
     state.current_behavior->on_enter();
+
+
 
     return {
         [&](const token_ptr& tok) {
