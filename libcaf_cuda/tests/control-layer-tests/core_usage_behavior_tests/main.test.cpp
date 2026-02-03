@@ -241,7 +241,9 @@ caf::behavior mmul_actor_fun_no_verify(
     caf::actor exit_actor,
     int N,
     caf::cuda::program_ptr program,
-    caf::cuda::nd_range dims)
+    caf::cuda::nd_range dims,
+    bool request
+    )
 {
 
 	//set the value of N correctly to overide the base option.	
@@ -251,16 +253,17 @@ caf::behavior mmul_actor_fun_no_verify(
 
 	caf::actor scheduler = mgr.get_scheduler_actor();
 
-	//send a launch token
-	caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
-			program,
-			dims,
-			0,
-			"hello",
-			self
-			);
-	self -> mail(launch_token).send(scheduler);
-
+	if (request) {
+		//send a launch token
+		caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
+				program,
+				dims,
+				0,
+				"hello",
+				self
+				);
+		self -> mail(launch_token).send(scheduler);
+	}
 	return {
 
 		[=] (caf::cuda::response_token_ptr res_token) {
@@ -306,6 +309,10 @@ caf::behavior mmul_actor_fun_no_verify(
 				auto arg4 = caf::cuda::create_in_arg(N);
 
 				auto tempC = mmul.run(program,dims,res_token,arg1,arg2,arg3,arg4);
+			
+			
+				//mask the transfer back to the cpu for scheduler
+				res_token -> release();
 				std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
 
 				//std::cout << "GPU ACTOR done  computing\n";
@@ -428,7 +435,8 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
         exit_actor,
         matrix_size,
         program,
-        dims);
+        dims,
+	true);
     
   }
 
@@ -472,7 +480,8 @@ void run_mmul_test_no_scheduler(caf::actor_system& sys, int matrix_size, int num
         exit_actor,
         matrix_size,
         program,
-        dims);
+        dims,
+	true);
     
   
 	/*  
@@ -646,7 +655,8 @@ void run_mmul_mixed_batch_one_mode(
                 exit_actor,
                 N,
                 program,
-                dims);
+                dims,
+		true);
         } else {
             sys.spawn(
                 mmul_actor_fun_no_schedule,
@@ -659,6 +669,66 @@ void run_mmul_mixed_batch_one_mode(
 
     sys.await_all_actors_done();
 }
+
+
+
+
+void run_mmul_mixed_batch_one_mode_bulk(
+    caf::actor_system& sys,
+    const std::vector<int>& sizes,
+    int num_actors,
+    bool randomize = false)
+{
+    caf::cuda::manager& mgr = caf::cuda::manager::get(); // SAFE NOW
+
+        anon_mail(caf::cuda::make_behavior_token("core_usage"))
+            .send(mgr.get_scheduler_actor());
+
+    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
+
+    std::vector<caf::cuda::token_ptr> tokens(num_actors);
+
+    std::mt19937 rng(123456);
+    std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
+
+    const int THREADS = 32;
+
+    for (int i = 0; i < num_actors; ++i) {
+        int N = randomize ? sizes[dist(rng)] : sizes[i % sizes.size()];
+        int BLOCKS = (N + THREADS - 1) / THREADS;
+
+	caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+	caf::actor a = sys.spawn(
+			mmul_actor_fun_no_verify,
+			exit_actor,
+			N,
+			program,
+			dims,
+			false);
+
+	tokens[i] = caf::cuda::make_launch_token(
+			program,
+			dims,
+			0 /*this should not be 0 but its fine for now*/,
+			"hello",
+			a);    
+    }
+
+    
+        anon_mail(tokens)
+            .send(mgr.get_scheduler_actor());
+
+
+    sys.await_all_actors_done();
+}
+
+
+
+
+
+
 
 
 
@@ -676,12 +746,21 @@ void run_mmul_mixed_batch_comparison(
         caf::cuda::manager_config cfg(true);
         caf::cuda::manager::init(sys, cfg);
 
-        double t = time_run([&] {
-            run_mmul_mixed_batch_one_mode(
-                sys, sizes, num_actors,
-                /*use_scheduler_actor=*/true,
-                /*use_core_usage_behavior=*/true);
+	
+        //double t = time_run([&] {
+          //  run_mmul_mixed_batch_one_mode(
+            //    sys, sizes, num_actors,
+              //  /*use_scheduler_actor=*/true,
+               // /*use_core_usage_behavior=*/true);
+       // });
+
+	double t = time_run([&] {
+            run_mmul_mixed_batch_one_mode_bulk(
+                sys, sizes, num_actors);
         });
+
+
+
 
         std::cout << "RESULT core_usage "
                   << num_actors << " "
@@ -773,7 +852,8 @@ void test_core_usage_uniform_mmul(
             exit_actor,
             matrix_size,
             program,
-            dims);
+            dims,
+	    false);
     }
 
     sys.await_all_actors_done();
@@ -820,7 +900,8 @@ void test_core_usage_mixed_mmul(
             exit_actor,
             N,
             program,
-            dims);
+            dims,
+	    false);
     }
 
     sys.await_all_actors_done();
@@ -898,9 +979,10 @@ void caf_main(caf::actor_system& sys) {
 
    std::vector<int> sizes = {32, 64, 128, 256, 512, 1024};
     const int num_actors = 200;
-    //run_mmul_mixed_batch_comparison(sys, sizes, num_actors);    
+    run_mmul_mixed_batch_comparison(sys, sizes, num_actors);    
 
-    run_mmul_fixed_256_batch_comparison(sys, /*num_actors=*/200);
+    run_mmul_mixed_batch_one_mode_bulk(sys,sizes,num_actors);
+    //run_mmul_fixed_256_batch_comparison(sys, /*num_actors=*/200);
 
 
 	 //test_core_usage_uniform_mmul(sys, 256, 1000);
