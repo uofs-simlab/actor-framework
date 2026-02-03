@@ -65,7 +65,8 @@ public:
     const nd_range& getRange() const { return range_; }
 
     const std::string& getId() const { return id_; }
-
+    const std::string& name() const override {return id_;}
+    
     // Return requested number of CUDA blocks
     int getBlocks() const {
         return static_cast<int>(

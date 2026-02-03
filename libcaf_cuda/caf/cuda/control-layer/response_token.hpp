@@ -27,6 +27,7 @@ public:
     int getStreamId() const { return stream_id_; }
     int memorySize() const { return memory_size_; }
     const caf::actor& getReceiver() const { return receiver_; }
+    virtual const std::string& name() const { return default_name;}
 
     // Pure virtual: children must implement release()
     virtual void release() = 0;
@@ -36,6 +37,7 @@ protected:
     int device_number_{0};
     int stream_id_{0};
     int memory_size_{0};  // abstracted memory usage / size
+    std::string default_name = "unknown";
 };
 
 // Typedef for convenience
