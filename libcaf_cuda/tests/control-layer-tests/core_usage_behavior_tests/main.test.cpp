@@ -277,8 +277,30 @@ caf::behavior mmul_actor_fun_no_verify(
 				std::vector<int> matrix2(N*N);
 				matrix2.reserve(N);
 
+
+				caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+				//create program and dims   
+				//create args
+				auto arg1 = caf::cuda::create_in_arg(matrix1);
+				auto arg2 = caf::cuda::create_in_arg(matrix2);
+				auto arg3 = caf::cuda::create_out_arg(N*N);
+				auto arg4 = caf::cuda::create_in_arg(N);
+
+				auto tempC = mmul.run(program,dims,res_token,arg1,arg2,arg3,arg4);
+			
+			
+				//mask the transfer back to the cpu for scheduler
+				res_token -> release();
+				std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
+
+				//std::cout << "GPU ACTOR done  computing\n";
+				// signal exit actor and quit
+				self->mail(1).send(exit_actor);
+				self->quit();
+
 				//std::cout << "GPU ACTOR sending data to compute\n";
-				self -> mail(matrix1,matrix2,res_token,N).send(self);
+			//	self -> mail(matrix1,matrix2,res_token,N).send(self);
 
 			}
 			else {
@@ -978,10 +1000,10 @@ void caf_main(caf::actor_system& sys) {
 	//run_mmul_scaling_tests(sys,man_config);
 
    std::vector<int> sizes = {32, 64, 128, 256, 512, 1024};
-    const int num_actors = 200;
+    const int num_actors = 1000;
     run_mmul_mixed_batch_comparison(sys, sizes, num_actors);    
 
-    run_mmul_mixed_batch_one_mode_bulk(sys,sizes,num_actors);
+    //run_mmul_mixed_batch_one_mode_bulk(sys,sizes,num_actors);
     //run_mmul_fixed_256_batch_comparison(sys, /*num_actors=*/200);
 
 
