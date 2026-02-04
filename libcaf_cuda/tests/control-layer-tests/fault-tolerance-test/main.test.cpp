@@ -29,13 +29,13 @@ struct exit_actor_state {
 
 // --- command runner types (put near top of file) -------------------------
 using initCommand =
-  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::in<int>, caf::cuda::in<unsigned long long>>;
+  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, in<int>, in<unsigned long long>>;
 
 using divCommand  =
-  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, caf::cuda::in<int>>;
+  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, in<int>>;
 
 using sumCommand  =
-  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, caf::cuda::in<int>>;
+  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, in<int>>;
 
 // single instances (can be file-global)
 static initCommand init_cmd;
@@ -55,9 +55,9 @@ struct pipeline_actor_state {
 // --- corrected pipeline_actor -------------------------------------------
 behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
                         actor supervisor,
-                        program_ptr p1,
-                        program_ptr p2,
-                        program_ptr p3,
+                        caf::cuda::program_ptr p1,
+                        caf::cuda::program_ptr p2,
+                        caf::cuda::program_ptr p3,
                         int n)
 {
     // host-side scratch (only used for post-stage2 NaN/Inf detection)
@@ -73,7 +73,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
     };
 
     // helper to create and send a launch token
-    auto launch = [&](program_ptr prog, const std::string& stage) {
+    auto launch = [&](caf::cuda::program_ptr prog, const std::string& stage) {
         auto tok = make_launch_token(
             prog,
             range,
@@ -92,13 +92,6 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 
     return {
 
-        // optional start message (kept for compatibility)
-        [=](const std::string& msg) {
-            if (msg == "start") {
-                // no-op (we already launched tokens above)
-            }
-        },
-
         // handle response tokens by name — opaque to reclaim payload
         [=](caf::cuda::response_token_ptr res_token) mutable {
 
@@ -108,12 +101,12 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
             if (stage == "stage1") {
                 // allocate device buffer for denominators (persist in state)
                 
-		caf::caf::out<float> buffer = caf::cuda::create_out_arg_with_size<float>(n);
-                self->state().d_denoms = init_cmd.transfer_memory(res_token,bufer);
+		out<float> buffer = caf::cuda::create_out_arg_with_size<float>(n);
+                self->state().d_denoms = init_cmd.transfer_memory(res_token,buffer);
 
                 // run kernel on the stream/device from res_token
                 // kernel signature: (float* denominators, int n, unsigned long long seed)
-                init_cmd.run(
+                init_cmd.run_async(
                     p1,
                     range,
                     res_token,                            // uses token's stream/device
@@ -129,14 +122,16 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
             // --------------------- Stage 2: perform_division ---------------------
             if (stage == "stage2") {
                 // allocate device buffer for results (persist in state)
-                self->state().d_results = caf::cuda::create_out_arg<float>(n);
+		    std::vector<float> buffer1(n); 
+
+		self->state().d_results = div_cmd.transfer_memory(res_token,out<float>{buffer1});
 
                 // create a host numerators vector (all ones)
                 std::vector<float> h_nums(n, 1.0f);
 
                 // transfer numerators to device on the token's stream/device
                 // transfer_memory returns a caf::cuda::mem_ptr<float>
-                auto d_nums = div_cmd.transfer_memory(res_token, in_out{h_nums});
+                auto d_nums = div_cmd.transfer_memory(res_token, in_out<float>{h_nums});
 
                 // run division kernel on the token's stream/device:
                 // kernel signature: (float* numerators, float* denominators, float* results, int n)
@@ -177,8 +172,11 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
             // --------------------- Stage 3: sum_results --------------------------
             if (stage == "stage3") {
                 // allocate device scalar for sum result
-                self->state().d_sum = caf::cuda::create_out_arg<float>(1);
+                
+		    std::vector<float> buffer1(1); 
 
+		self->state().d_sum = div_cmd.transfer_memory(res_token,out<float>{buffer1});
+		    
                 // run reduction on the token's stream/device:
                 // kernel signature: (float* results, float* final_sum, int n)
                 sum_cmd.run(
@@ -215,9 +213,9 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 
 behavior supervisor_actor(event_based_actor* self,
                           actor_system& system,
-                          program_ptr p1,
-                          program_ptr p2,
-                          program_ptr p3,
+                          caf::cuda::program_ptr p1,
+                          caf::cuda::program_ptr p2,
+                          caf::cuda::program_ptr p3,
                           int n)
 {
     auto spawn_pipeline = [&]() {
@@ -229,7 +227,6 @@ behavior supervisor_actor(event_based_actor* self,
             p3,
             n
         );
-        anon_send(p, std::string("start"));
     };
 
     spawn_pipeline();
@@ -237,13 +234,13 @@ behavior supervisor_actor(event_based_actor* self,
     return {
         [=](const std::string& msg) {
             if (msg == "crash") {
-                aout(self) << "Pipeline crashed — restarting\n";
+		std::cout << "Pipeline crashed — restarting\n";
                 spawn_pipeline();
             }
             else if (msg == "done") {
-                aout(self) << "Pipeline completed — shutting down\n";
+		std::cout << "Pipeline completed — shutting down\n";
                 caf::cuda::manager::shutdown();
-                system.shutdown();
+		self -> quit();
             }
         }
     };
