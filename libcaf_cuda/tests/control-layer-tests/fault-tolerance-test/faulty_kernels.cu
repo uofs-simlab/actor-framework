@@ -4,11 +4,8 @@
 #include <iostream>
 #include <cstdlib>
 
-// Error checking macro
-#define CUDA_CHECK(err) if (err != cudaSuccess) { std::cerr << "CUDA Error: " << cudaGetErrorString(err) << std::endl; exit(1); }
-
 // Step 1: Initialize denominators with ~50% zeros using cuRAND
-__global__ void init_denominators(float* denominators, int n, unsigned long long seed) {
+extern "C" __global__ void init_denominators(float* denominators, int n, unsigned long long seed) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
 
@@ -19,14 +16,14 @@ __global__ void init_denominators(float* denominators, int n, unsigned long long
 }
 
 // Step 2: Perform division (potential div by zero -> Inf)
-__global__ void perform_division(float* numerators, float* denominators, float* results, int n) {
+extern "C" __global__ void perform_division(float* numerators, float* denominators, float* results, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
     results[idx] = numerators[idx] / denominators[idx];  // Triggers Inf if denominator == 0
 }
 
 // Step 3: Simple reduction to sum results (propagates Inf if present)
-__global__ void sum_results(float* results, float* final_sum, int n) {
+extern "C" __global__ void sum_results(float* results, float* final_sum, int n) {
     extern __shared__ float sdata[];
     int tid = threadIdx.x;
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
