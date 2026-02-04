@@ -45,7 +45,7 @@ private:
     std::vector<kernel_graph> independent_graphs;           // no dependency
 
     // Stream management (even in serial mode, streams can be useful)
-    int num_streams = 0;
+    int num_streams = 1;
     int current_stream = 0;
 
     int64_t available_memory = 0;
