@@ -210,38 +210,39 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 
 
 
+void supervisor_handle_msg(event_based_actor* self,
+                           caf::cuda::program_ptr p1,
+                           caf::cuda::program_ptr p2,
+                           caf::cuda::program_ptr p3,
+                           int n,
+                           const std::string& msg) {
+    if (msg == "crash") {
+        std::cout << "[supervisor] Pipeline crashed — restarting\n";
+        self->system().spawn(pipeline_actor, self, p1, p2, p3, n);
+    } else if (msg == "done") {
+        std::cout << "[supervisor] Pipeline completed — shutting down\n";
+        caf::cuda::manager::shutdown();
+        self->quit();
+    } else {
+        std::cerr << "[supervisor] Unknown message: " << msg << "\n";
+    }
+}
+
+
+
 
 behavior supervisor_actor(event_based_actor* self,
-                          actor_system& system,
                           caf::cuda::program_ptr p1,
                           caf::cuda::program_ptr p2,
                           caf::cuda::program_ptr p3,
-                          int n)
-{
-    auto spawn_pipeline = [&]() {
-        auto p = self->spawn(
-            pipeline_actor,
-            self,
-            p1,
-            p2,
-            p3,
-            n
-        );
-    };
+                          int n) {
+    // Spawn first pipeline safely
+    self->system().spawn(pipeline_actor, self, p1, p2, p3, n);
 
-    spawn_pipeline();
-
+    // Behavior: just route string messages to the helper
     return {
         [=](const std::string& msg) {
-            if (msg == "crash") {
-		std::cout << "Pipeline crashed — restarting\n";
-                spawn_pipeline();
-            }
-            else if (msg == "done") {
-		std::cout << "Pipeline completed — shutting down\n";
-                caf::cuda::manager::shutdown();
-		self -> quit();
-            }
+            supervisor_handle_msg(self, p1, p2, p3, n, msg);
         }
     };
 }
@@ -249,6 +250,33 @@ behavior supervisor_actor(event_based_actor* self,
 
 
 
+void caf_main(caf::actor_system& sys) {
+
+
+
+        caf::cuda::manager_config man_config(true); //turns the scheduler on
+        caf::cuda::manager::init(sys,man_config);
+
+	//change the scheduler to core_usage
+	anon_mail(
+        caf::cuda::make_behavior_token("single_usage")
+        ).send(caf::cuda::manager::get().get_scheduler_actor());
+
+
+	caf::cuda::program_ptr p1 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","init_denominators");
+	caf::cuda::program_ptr p2 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","perform_division");
+	caf::cuda::program_ptr p3 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","sum_results");
+
+	sys.spawn(supervisor_actor,p1,p2,p3,32);
+	sys.await_all_actors_done();
+
+
+}
+
+
+
+
+CAF_MAIN()
 
 
 
