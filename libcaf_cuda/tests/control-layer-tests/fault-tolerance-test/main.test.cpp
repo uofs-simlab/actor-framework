@@ -27,384 +27,224 @@ struct exit_actor_state {
 };
 
 
-caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int limit) {
+// --- command runner types (put near top of file) -------------------------
+using initCommand =
+  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::in<int>, caf::cuda::in<unsigned long long>>;
 
+using divCommand  =
+  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, caf::cuda::in<int>>;
 
-	return {
-		[=](int num_completed) {
-			self->state().completed += num_completed;
-			
-			//std::cout << "Actors finished is " << self->state().completed << "\n";
-			if (self->state().completed >= limit) {
-			
-				caf::cuda::manager::shutdown();
-				self->quit();
-			}
-		}
-	};
+using sumCommand  =
+  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, caf::cuda::in<int>>;
 
+// single instances (can be file-global)
+static initCommand init_cmd;
+static divCommand  div_cmd;
+static sumCommand  sum_cmd;
 
-}
+// --- pipeline actor state (device buffers persist here) ------------------
+struct pipeline_actor_state {
+    int id = rand();
 
-
-
-
-
-
-// Define a custom type ID block for custom actors
-CAF_ADD_ATOM(cuda,shared_mem)
-
-
-
-
-
-// Extend your actor state to keep the start time
-struct mmul_actor_state {
-  static inline const char* name = "mmul_actor";
-
-  int N = 0;
-  int id = rand();
-
-  // timing / bookkeeping only
-  std::chrono::high_resolution_clock::time_point start_time;
-  int times = 0;
+    // device-side buffers that must persist across stages:
+    caf::cuda::mem_ptr<float> d_denoms;
+    caf::cuda::mem_ptr<float> d_results;
+    caf::cuda::mem_ptr<float> d_sum;
 };
 
-
-
-
-
-//commands classes used to launch kernels 
-using mmulCommand = caf::cuda::command_runner<in<int>,in<int>,out<int>,in<int>>;
-using matrixGenCommand = caf::cuda::command_runner<out<int>,in<int>,in<int>,in<int>>;
-
-using mmulAsyncCommand = caf::cuda::command_runner<caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int>,out<int>,in<int>>;
-
-mmulCommand mmul;
-matrixGenCommand randomMatrix;
-mmulAsyncCommand mmulAsync;
-
-
-void serial_matrix_multiply(const std::vector<int>& a,
-                            const std::vector<int>& b,
-                            std::vector<int>& c,
-                            int N) {
-  
-
- for (int i = 0; i < N; ++i) {
-    for (int j = 0; j < N; ++j) {
-      int sum = 0;
-      for (int k = 0; k < N; ++k) {
-        sum += a[i * N + k] * b[k * N + j];
-      }
-      c[i * N + j] = sum;
-    }
-  }
-}
-
-
-
-
-// Stateful actor behavior
-caf::behavior mmul_actor_fun(
-    caf::stateful_actor<mmul_actor_state>* self,
-    caf::actor exit_actor,
-    int N,
-    caf::cuda::program_ptr program,
-    caf::cuda::nd_range dims)
+// --- corrected pipeline_actor -------------------------------------------
+behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
+                        actor supervisor,
+                        program_ptr p1,
+                        program_ptr p2,
+                        program_ptr p3,
+                        int n)
 {
-
-	//set the value of N correctly to overide the base option.	
-	self->state().N = N;
-
-	caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-	caf::actor scheduler = mgr.get_scheduler_actor();
-
-	//send a launch token
-	caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
-			program,
-			dims,
-			0,
-			"hello",
-			self
-			);
-	self -> mail(launch_token).send(scheduler);
-
-	return {
-
-		[=] (caf::cuda::response_token_ptr res_token) {
-
-			if (res_token -> getType() == LAUNCH_RESPONSE) {
-				//std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
-				//assume N = 1024
-				int N = self -> state().N;
-				std::vector<int> matrix1(N*N);
-				matrix1.reserve(N);
-				std::vector<int> matrix2(N*N);
-				matrix2.reserve(N);
-
-				//std::cout << "GPU ACTOR sending data to compute\n";
-				self -> mail(matrix1,matrix2,res_token,N).send(self);
-
-			}
-			else {
-				std::cout << "Got a memory response token\n";
-			}
-			//token should drop out of scope now, triggering a response 
-		},
-
-			// 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
-			[=](const std::vector<int>& matrixA,
-					const std::vector<int>& matrixB,
-					const caf::cuda::response_token_ptr& res_token, int N) {
-
-
-				//caf::cuda::kernel_launch_token kernelToken = caf::intrusive_ptr_cast<caf::cuda::token_ptr>(kToken);
-
-				//caf::cuda::launch_response_token& kt =
-				//	    static_cast<caf::cuda::launch_response_token&>(*kToken);
-
-				//std::cout << "GPU ACTOR  computing\n";
-				caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-				//create program and dims   
-				auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
-				const int THREADS = 32;
-				const int BLOCKS = (N + THREADS - 1) / THREADS;
-				caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-				//create args
-				auto arg1 = caf::cuda::create_in_arg(matrixA);
-				auto arg2 = caf::cuda::create_in_arg(matrixB);
-				auto arg3 = caf::cuda::create_out_arg(N*N);
-				auto arg4 = caf::cuda::create_in_arg(N);
-
-				auto tempC = mmul.run(program,dims,res_token,arg1,arg2,arg3,arg4);
-				std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
-
-				//std::cout << "GPU ACTOR done  computing\n";
-				//verify its own result 
-				self -> mail(matrixA,matrixB,matrixC,N).send(self);
-
-			},
-
-					// 3rd handler: CPU atom + matrices + N
-					[=](const std::vector<int>& matrixA,
-							const std::vector<int>& matrixB,
-							const std::vector<int>& matrixC,
-							int N) {
-
-						using clock = std::chrono::high_resolution_clock;
-
-						auto start = clock::now();
-
-						//std::cout << "GPU ACTOR verifying\n";
-
-						std::vector<int> result(N * N);
-
-						serial_matrix_multiply(matrixA, matrixB, result, N);
-
-						if (result == matrixC) {
-							std::cout << "actor with id " << self->state().id
-								<< " references match\n";
-						} else {
-							std::cout << "actor with id " << self->state().id
-								<< " references did not match\n";
-						}
-
-						auto end = clock::now();
-
-						auto ms =
-							std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-						std::cout << "[TIMING] verification took "
-							<< ms << " ms (actor id "
-							<< self->state().id << ")\n";
-
-						// signal exit actor and quit
-						self->mail(1).send(exit_actor);
-						self->quit();
-
-					}
-	};
-}
-
-
-
-
-
-// this actor will not verify its results
-// great for performance analysis 
-caf::behavior mmul_actor_fun_no_verify(
-    caf::stateful_actor<mmul_actor_state>* self,
-    caf::actor exit_actor,
-    int N,
-    caf::cuda::program_ptr program,
-    caf::cuda::nd_range dims,
-    bool request
-    )
-{
-
-	//set the value of N correctly to overide the base option.	
-	self->state().N = N;
-
-	caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-	caf::actor scheduler = mgr.get_scheduler_actor();
-
-	if (request) {
-		//send a launch token
-		caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
-				program,
-				dims,
-				0,
-				"hello",
-				self
-				);
-		self -> mail(launch_token).send(scheduler);
-	}
-	return {
-
-		[=] (caf::cuda::response_token_ptr res_token) {
-
-			if (res_token -> getType() == LAUNCH_RESPONSE) {
-				//std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
-				//assume N = 1024
-				int N = self -> state().N;
-				std::vector<int> matrix1(N*N);
-				matrix1.reserve(N);
-				std::vector<int> matrix2(N*N);
-				matrix2.reserve(N);
-
-
-				caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-				//create program and dims   
-				//create args
-				auto arg1 = caf::cuda::create_in_arg(matrix1);
-				auto arg2 = caf::cuda::create_in_arg(matrix2);
-				auto arg3 = caf::cuda::create_out_arg(N*N);
-				auto arg4 = caf::cuda::create_in_arg(N);
-
-				auto tempC = mmul.run(program,dims,res_token,arg1,arg2,arg3,arg4);
-			
-			
-				//mask the transfer back to the cpu for scheduler
-				res_token -> release();
-				std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
-
-				//std::cout << "GPU ACTOR done  computing\n";
-				// signal exit actor and quit
-				self->mail(1).send(exit_actor);
-				self->quit();
-
-				//std::cout << "GPU ACTOR sending data to compute\n";
-			//	self -> mail(matrix1,matrix2,res_token,N).send(self);
-
-			}
-			else {
-				std::cout << "Got a memory response token\n";
-			}
-			//token should drop out of scope now, triggering a response 
-		},
-
-			// 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
-			[=](const std::vector<int>& matrixA,
-					const std::vector<int>& matrixB,
-					const caf::cuda::response_token_ptr& res_token, int N) {
-
-
-				//caf::cuda::kernel_launch_token kernelToken = caf::intrusive_ptr_cast<caf::cuda::token_ptr>(kToken);
-
-				//caf::cuda::launch_response_token& kt =
-				//	    static_cast<caf::cuda::launch_response_token&>(*kToken);
-
-				//std::cout << "GPU ACTOR  computing\n";
-				caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-				//create program and dims   
-				//create args
-				auto arg1 = caf::cuda::create_in_arg(matrixA);
-				auto arg2 = caf::cuda::create_in_arg(matrixB);
-				auto arg3 = caf::cuda::create_out_arg(N*N);
-				auto arg4 = caf::cuda::create_in_arg(N);
-
-				auto tempC = mmul.run(program,dims,res_token,arg1,arg2,arg3,arg4);
-			
-			
-				//mask the transfer back to the cpu for scheduler
-				res_token -> release();
-				std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
-
-				//std::cout << "GPU ACTOR done  computing\n";
-				// signal exit actor and quit
-				self->mail(1).send(exit_actor);
-				self->quit();
-
-			}
-
-				
-	};
-}
-
-
-
-// Stateful actor behavior
-// this actor does not invoke the scheduler at all 
-caf::behavior mmul_actor_fun_no_schedule(
-    caf::stateful_actor<mmul_actor_state>* self,
-    caf::actor exit_actor,
-    int N,
-    caf::cuda::program_ptr program,
-    caf::cuda::nd_range dims) {
-
-    self->state().N = N;
-
-    std::vector<int> matrix1(N * N);
-    std::vector<int> matrix2(N * N);
-
-    // send initial mail to self
-    self->mail(matrix1, matrix2, N).send(self);
+    // host-side scratch (only used for post-stage2 NaN/Inf detection)
+    std::vector<float> h_results;
+
+    // scheduler from manager
+    caf::actor scheduler = caf::cuda::manager::get().get_scheduler_actor();
+
+    // nd_range used for all stages (adapt to your kernels as needed)
+    caf::cuda::nd_range range{
+        {(n + 255) / 256, 1, 1},
+        {256, 1, 1}
+    };
+
+    // helper to create and send a launch token
+    auto launch = [&](program_ptr prog, const std::string& stage) {
+        auto tok = make_launch_token(
+            prog,
+            range,
+            /*memory_usage=*/static_cast<int>(sizeof(float) * n),
+            stage,
+            self,
+            self->state().id  // dependency/demo id
+        );
+        anon_mail(tok).send(scheduler);
+    };
+
+    // fire all three tokens (scheduler will reply with response_token on grants)
+    launch(p1, "stage1");
+    launch(p2, "stage2");
+    launch(p3, "stage3");
 
     return {
-        // GPU atom + matrices + N
-        [=](const std::vector<int>& matrixA,
-            const std::vector<int>& matrixB,
-            int N_local) {   // avoid shadowing outer N
-            
-	    
-    	    //std::cout << "Hello\n";
-	    caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-            auto arg1 = caf::cuda::create_in_arg(matrixA);
-            auto arg2 = caf::cuda::create_in_arg(matrixB);
-            auto arg3 = caf::cuda::create_out_arg(N_local * N_local);
-            auto arg4 = caf::cuda::create_in_arg(N_local);
-
-            auto tempC = mmul.run(program, dims, self->state().id, arg1, arg2, arg3, arg4);
-            std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
-
-	    self->mail(1).send(exit_actor);
-            self->quit();
+        // optional start message (kept for compatibility)
+        [=](const std::string& msg) {
+            if (msg == "start") {
+                // no-op (we already launched tokens above)
+            }
         },
 
-        // CPU verification
-        [=](const std::vector<int>& matrixA,
-            const std::vector<int>& matrixB,
-            const std::vector<int>& matrixC,
-            int N_local) {
+        // handle response tokens by name — opaque to reclaim payload
+        [=](caf::cuda::response_token_ptr res_token) mutable {
 
-            std::vector<int> result(N_local * N_local);
-            serial_matrix_multiply(matrixA, matrixB, result, N_local);
+            const auto& stage = res_token->name();
 
-            if (result == matrixC) {
-                std::cout << "actor with id " << self->state().id << " references match\n";
-            } else {
-                std::cout << "actor with id " << self->state().id << " references did not match\n";
+            // --------------------- Stage 1: init_denominators ---------------------
+            if (stage == "stage1") {
+                // allocate device buffer for denominators (persist in state)
+                
+		caf::caf::out<float> buffer = caf::cuda::create_out_arg_with_size<float>(n);
+                self->state().d_denoms = init_cmd.transfer_memory(res_token,bufer);
+
+                // run kernel on the stream/device from res_token
+                // kernel signature: (float* denominators, int n, unsigned long long seed)
+                init_cmd.run(
+                    p1,
+                    range,
+                    res_token,                            // uses token's stream/device
+                    self->state().d_denoms,               // device buffer
+                    caf::cuda::create_in_arg(n),          // n
+                    caf::cuda::create_in_arg(1234ULL)     // seed
+                );
+
+                // stage1 intentionally no checks — data may contain zeros
+                return;
             }
 
-            self->quit();
+            // --------------------- Stage 2: perform_division ---------------------
+            if (stage == "stage2") {
+                // allocate device buffer for results (persist in state)
+                self->state().d_results = caf::cuda::create_out_arg<float>(n);
+
+                // create a host numerators vector (all ones)
+                std::vector<float> h_nums(n, 1.0f);
+
+                // transfer numerators to device on the token's stream/device
+                // transfer_memory returns a caf::cuda::mem_ptr<float>
+                auto d_nums = div_cmd.transfer_memory(res_token, in_out{h_nums});
+
+                // run division kernel on the token's stream/device:
+                // kernel signature: (float* numerators, float* denominators, float* results, int n)
+                div_cmd.run(
+                    p2,
+                    range,
+                    res_token,
+                    d_nums,
+                    self->state().d_denoms,
+                    self->state().d_results,
+                    caf::cuda::create_in_arg(n)
+                );
+
+                // extract the device results back to host for verification.
+                // extract_vector will synchronize as needed.
+                h_results = self->state().d_results -> copy_to_host();
+
+                // check for NaN/Inf AFTER the kernel finished
+                bool fault = false;
+                for (float v : h_results) {
+                    if (!std::isfinite(v)) {
+                        fault = true;
+                        break;
+                    }
+                }
+
+                if (fault) {
+                    // inform supervisor and exit;
+                    anon_mail(std::string("crash")).send(supervisor);
+                    self->quit();
+                    return;
+                }
+
+                // stage2 passed — keep d_results in state for stage3
+                return;
+            }
+
+            // --------------------- Stage 3: sum_results --------------------------
+            if (stage == "stage3") {
+                // allocate device scalar for sum result
+                self->state().d_sum = caf::cuda::create_out_arg<float>(1);
+
+                // run reduction on the token's stream/device:
+                // kernel signature: (float* results, float* final_sum, int n)
+                sum_cmd.run(
+                    p3,
+                    range,
+                    res_token,
+                    self->state().d_results,
+                    self->state().d_sum,
+                    caf::cuda::create_in_arg(n)
+                );
+
+                // extract final scalar
+		
+		std::vector<float> buf = self->state().d_sum -> copy_to_host();
+                float final_sum = buf[0];
+                std::cout << "[pipeline] completed, sum = " << final_sum << "\n";
+
+                // successful completion -> tell supervisor to tear everything down
+                anon_mail(std::string("done")).send(supervisor);
+
+                // quit the pipeline actor
+                self->quit();
+                return;
+            }
+
+            // unknown stage: ignore or log
+            std::cerr << "[pipeline] received unknown response token: " << stage << "\n";
+        }
+    };
+}
+
+
+
+
+behavior supervisor_actor(event_based_actor* self,
+                          actor_system& system,
+                          program_ptr p1,
+                          program_ptr p2,
+                          program_ptr p3,
+                          int n)
+{
+    auto spawn_pipeline = [&]() {
+        auto p = self->spawn(
+            pipeline_actor,
+            self,
+            p1,
+            p2,
+            p3,
+            n
+        );
+        anon_send(p, std::string("start"));
+    };
+
+    spawn_pipeline();
+
+    return {
+        [=](const std::string& msg) {
+            if (msg == "crash") {
+                aout(self) << "Pipeline crashed — restarting\n";
+                spawn_pipeline();
+            }
+            else if (msg == "done") {
+                aout(self) << "Pipeline completed — shutting down\n";
+                caf::cuda::manager::shutdown();
+                system.shutdown();
+            }
         }
     };
 }
@@ -418,608 +258,5 @@ caf::behavior mmul_actor_fun_no_schedule(
 
 
 
-void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
-  if (num_actors < 1) {
-    std::cerr << "[ERROR] Number of actors must be >= 1\n";
-    return;
-  }
 
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-  //change the scheduler to core_usage
-  anon_mail(
-	caf::cuda::make_behavior_token("core_usage")
-	).send(mgr.get_scheduler_actor());
-
-  // CREATE ONCE
-  auto program =
-      mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-  const int THREADS = 32;
-  const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims(
-      BLOCKS, BLOCKS, 1,
-      THREADS, THREADS, 1);
-
-  caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-  for (int i = 0; i < num_actors; ++i) {
-    /*
-    sys.spawn(
-        mmul_actor_fun,
-        exit_actor,
-        matrix_size,
-        program,
-        dims);
-    */
-      sys.spawn(
-        mmul_actor_fun_no_verify,
-        exit_actor,
-        matrix_size,
-        program,
-        dims,
-	true);
-    
-  }
-
-  sys.await_all_actors_done();
-}
-
-
-void run_mmul_test_no_scheduler(caf::actor_system& sys, int matrix_size, int num_actors) {
-  if (num_actors < 1) {
-    std::cerr << "[ERROR] Number of actors must be >= 1\n";
-    return;
-  }
-
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-  /*
-  //change the scheduler to core_usage
-  anon_mail(
-	caf::cuda::make_behavior_token("core_usage")
-	).send(mgr.get_scheduler_actor());
-
-  */
-
-
-  // CREATE ONCE
-  auto program =
-      mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-  const int THREADS = 32;
-  const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims(
-      BLOCKS, BLOCKS, 1,
-      THREADS, THREADS, 1);
-
-  caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-  for (int i = 0; i < num_actors; ++i) {
-    
-	sys.spawn(
-        mmul_actor_fun_no_verify,
-        exit_actor,
-        matrix_size,
-        program,
-        dims,
-	true);
-    
-  
-	/*  
-sys.spawn(
-        mmul_actor_fun,
-        exit_actor,
-        matrix_size,
-        program,
-        dims);
-  */
-  }
-
-  sys.await_all_actors_done();
-}
-
-void run_mmul_test_no_scheduler_actor(caf::actor_system& sys, int matrix_size, int num_actors) {
-    if (num_actors < 1) {
-        std::cerr << "[ERROR] Number of actors must be >= 1\n";
-        return;
-    }
-
-    caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-    // CREATE ONCE
-    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    const int THREADS = 32;
-    const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
-    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-    for (int i = 0; i < num_actors; ++i) {
-        sys.spawn(
-            mmul_actor_fun_no_schedule,
-            exit_actor,
-            matrix_size,
-            program,
-            dims
-        );
-    }
-
-    sys.await_all_actors_done();
-}
-
-
-template <class Fn>
-double time_run(Fn&& fn) {
-  auto start = std::chrono::steady_clock::now();
-  fn();
-  auto end = std::chrono::steady_clock::now();
-  std::chrono::duration<double> elapsed = end - start;
-  return elapsed.count();
-}
-void run_mmul_scaling_tests(caf::actor_system& sys,
-                            caf::cuda::manager_config man_config) {
-    const int max_size   = 1024;
-    const int min_actors = 1;
-    const int max_actors = 1024;
-
-    std::vector<int> matrix_sizes = {10};
-    for (int s = 32; s <= max_size; s *= 2)
-        matrix_sizes.push_back(s);
-
-    std::vector<int> actor_counts;
-    for (int a = min_actors; a <= max_actors; a *= 2)
-        actor_counts.push_back(a);
-
-    std::cout << "=== MMUL Scaling Tests ===\n";
-    std::cout << "Format:\n";
-    std::cout << "scheduler matrix_size actors time_seconds\n";
-
-    for (int size : matrix_sizes) {
-        for (int actors : actor_counts) {
-
-            /* ================= Scheduler-enabled (core_usage) ================= */
-            caf::cuda::manager::init(sys, man_config); // green-light scheduler enabled
-            std::cout << "\n[RUN] scheduler=core_usage "
-                      << "matrix_size=" << size
-                      << " actors=" << actors << "\n";
-
-            double core_usage_time = time_run([&] {
-                run_mmul_test(sys, size, actors); // uses mmul_actor_fun_no_verify
-            });
-
-            std::cout << std::fixed << std::setprecision(6)
-                      << "RESULT core_usage "
-                      << size << " "
-                      << actors << " "
-                      << core_usage_time << "\n";
-
-            caf::cuda::manager::shutdown(); // make sure manager is cleaned up
-
-            /* ================= Scheduler-disabled actor (still uses green-light) ================= */
-
-/*
-	    caf::cuda::manager::init(sys, man_config); // init with scheduler
-            std::cout << "\n[RUN] scheduler=green_light_only "
-                      << "matrix_size=" << size
-                      << " actors=" << actors << "\n";
-
-            double green_light_time = time_run([&] {
-                run_mmul_test_no_scheduler(sys, size, actors); // your previous "no scheduler" actor
-            });
-
-            std::cout << std::fixed << std::setprecision(6)
-                      << "RESULT green_light_only "
-                      << size << " "
-                      << actors << " "
-                      << green_light_time << "\n";
-
-            caf::cuda::manager::shutdown();
-
-	    */
-            /* ================= No scheduler at all actor ================= */
-            caf::cuda::manager_config no_sched_config(false); // disable scheduler
-            caf::cuda::manager::init(sys, no_sched_config);
-            std::cout << "\n[RUN] scheduler=none "
-                      << "matrix_size=" << size
-                      << " actors=" << actors << "\n";
-
-            double no_scheduler_time = time_run([&] {
-                run_mmul_test_no_scheduler_actor(sys, size, actors); // mmul_actor_fun_no_schedule
-            });
-
-            std::cout << std::fixed << std::setprecision(6)
-                      << "RESULT none "
-                      << size << " "
-                      << actors << " "
-                      << no_scheduler_time << "\n";
-
-            caf::cuda::manager::shutdown();
-        }
-    }
-
-    std::cout << "\n=== MMUL Scaling Tests Complete ===\n";
-}
-void run_mmul_mixed_batch_one_mode(
-    caf::actor_system& sys,
-    const std::vector<int>& sizes,
-    int num_actors,
-    bool use_scheduler_actor,
-    bool use_core_usage_behavior,
-    bool randomize = false)
-{
-    caf::cuda::manager& mgr = caf::cuda::manager::get(); // SAFE NOW
-
-    if (use_scheduler_actor && use_core_usage_behavior) {
-        anon_mail(caf::cuda::make_behavior_token("core_usage"))
-            .send(mgr.get_scheduler_actor());
-    }
-
-    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-    std::mt19937 rng(123456);
-    std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
-
-    const int THREADS = 32;
-
-    for (int i = 0; i < num_actors; ++i) {
-        int N = randomize ? sizes[dist(rng)] : sizes[i % sizes.size()];
-        int BLOCKS = (N + THREADS - 1) / THREADS;
-
-        caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-        if (use_scheduler_actor) {
-            sys.spawn(
-                mmul_actor_fun_no_verify,
-                exit_actor,
-                N,
-                program,
-                dims,
-		true);
-        } else {
-            sys.spawn(
-                mmul_actor_fun_no_schedule,
-                exit_actor,
-                N,
-                program,
-                dims);
-        }
-    }
-
-    sys.await_all_actors_done();
-}
-
-
-
-
-void run_mmul_mixed_batch_one_mode_bulk(
-    caf::actor_system& sys,
-    const std::vector<int>& sizes,
-    int num_actors,
-    bool randomize = false)
-{
-    caf::cuda::manager& mgr = caf::cuda::manager::get(); // SAFE NOW
-
-        anon_mail(caf::cuda::make_behavior_token("core_usage"))
-            .send(mgr.get_scheduler_actor());
-
-    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-    std::vector<caf::cuda::token_ptr> tokens(num_actors);
-
-    std::mt19937 rng(123456);
-    std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
-
-    const int THREADS = 32;
-
-    for (int i = 0; i < num_actors; ++i) {
-        int N = randomize ? sizes[dist(rng)] : sizes[i % sizes.size()];
-        int BLOCKS = (N + THREADS - 1) / THREADS;
-
-	caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-	caf::actor a = sys.spawn(
-			mmul_actor_fun_no_verify,
-			exit_actor,
-			N,
-			program,
-			dims,
-			false);
-
-	tokens[i] = caf::cuda::make_launch_token(
-			program,
-			dims,
-			0 /*this should not be 0 but its fine for now*/,
-			"hello",
-			a);    
-    }
-
-    
-        anon_mail(tokens)
-            .send(mgr.get_scheduler_actor());
-
-
-    sys.await_all_actors_done();
-}
-
-
-
-
-
-
-
-
-
-
-void run_mmul_mixed_batch_comparison(
-    caf::actor_system& sys,
-    const std::vector<int>& sizes,
-    int num_actors)
-{
-    std::cout << "\n=== MMUL Mixed-Size Batch Comparison ===\n";
-    std::cout << "scheduler actors sizes time_seconds\n\n";
-
-    /* ================= core_usage ================= */
-    {
-        caf::cuda::manager_config cfg(true);
-        caf::cuda::manager::init(sys, cfg);
-
-	
-        //double t = time_run([&] {
-          //  run_mmul_mixed_batch_one_mode(
-            //    sys, sizes, num_actors,
-              //  /*use_scheduler_actor=*/true,
-               // /*use_core_usage_behavior=*/true);
-       // });
-
-	double t = time_run([&] {
-            run_mmul_mixed_batch_one_mode_bulk(
-                sys, sizes, num_actors);
-        });
-
-
-
-
-        std::cout << "RESULT core_usage "
-                  << num_actors << " "
-                  << t << "\n";
-
-        caf::cuda::manager::shutdown();
-    }
-
-    /* ================= green-light only ================= */
-   
-    /*
-    {
-	    std::cout << "Starting green_light tests\n";
-        caf::cuda::manager_config cfg(true);
-        caf::cuda::manager::init(sys, cfg);
-
-        double t = time_run([&] {
-            run_mmul_mixed_batch_one_mode(
-                sys, sizes, num_actors,
-               true,
-                false);
-        });
-
-        std::cout << "RESULT green_light_only "
-                  << num_actors << " "
-                  << t << "\n";
-
-        caf::cuda::manager::shutdown();
-    }
-
-    */
-	
-    /* ================= no scheduler ================= */
-    {
-        caf::cuda::manager_config cfg(false);
-        caf::cuda::manager::init(sys, cfg);
-
-        double t = time_run([&] {
-            run_mmul_mixed_batch_one_mode(
-                sys, sizes, num_actors,
-                /*use_scheduler_actor=*/false,
-                /*use_core_usage_behavior=*/false);
-        });
-
-        std::cout << "RESULT none "
-                  << num_actors << " "
-                  << t << "\n";
-
-        caf::cuda::manager::shutdown();
-    }
-
-    std::cout << "\n=== Comparison Complete ===\n";
-}
-
-
-
-void test_core_usage_uniform_mmul(
-    caf::actor_system& sys,
-    int matrix_size,
-    int num_actors)
-{
-    std::cout << "\n[TEST] core_usage uniform matrix size\n";
-    std::cout << "N=" << matrix_size
-              << " actors=" << num_actors << "\n";
-
-    caf::cuda::manager_config cfg(true);
-    caf::cuda::manager::init(sys, cfg);
-
-    caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-    // force core_usage behavior
-    anon_mail(caf::cuda::make_behavior_token("core_usage"))
-        .send(mgr.get_scheduler_actor());
-
-    auto program =
-        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    const int THREADS = 32;
-    const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
-    caf::cuda::nd_range dims(
-        BLOCKS, BLOCKS, 1,
-        THREADS, THREADS, 1);
-
-    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-    for (int i = 0; i < num_actors; ++i) {
-        sys.spawn(
-            mmul_actor_fun_no_verify,
-            exit_actor,
-            matrix_size,
-            program,
-            dims,
-	    false);
-    }
-
-    sys.await_all_actors_done();
-    caf::cuda::manager::shutdown();
-
-    std::cout << "[PASS] core_usage uniform test complete\n";
-}
-
-
-
-void test_core_usage_mixed_mmul(
-    caf::actor_system& sys,
-    const std::vector<int>& sizes,
-    int num_actors)
-{
-    std::cout << "\n[TEST] core_usage mixed matrix sizes\n";
-    std::cout << "actors=" << num_actors << "\n";
-
-    caf::cuda::manager_config cfg(true);
-    caf::cuda::manager::init(sys, cfg);
-
-    caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-    anon_mail(caf::cuda::make_behavior_token("core_usage"))
-        .send(mgr.get_scheduler_actor());
-
-    auto program =
-        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-    const int THREADS = 32;
-
-    for (int i = 0; i < num_actors; ++i) {
-        int N = sizes[i % sizes.size()];
-
-        int BLOCKS = (N + THREADS - 1) / THREADS;
-        caf::cuda::nd_range dims(
-            BLOCKS, BLOCKS, 1,
-            THREADS, THREADS, 1);
-
-        sys.spawn(
-            mmul_actor_fun_no_verify,
-            exit_actor,
-            N,
-            program,
-            dims,
-	    false);
-    }
-
-    sys.await_all_actors_done();
-    caf::cuda::manager::shutdown();
-
-    std::cout << "[PASS] core_usage mixed-size test complete\n";
-}
-
-
-void run_mmul_fixed_256_batch_comparison(
-    caf::actor_system& sys,
-    int num_actors)
-{
-    // All actors run the same matrix size: 256
-    std::vector<int> sizes(num_actors, 256);
-
-    std::cout << "\n=== MMUL Fixed-Size (256) Batch Comparison ===\n";
-    std::cout << "scheduler actors size time_seconds\n\n";
-
-    /* ================= core_usage ================= */
-    {
-        caf::cuda::manager_config cfg(true);
-        caf::cuda::manager::init(sys, cfg);
-
-        double t = time_run([&] {
-            run_mmul_mixed_batch_one_mode(
-                sys,
-                sizes,
-                num_actors,
-                /*use_scheduler_actor=*/true,
-                /*use_core_usage_behavior=*/true);
-        });
-
-        std::cout << "RESULT core_usage "
-                  << num_actors << " 256 "
-                  << t << "\n";
-
-        caf::cuda::manager::shutdown();
-    }
-
-    /* ================= no scheduler ================= */
-    {
-        caf::cuda::manager_config cfg(false);
-        caf::cuda::manager::init(sys, cfg);
-
-        double t = time_run([&] {
-            run_mmul_mixed_batch_one_mode(
-                sys,
-                sizes,
-                num_actors,
-                /*use_scheduler_actor=*/false,
-                /*use_core_usage_behavior=*/false);
-        });
-
-        std::cout << "RESULT none "
-                  << num_actors << " 256 "
-                  << t << "\n";
-
-        caf::cuda::manager::shutdown();
-    }
-
-    std::cout << "\n=== Fixed-256 Comparison Complete ===\n";
-}
-
-
-
-
-
-void caf_main(caf::actor_system& sys) {
-  
-	//caf::cuda::manager_config man_config(true); //turns the scheduler on
-	//caf::cuda::manager::init(sys,man_config);
-        // run_mmul_test(sys,10,64);	
-	//run_mmul_scaling_tests(sys,man_config);
-
-   std::vector<int> sizes = {32, 64, 128, 256, 512, 1024,2048,4096};
-    const int num_actors = 1000;
-    run_mmul_mixed_batch_comparison(sys, sizes, num_actors);    
-
-    //run_mmul_mixed_batch_one_mode_bulk(sys,sizes,num_actors);
-    //run_mmul_fixed_256_batch_comparison(sys, /*num_actors=*/200);
-
-
-	 //test_core_usage_uniform_mmul(sys, 256, 1000);
-
-  //std::vector<int> sizes = {32, 64, 128, 256, 512, 1024};
-    //test_core_usage_mixed_mmul(sys, sizes, 200);
-
-
-
-//tests will delete the old manager so will have to reinit if you do this 
-	//in conjunction with each other	
-	//caf::cuda::manager::init(sys,man_config);
-}
-
-
-
-
-CAF_MAIN()
