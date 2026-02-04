@@ -24,21 +24,10 @@ extern "C" __global__ void perform_division(float* numerators, float* denominato
 
 // Step 3: Simple reduction to sum results (propagates Inf if present)
 extern "C" __global__ void sum_results(float* results, float* final_sum, int n) {
-    extern __shared__ float sdata[];
-    int tid = threadIdx.x;
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    sdata[tid] = (idx < n) ? results[idx] : 0.0f;
-    __syncthreads();
-
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }
-        __syncthreads();
-    }
-
-    if (tid == 0) {
-        atomicAdd(final_sum, sdata[0]);
+    if (idx < n) {
+        // atomic add each element directly to the final sum
+        atomicAdd(final_sum, results[idx]);
     }
 }
