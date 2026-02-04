@@ -100,7 +100,13 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
             // --------------------- Stage 1: init_denominators ---------------------
             if (stage == "stage1") {
                 // allocate device buffer for denominators (persist in state)
-                
+               
+		    unsigned long long seed = static_cast<unsigned long long>(
+    std::chrono::high_resolution_clock::now().time_since_epoch().count()
+);
+
+
+
 		out<float> buffer = caf::cuda::create_out_arg_with_size<float>(n);
                 self->state().d_denoms = init_cmd.transfer_memory(res_token,buffer);
 
@@ -112,7 +118,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
                     res_token,                            // uses token's stream/device
                     self->state().d_denoms,               // device buffer
                     caf::cuda::create_in_arg(n),          // n
-                    caf::cuda::create_in_arg(1234ULL)     // seed
+                    caf::cuda::create_in_arg(seed)     // seed
                 );
 
                 // stage1 intentionally no checks — data may contain zeros
@@ -267,7 +273,7 @@ void caf_main(caf::actor_system& sys) {
 	caf::cuda::program_ptr p2 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","perform_division");
 	caf::cuda::program_ptr p3 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","sum_results");
 
-	sys.spawn(supervisor_actor,p1,p2,p3,32);
+	sys.spawn(supervisor_actor,p1,p2,p3,1);
 	sys.await_all_actors_done();
 
 
