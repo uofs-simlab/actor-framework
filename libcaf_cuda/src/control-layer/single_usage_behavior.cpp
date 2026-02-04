@@ -32,6 +32,8 @@ void single_usage_behavior::reclaim(int blocks_consumed,
                                     int memory_returned,
                                     int time,
                                     int dependency_number) {
+   
+    std::cout << "reclaiming\n";
     // GPU is now free again
     gpu_available = true;
     available_memory += memory_returned;
