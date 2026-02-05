@@ -876,7 +876,7 @@ void test_core_usage_uniform_mmul(
             matrix_size,
             program,
             dims,
-	    false);
+	    true);
     }
 
     sys.await_all_actors_done();
@@ -925,7 +925,7 @@ void test_core_usage_mixed_mmul(
             N,
             program,
             dims,
-	    false);
+	    true);
     }
 
     sys.await_all_actors_done();
@@ -1001,15 +1001,19 @@ void caf_main(caf::actor_system& sys) {
         // run_mmul_test(sys,10,64);	
 	//run_mmul_scaling_tests(sys,man_config);
 
+	/*
    std::vector<int> sizes = {32, 64, 128, 256, 512, 1024,2048,4096};
     const int num_actors = 1000;
     run_mmul_mixed_batch_comparison(sys, sizes, num_actors);    
+
+    */
 
     //run_mmul_mixed_batch_one_mode_bulk(sys,sizes,num_actors);
     //run_mmul_fixed_256_batch_comparison(sys, /*num_actors=*/200);
 
 
-	 //test_core_usage_uniform_mmul(sys, 256, 1000);
+	 test_core_usage_uniform_mmul(sys, 256, 1000,"multilevel");
+	 //test_core_usage_mixed_mmul(sys, 256, 1000,"multilevel");
 
   //std::vector<int> sizes = {32, 64, 128, 256, 512, 1024};
     //test_core_usage_mixed_mmul(sys, sizes, 200);
