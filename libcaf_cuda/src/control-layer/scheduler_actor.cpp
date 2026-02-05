@@ -4,6 +4,7 @@
 #include "caf/cuda/control-layer/red_light_behavior.hpp"
 #include "caf/cuda/control-layer/core_usage_behavior.hpp"
 #include "caf/cuda/control-layer/single_usage_behavior.hpp"
+#include "caf/cuda/control-layer/multilevel_usage_behavior.hpp"
 #include <string>
 #include <iostream>
 
@@ -26,12 +27,13 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
     static green_light_behavior green_behavior(state);
     static core_usage_behavior core_behavior(state);
     static single_usage_behavior single_behavior(state);
+    static multilevel_usage_behavior multi_behavior(state);
 
     // populate the behavior table
     state.table.add("red", &red_behavior);
     state.table.add("green",   &green_behavior);
     state.table.add("core_usage",   &core_behavior);
-    state.table.add("single_usage",   &single_behavior);
+    state.table.add("multilevel",   &multi_behavior);
 
     // default behavior
     state.current_behavior = state.table.get(behavior_token("green"));
