@@ -1,4 +1,5 @@
 #include "caf/cuda/control-layer/multilevel_usage_behavior.hpp"
+#include "caf/cuda/control-layer/all-control-layer.hpp"
 
 namespace caf::cuda {
 
@@ -39,8 +40,7 @@ void multilevel_usage_behavior::receive(const token_ptr& tok) {
 
     if (tok->getType() == LAUNCH) {
         create_new_graph(tok);
-        // after creating a graph we do not eagerly dispatch here; schedule() will
-        // be responsible for draining the queues in the desired order
+	schedule();
     } else if (tok->getType() == MEMORY) {
         process_memory_transfer_token(tok, 0);
     }
@@ -67,7 +67,10 @@ void multilevel_usage_behavior::create_new_graph(const token_ptr& tok) {
         graphs[dep].add_operation(tok);
         // If graph already existed, ensure it's enqueued only if not currently in any queue
         // For simplicity we enqueue it — caller reclaim/schedule will ensure duplicates don't cause re-dispatch
-        graph_ref ref{graph_ref::kind_t::dependent, dep};
+        //this may lead in an error where dependencies are triggered before they are ready
+	//however since each graph gets a designated stream for now 
+	//this will not until that happens 
+	graph_ref ref{graph_ref::kind_t::dependent, dep};
         enqueue_graph_by_cost(ref);
     } else {
         kernel_graph new_graph(state_.device_number, get_next_stream());

@@ -5,11 +5,12 @@
 #include "caf/cuda/control-layer/scheduler-functions/sm_usage_heuristic.hpp"
 #include "caf/cuda/device.hpp"
 #include "caf/cuda/manager.hpp"
-#include "caf/cuda/control-layer/profiler.hpp"
+#include "caf/cuda/control-layer/scheduler-functions/profiler.hpp"
 
 #include <deque>
 #include <optional>
 #include <algorithm>
+#include <unordered_map>
 
 namespace caf::cuda {
 
@@ -51,6 +52,10 @@ private:
     int available_memory = 0; // bytes
     int num_streams = 0;
     int current_stream = 0;
+
+    //tracking graphs
+    std::unordered_map<int,kernel_graph> graphs;
+    std::vector<kernel_graph> independent_graphs;
 
     // multilevel queues of graph_refs
     std::deque<graph_ref> low_queue;
