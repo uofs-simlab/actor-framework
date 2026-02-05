@@ -842,7 +842,8 @@ void run_mmul_mixed_batch_comparison(
 void test_core_usage_uniform_mmul(
     caf::actor_system& sys,
     int matrix_size,
-    int num_actors)
+    int num_actors,
+    std::string scheduler_behavior)
 {
     std::cout << "\n[TEST] core_usage uniform matrix size\n";
     std::cout << "N=" << matrix_size
@@ -854,7 +855,7 @@ void test_core_usage_uniform_mmul(
     caf::cuda::manager& mgr = caf::cuda::manager::get();
 
     // force core_usage behavior
-    anon_mail(caf::cuda::make_behavior_token("core_usage"))
+    anon_mail(caf::cuda::make_behavior_token(scheduler_behavior))
         .send(mgr.get_scheduler_actor());
 
     auto program =
@@ -889,7 +890,8 @@ void test_core_usage_uniform_mmul(
 void test_core_usage_mixed_mmul(
     caf::actor_system& sys,
     const std::vector<int>& sizes,
-    int num_actors)
+    int num_actors,
+    std::string scheduler_behavior)
 {
     std::cout << "\n[TEST] core_usage mixed matrix sizes\n";
     std::cout << "actors=" << num_actors << "\n";
@@ -899,7 +901,7 @@ void test_core_usage_mixed_mmul(
 
     caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-    anon_mail(caf::cuda::make_behavior_token("core_usage"))
+    anon_mail(caf::cuda::make_behavior_token(scheduler_behavior))
         .send(mgr.get_scheduler_actor());
 
     auto program =
@@ -999,7 +1001,7 @@ void caf_main(caf::actor_system& sys) {
         // run_mmul_test(sys,10,64);	
 	//run_mmul_scaling_tests(sys,man_config);
 
-   std::vector<int> sizes = {32, 64, 128, 256, 512, 1024};
+   std::vector<int> sizes = {32, 64, 128, 256, 512, 1024,2048,4096};
     const int num_actors = 1000;
     run_mmul_mixed_batch_comparison(sys, sizes, num_actors);    
 
