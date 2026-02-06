@@ -46,6 +46,10 @@ public:
   //releases a stream for an actor
   void release_streams_for_actor(int actor_id);
 
+  //returns how many devices are currently on the GPU
+  int get_num_devices();
+
+
 private:
   platform();
   ~platform();

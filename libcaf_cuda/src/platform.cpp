@@ -83,6 +83,8 @@ device_ptr platform::getDevice(int id) {
   return devices_[id];
 }
 
+int platform::get_num_devices() { return devices_.size();}
+
 scheduler* platform::get_scheduler() {
   return scheduler_.get();
 }
