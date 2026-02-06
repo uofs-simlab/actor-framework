@@ -58,10 +58,41 @@ void manager::init(caf::actor_system& sys, manager_config config) {
     instance_->scheduler_on = config.getSchedulerOn();
 
     if (instance_->scheduler_on) {
-        instance_->scheduler_actor_handle =
-            sys.spawn(scheduler_actor,0);
+        
+	    
+	    instance_ -> init_scheduler_actors(sys);
+	    //instance_->scheduler_actor_handle =
+          //  sys.spawn(scheduler_actor,0);
     }
 }
+
+
+
+void manager::init_scheduler_actors(caf::actor_system& sys) {
+
+	int num_devices = platform_ -> get_num_devices();
+
+	bool multi_gpu = num_devices > 1;
+	for (int i = 0; i < num_devices; i++) {
+	
+		instance_ -> scheduler_actors.push_back( sys.spawn(scheduler_actor,i,multi_gpu));
+	
+	}
+
+	//if there is multiple GPUs send every scheduler actor contact information 
+	//about the other on	
+	if (num_devices > 1) {
+	
+		for (int i = 0; i < num_devices; i++) {
+			anon_mail(scheduler_actors).send(instance_ -> scheduler_actors[i]);
+		}
+	
+	}
+
+}
+
+
+
 
 // --------------------------------
 // Static get()
@@ -89,10 +120,23 @@ void manager::shutdown() {
         return;
 
     if (instance_->scheduler_on) {
-        anon_send_exit(
-            instance_->scheduler_actor_handle,
+        
+	for (int i = 0; i < instance_ ->  platform_ -> get_num_devices(); i++) {
+	    
+//	anon_send_exit(
+  //          instance_->scheduler_actor_handle,
+    //        caf::exit_reason::user_shutdown
+      //  );
+     
+	anon_send_exit(
+            instance_->scheduler_actors[i],
             caf::exit_reason::user_shutdown
         );
+
+
+
+    }
+
     }
 
     delete instance_;
@@ -102,15 +146,18 @@ void manager::shutdown() {
 // --------------------------------
 // Static getter for scheduler actor
 // --------------------------------
+// this is legacy code, do not use
+// only exists to be backwards compatable with tests 
 caf::actor manager::get_scheduler_actor() {
     	//this is a read only data no need for lock
 	//std::lock_guard<std::mutex> guard(mutex_);
+
 
     if (!instance_) {
         throw std::runtime_error("CUDA manager not initialized");
     }
 
-    return instance_->scheduler_actor_handle;
+    return instance_->scheduler_actors[0];
 }
 
 

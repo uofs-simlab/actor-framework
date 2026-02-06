@@ -14,7 +14,7 @@
  */
 namespace caf::cuda {
 
-caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, int device_number) {
+caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, int device_number,bool multi_gpu) {
     auto& state = self->state();
 
     // add self reference
@@ -22,6 +22,9 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
 
     // set device number
     state.device_number = device_number;
+
+    //check if multiple gpus
+    state.multiple_gpus = multi_gpu;
 
     static red_light_behavior red_behavior(state);
     static green_light_behavior green_behavior(state);
@@ -81,6 +84,13 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
 	//message handler for reclaim
 	[&](int value, int memory,int runtime,int dependency) {	
 		state.current_behavior->reclaim(value,memory,runtime,dependency);
+	},
+
+	//handler sent to set the scheduler actors 
+	//do not send a message more than once
+	//or else undefined behavior
+	[&](std::vector<caf::actor> s) {
+		state.schedulers = s;
 	}
     };
 }

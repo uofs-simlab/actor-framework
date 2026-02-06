@@ -186,11 +186,13 @@ private:
   //helper to compile a nvrtc program
   bool compile_nvrtc_program(const char* source, CUdevice device, std::vector<char>& ptx_out);
 
+  void init_scheduler_actors(caf::actor_system&);
 
   static manager* instance_;
   static std::mutex mutex_;
   bool scheduler_on = false;
   caf::actor scheduler_actor_handle;
+  std::vector<caf::actor> scheduler_actors;
 };
 
 } // namespace caf::cuda
