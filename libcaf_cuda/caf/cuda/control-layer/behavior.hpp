@@ -38,6 +38,29 @@ public:
 
     virtual std::string name() const {return "No name\n";}
 
+    //this method is meant to be a handler for when
+    //another scheduler actor queries for more work
+    virtual void handle_load_balance_request(int device_number) {
+    
+	    //default action is to do nothing and not particpate in load balancing
+	    //whether of not a scheduler wants to participate in load balancing 
+	    //and what actions it should take is a policy decision
+    }
+
+
+    //method is meant to handle work being sent over from another scheduler actor
+   virtual void receive_work(std::vector<kernel_graph> work_graphs) {
+     //ideally this should not default to do nothing 
+    //however I do not have the time implement this on every existing behavior 
+    //as of right now
+    //so be warned if you do not implement an override and request work to do be done
+    //this will end in a deadlock  
+    
+    
+    }
+
+
+
 
 protected:
     scheduler_actor_state& state_;
