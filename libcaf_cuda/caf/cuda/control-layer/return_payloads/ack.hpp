@@ -15,6 +15,9 @@ namespace caf::cuda {
 // -----------------------------------------------------------------------------
 class CAF_CUDA_EXPORT ack {
 public:
+   
+   //for caf messaging system do not use	
+    ack() = default;
     explicit ack(int type) : type_(type) {}
     virtual ~ack() = default;
 
