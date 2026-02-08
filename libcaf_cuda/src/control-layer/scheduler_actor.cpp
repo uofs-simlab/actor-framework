@@ -5,6 +5,7 @@
 #include "caf/cuda/control-layer/core_usage_behavior.hpp"
 #include "caf/cuda/control-layer/single_usage_behavior.hpp"
 #include "caf/cuda/control-layer/multilevel_usage_behavior.hpp"
+#include "caf/cuda/control-layer/kernel_graph.hpp"
 #include <string>
 #include <iostream>
 
@@ -91,7 +92,19 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
 	//or else undefined behavior
 	[&](std::vector<caf::actor> s) {
 		state.schedulers = s;
-	}
+	},
+
+
+
+	//message handler for a request for work from another scheduler actor
+	[&](int device_number) {
+		state.current_behavior -> handle_load_balance_request(device_number);
+	},
+
+	//message handler for work being transfered over from another scheduler actor
+	[&](std::vector<kernel_graph> work_graphs) {
+		state.current_behavior -> receive_work(work_graphs);
+	},
     };
 }
 
