@@ -60,16 +60,18 @@ private:
     int resource_threshold; //if exceeded do not dispatch kernel
     int resource_pressure; // tracks resources in use, if low we should dispatch heavy kernels, if high dispatch light kernels 
     
-    int low_concurreny_threshold; //if we under this immediately accept any work
+    double low_concurreny_threshold; //if we under this immediately accept any work
 				  //of if multiple gpus, seek out work
 
-    int high_concurrency_threshold; //if we are above this, enqueue any work
+    double high_concurrency_threshold; //if we are above this, enqueue any work
 				    //since could flood GPU with requests
 
-    int current_concurreny; //number to assign how much kernels on the GPU
+    double current_concurreny; //number to assign how much kernels on the GPU
 			    //values should be in proportion to how much 
 			    //resources a kernel intends to consume 
 
+    double current_sm_pressure;
+    
     int compute_bound_pressure; //determines if we should favor compute or memory bound kernels when seeking work to dispatch 
 
 
@@ -116,10 +118,8 @@ private:
     //pressure it puts on a dimension of the GPU 
     //(concurreny,memory vs compute bound, resource)
     int get_resource_pressure(int blocks_consumed);
-
-    //helps determine how much concurrent work a kernel is going to use
-    int get_concurrency_pressure(int blocks_consumed); 
-    
+    int get_concurrency_pressure(int);
+    int get_pressure_level(double); 
     
 };
 
