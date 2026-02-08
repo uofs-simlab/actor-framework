@@ -87,6 +87,15 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
 		state.current_behavior->reclaim(value,memory,runtime,dependency);
 	},
 
+
+	//message handler for reclaim
+	[&](ack payload) {	
+		state.current_behavior->reclaim(payload);
+	},
+
+
+
+
 	//handler sent to set the scheduler actors 
 	//do not send a message more than once
 	//or else undefined behavior

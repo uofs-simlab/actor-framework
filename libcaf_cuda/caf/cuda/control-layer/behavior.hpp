@@ -5,6 +5,8 @@
 #include "caf/cuda/control-layer/scheduler_actor_state.hpp"
 #include "caf/cuda/control-layer/token.hpp"
 #include "caf/cuda/control-layer/token_factory.hpp"
+#include "caf/cuda/control-layer/return_payloads/ack.hpp"
+
 #include <string>
 
 
@@ -35,6 +37,16 @@ public:
 	    //default implementation is to do nothing, this should be overidden
 	    //by children classes 
     }
+
+
+
+    //this is here to ensure that payloads on return can conform to an interface
+    //rather than changing the interface to accomidate every scheduling need
+    virtual void reclaim(ack payload) {
+	    //default implementation is to do nothing, this should be overidden
+	    //by children classes 
+    }
+
 
     virtual std::string name() const {return "No name\n";}
 

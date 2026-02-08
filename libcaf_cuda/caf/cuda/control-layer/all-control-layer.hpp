@@ -11,6 +11,7 @@
 #include "caf/cuda/control-layer/behavior_token.hpp"
 #include "caf/cuda/control-layer/memory_transfer_token.hpp"
 #include "caf/cuda/control-layer/memory_response_token.hpp"
+#include "caf/cuda/control-layer/transfer_token.hpp"
 
 #include "caf/cuda/control-layer/behavior.hpp"
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
@@ -34,9 +35,12 @@ CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::launch_response_tok
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::response_token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::memory_transfer_token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::memory_response_token>))
+CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::transfer_token>))
 CAF_ADD_TYPE_ID(cuda_control, (std::vector<caf::intrusive_ptr<caf::cuda::token>>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::kernel_graph))
 CAF_ADD_TYPE_ID(cuda_control, (std::vector<caf::cuda::kernel_graph>))
+CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::ack))
+CAF_ADD_TYPE_ID(cuda_control, (caf::cuda::transfer_ack))
 
 CAF_END_TYPE_ID_BLOCK(cuda_control)
 
@@ -51,15 +55,18 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::launch_response_token)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::memory_transfer_token)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::memory_response_token)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::response_token)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::transfer_token)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::behavior_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::launch_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::launch_response_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::response_token>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::transfer_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::memory_transfer_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::intrusive_ptr<caf::cuda::memory_response_token>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<caf::intrusive_ptr<caf::cuda::token>>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::kernel_graph)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<caf::cuda::kernel_graph>)
-
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::ack)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::transfer_ack)
 
