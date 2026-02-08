@@ -1,6 +1,7 @@
 #pragma once
 
 #include "caf/cuda/all.hpp"
+#include "caf/cuda/control-layer/return_payloads/all_return_payloads.hpp"
 
 // Control-layer object types
 #include "caf/cuda/control-layer/token.hpp"
