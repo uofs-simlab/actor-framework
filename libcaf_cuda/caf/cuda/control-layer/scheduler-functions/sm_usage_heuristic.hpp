@@ -16,8 +16,8 @@ namespace caf::cuda {
 
 class sm_usage_heuristic : public heuristic_function {
 public:
-  explicit sm_usage_heuristic(device_ptr dev)
-    : dev_(dev) {}
+  explicit sm_usage_heuristic(device_ptr dev,bool ceil = true)
+    : dev_(dev),ceil_(ceil) {}
 
 int getCost(const program_ptr& prog,
             const nd_range& range) override {
@@ -39,7 +39,11 @@ int getCost(const program_ptr& prog,
     }
 
     int sms_needed = (total_blocks + blocks_per_sm - 1) / blocks_per_sm; // ceil
-    int sms_used = std::min(dev_->num_sms(), sms_needed);
+    int sms_used = sms_needed;
+    if (ceil_) {
+	    sms_used = std::min(dev_->num_sms(), sms_needed);
+    }
+
 
     values_[key] = sms_used;
     return sms_used;
@@ -60,6 +64,7 @@ int getCost(const program_ptr& prog,
 
 private:
   device_ptr dev_;
+  bool ceil_ = true;
 };
 
 } // namespace caf::cuda
