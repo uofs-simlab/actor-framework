@@ -11,6 +11,7 @@
 #define BEHAVIOR 3
 #define MEMORY 4
 #define MEMORY_RESPONSE 5
+#define TRANSFER 6
 
 //dependency tags
 #define INDEPENDENT -1
