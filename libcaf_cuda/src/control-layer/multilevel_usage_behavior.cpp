@@ -22,7 +22,20 @@ void multilevel_usage_behavior::init_state() {
 }
 
 void multilevel_usage_behavior::on_enter() {
-    // nothing for now
+
+	//trigger load balancing mechanisms
+	if (state_.multiple_gpus) {	
+		send_timed_msg();
+	}
+
+}
+
+void multilevel_usage_behavior::send_timed_msg() {
+
+
+	anon_mail(ack(TIMER)).delay(std::chrono::seconds(2)).send(state_.self);
+
+
 }
 
 void multilevel_usage_behavior::process_launch_token(const token_ptr& tok, int stream_id) {
@@ -182,6 +195,12 @@ void multilevel_usage_behavior::reclaim(int blocks_consumed,
 void multilevel_usage_behavior::reclaim(ack return_msg) {
 
 	//TODO IMPLEMENT TIMER ACK AND TRANSFER ACK 
+
+	if (return_msg.getType() == TIMER) {
+
+		//check if load balance logic goes here
+	     send_timed_msg();	
+	}
 
 }
 

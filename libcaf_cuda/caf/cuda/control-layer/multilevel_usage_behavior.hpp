@@ -83,6 +83,8 @@ private:
     void try_dispatch_queue(std::deque<graph_ref>& q);
 
     kernel_graph* resolve(const graph_ref& ref);
+
+    void send_timed_msg();
 };
 
 
