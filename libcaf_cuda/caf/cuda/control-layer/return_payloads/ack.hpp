@@ -9,6 +9,7 @@ namespace caf::cuda {
 #define CAF_CUDA_ACK_TRANSFER  1
 #define CAF_CUDA_ACK_LAUNCH    2
 #define CAF_CUDA_ACK_MEMORY    3
+#define TIMER 4
 
 // -----------------------------------------------------------------------------
 // Base ACK payload
