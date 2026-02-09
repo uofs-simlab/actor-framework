@@ -5,6 +5,7 @@
 #include "caf/cuda/control-layer/core_usage_behavior.hpp"
 #include "caf/cuda/control-layer/single_usage_behavior.hpp"
 #include "caf/cuda/control-layer/multilevel_usage_behavior.hpp"
+#include "caf/cuda/control-layer/pressure_scheduler.hpp"
 #include "caf/cuda/control-layer/kernel_graph.hpp"
 #include <string>
 #include <iostream>
@@ -27,17 +28,21 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
     //check if multiple gpus
     state.multiple_gpus = multi_gpu;
 
+    //static declarations may cause issues when expanding to
+    //multiple GPUs
     static red_light_behavior red_behavior(state);
     static green_light_behavior green_behavior(state);
     static core_usage_behavior core_behavior(state);
     static single_usage_behavior single_behavior(state);
     static multilevel_usage_behavior multi_behavior(state);
+    static pressure_scheduler pressure(state);
 
     // populate the behavior table
     state.table.add("red", &red_behavior);
     state.table.add("green",   &green_behavior);
     state.table.add("core_usage",   &core_behavior);
     state.table.add("multilevel",   &multi_behavior);
+    state.table.add("pressure",   &pressure);
 
     // default behavior
     state.current_behavior = state.table.get(behavior_token("green"));
