@@ -181,6 +181,7 @@ public:
   void send_scheduler_actor_message(token_ptr token,int device_number = -1);
   void send_scheduler_actor_message(std::vector<token_ptr> tokens,int device_number = -1);
   void send_scheduler_actor_message(behavior_token_ptr token,int device_number);
+  void send_scheduler_actor_message(std::string behavior,int device_number);
 
 
 private:

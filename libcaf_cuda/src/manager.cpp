@@ -361,6 +361,11 @@ void manager::send_scheduler_actor_message(behavior_token_ptr token, int device_
 
     anon_mail(token).send(scheduler_actors[device_number]);
 }
- 
+
+void manager::send_scheduler_actor_message(std::string behavior, int device_number) {
+    auto token = caf::cuda::make_behavior_token(std::move(behavior));
+    send_scheduler_actor_message(token, device_number);
+}
+
 
 } // namespace caf::cuda
