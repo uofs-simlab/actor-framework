@@ -21,6 +21,9 @@
 #include "caf/cuda/actor_facade.hpp"
 #include "caf/cuda/platform.hpp"
 #include "caf/cuda/manager_config.hpp"
+#include "caf/cuda/control-layer/token.hpp"
+#include "caf/cuda/control-layer/behavior_token.hpp"
+
 
 //A class that just acts as a user interface
 //and a system initialization for cuda 
@@ -173,6 +176,12 @@ public:
   caf::actor_system& system() { return system_; }
 
   device_ptr find_device(int id);
+
+  //methods used to send scheduler actors messages
+  void send_scheduler_actor_message(token_ptr token,int device_number);
+  void send_scheduler_actor_message(std::vector<token_ptr> tokens,int device_number);
+  void send_scheduler_actor_message(behavior_token_ptr token,int device_number);
+
 
 private:
   explicit manager(caf::actor_system& sys)
