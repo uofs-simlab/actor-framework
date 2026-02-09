@@ -14,10 +14,11 @@ multilevel_usage_behavior::~multilevel_usage_behavior() {}
 void multilevel_usage_behavior::init_state() {
     device_ = manager::get().find_device(state_.device_number);
     heuristic.emplace(device_);
-    total_SM = device_->num_sms() * 16; // preserve previous semantics
+    total_SM = device_->num_sms() * 16;
     available_SM = total_SM;
     available_memory = static_cast<int>(device_->total_memory_bytes());
     num_streams = state_.num_streams;
+    low_threshold = total_SM / 6;
 }
 
 void multilevel_usage_behavior::on_enter() {
@@ -25,7 +26,7 @@ void multilevel_usage_behavior::on_enter() {
 }
 
 void multilevel_usage_behavior::process_launch_token(const token_ptr& tok, int stream_id) {
-    scoped_timer timer("multilevel_usage_behavior::process_launch_token");
+    //scoped_timer timer("multilevel_usage_behavior::process_launch_token");
 
     int cost = heuristic->getCost(tok);
 
@@ -36,7 +37,7 @@ void multilevel_usage_behavior::process_launch_token(const token_ptr& tok, int s
 }
 
 void multilevel_usage_behavior::receive(const token_ptr& tok) {
-    scoped_timer timer("multilevel_usage_behavior::receive");
+   // scoped_timer timer("multilevel_usage_behavior::receive");
 
     if (tok->getType() == LAUNCH) {
         create_new_graph(tok);
@@ -141,12 +142,12 @@ void multilevel_usage_behavior::try_dispatch_queue(std::deque<graph_ref>& q) {
 }
 
 void multilevel_usage_behavior::schedule() {
-    scoped_timer timer("multilevel_usage_behavior::schedule");
-
+   // scoped_timer timer("multilevel_usage_behavior::schedule");
+    
     // Prioritize low, then medium, then high
-    try_dispatch_queue(low_queue);
-    try_dispatch_queue(med_queue);
     try_dispatch_queue(high_queue);
+    try_dispatch_queue(med_queue);
+    try_dispatch_queue(low_queue);
 }
 
 void multilevel_usage_behavior::reclaim(int blocks_consumed,
@@ -178,6 +179,13 @@ void multilevel_usage_behavior::reclaim(int blocks_consumed,
     schedule();
 }
 
+void multilevel_usage_behavior::reclaim(ack return_msg) {
+
+	//TODO IMPLEMENT TIMER ACK AND TRANSFER ACK 
+
+}
+
+
 kernel_graph* multilevel_usage_behavior::resolve(const graph_ref& ref) {
     switch (ref.kind) {
         case graph_ref::kind_t::dependent: {
@@ -192,6 +200,19 @@ kernel_graph* multilevel_usage_behavior::resolve(const graph_ref& ref) {
     }
     return nullptr;
 }
+
+
+    //multi GPU load balancing methods
+    void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
+	    //TODO IMPLEMENT
+
+    }
+    void multilevel_usage_behavior::receive_work(std::vector<kernel_graph> work_graphs) {  
+	    //TODO IMPLEMENT
+    
+    }
+
+
 
 } // namespace caf::cuda
 

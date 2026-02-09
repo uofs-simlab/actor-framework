@@ -16,14 +16,6 @@ namespace caf::cuda {
 
 // Multilevel queue scheduling behavior (low / medium / high)
 // - Graphs are classified by the *next operation's* cost relative to total_SM
-// - Classification thresholds:
-//     low:    cost <= total_SM
-//     medium: cost <= 16 * total_SM
-//     high:   cost >  16 * total_SM
-// - schedule() will try to drain low first, then medium, then high.
-// - When a graph has work dispatched it is removed from the queues and
-//   not re-inserted. reclaim(...) can push graphs back into queues by
-//   looking up the dependency number and re-evaluating the front op.
 
 class multilevel_usage_behavior : public scheduler_actor_behavior {
 public:
@@ -38,20 +30,37 @@ public:
     // allows this behavior to find the graph that might now be ready
     void reclaim(int blocks_consumed, int memory_returned, int time, int dependency_number) override;
 
+    //more improved version of reclaim, meant for when we need to dispatch transfer
+    //tokens
+    void reclaim(ack return_msg) override;
+
     std::string name() const override { return "multilevel_usage\n"; }
+
+
+    //multi GPU load balancing methods
+    //by default this scheduler behavior will try to load balance
+    //across all gpus 
+    void handle_load_balance_request(int device_number) override;
+    void receive_work(std::vector<kernel_graph> work_graphs) override;
+    
+
 
 protected:
     void process_launch_token(const token_ptr& tok, int stream_id) override;
 
 private:
     device_ptr device_;
-    std::optional<sm_usage_heuristic> heuristic;
+    std::optional<sm_usage_heuristic> heuristic; //we also clamp results since
+						 //it leads to more concurrent work
 
-    int total_SM = 0;
+
+    int total_SM = 0; //this is not really total_SM anymore, more like a threshold 
     int available_SM = 0;
     int available_memory = 0; // bytes
     int num_streams = 0;
     int current_stream = 0;
+    int low_threshold = 0; //this is used to check if we should request more work
+			   //or not
 
     //tracking graphs
     std::unordered_map<int,kernel_graph> graphs;
