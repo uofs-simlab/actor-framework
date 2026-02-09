@@ -22,8 +22,8 @@ void pressure_scheduler::init_state() {
     // thresholds (tunable)
     resource_threshold = 1.0; // normalized SM pressure threshold (1.0 = fully loaded)
 
-    low_concurreny_threshold = 0.25;  // low SM pressure fraction
-    high_concurrency_threshold = 0.75; // high SM pressure fraction
+    low_concurreny_threshold = 5.0;  // low SM pressure fraction
+    high_concurrency_threshold = 15.0; // high SM pressure fraction
 
     // initial accounting
     current_sm_pressure = 0.0;
@@ -206,6 +206,10 @@ int pressure_scheduler::get_next_stream() {
     return current_stream++ % std::max(1, num_streams);
 }
 
+
+
+//these methods were drafted in original design and were meant to be used
+//now its unclear what they are supposed to do 
 int pressure_scheduler::get_resource_pressure(int blocks_consumed) {
     return blocks_consumed > 0 ? blocks_consumed : 1;
 }
