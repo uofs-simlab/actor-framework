@@ -349,7 +349,18 @@ void manager::send_scheduler_actor_message(std::vector<token_ptr> tokens,
     anon_mail(std::move(tokens)).send(scheduler_actors[target]);
 }
 
+void manager::send_scheduler_actor_message(behavior_token_ptr token, int device_number) {
+    if (!scheduler_on || scheduler_actors.empty())
+        return;
 
+    int num_devices = static_cast<int>(scheduler_actors.size());
+
+    // Drop if device number is invalid
+    if (device_number < 0 || device_number >= num_devices)
+        return;
+
+    anon_mail(token).send(scheduler_actors[device_number]);
+}
  
 
 } // namespace caf::cuda
