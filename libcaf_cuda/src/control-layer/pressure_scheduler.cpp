@@ -45,9 +45,9 @@ void pressure_scheduler::receive(const token_ptr& tok) {
 }
 
 int pressure_scheduler::get_bucket_level(double sm_ratio) {
-    if (sm_ratio >= high_concurrency_threshold) return HIGH;
-    if (sm_ratio >= low_concurreny_threshold) return MEDIUM;
-    return LOW;
+    if (sm_ratio >= 0.75) return HIGH;    // big kernel
+    if (sm_ratio >= 0.40) return MEDIUM;  // mid-sized
+    return LOW;                           // narrow
 }
 
 void pressure_scheduler::schedule() {
