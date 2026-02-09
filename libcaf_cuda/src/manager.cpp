@@ -296,6 +296,59 @@ bool manager::compile_nvrtc_program(const char* source, CUdevice device, std::ve
 	return caf::cuda::compile_nvrtc_program(source,device,ptx_out);
 }
 
+// ---------------------------------------------
+// Send single token
+// ---------------------------------------------
+void manager::send_scheduler_actor_message(token_ptr token, int device_number) {
+    if (!scheduler_on || scheduler_actors.empty())
+        return;
+
+    int num_devices = static_cast<int>(scheduler_actors.size());
+    int target = -1;
+
+    if (device_number != -1) {
+        // Explicit device
+        if (device_number >= num_devices)
+            return; // silently discard
+        target = device_number;
+    } else {
+        // No device specified
+        if (!token->isIndependent()) {
+            target = token->getDependency() % num_devices;
+            if (target < 0)
+                target += num_devices;
+        } else {
+            target = rand() % num_devices;
+        }
+    }
+
+    anon_mail(token).send(scheduler_actors[target]);
+}
+
+// ---------------------------------------------
+// Send vector of tokens
+// ---------------------------------------------
+void manager::send_scheduler_actor_message(std::vector<token_ptr> tokens,
+                                           int device_number) {
+    if (!scheduler_on || scheduler_actors.empty() || tokens.empty())
+        return;
+
+    int num_devices = static_cast<int>(scheduler_actors.size());
+    int target = -1;
+
+    if (device_number != -1) {
+        // Explicit device
+        if (device_number >= num_devices)
+            return; // silently discard
+        target = device_number;
+    } else {
+        // No device specified → random
+        target = rand() % num_devices;
+    }
+
+    anon_mail(std::move(tokens)).send(scheduler_actors[target]);
+}
+
 
  
 
