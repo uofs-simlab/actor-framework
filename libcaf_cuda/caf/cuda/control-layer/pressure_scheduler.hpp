@@ -119,7 +119,7 @@ private:
     //(concurreny,memory vs compute bound, resource)
     int get_resource_pressure(int blocks_consumed);
     int get_concurrency_pressure(int);
-    int get_pressure_level(double); 
+    int get_bucket_level(double); 
     
 };
 

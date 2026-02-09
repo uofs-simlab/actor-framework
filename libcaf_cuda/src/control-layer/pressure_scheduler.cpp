@@ -44,7 +44,7 @@ void pressure_scheduler::receive(const token_ptr& tok) {
     }
 }
 
-int pressure_scheduler::get_pressure_level(double sm_ratio) {
+int pressure_scheduler::get_bucket_level(double sm_ratio) {
     if (sm_ratio >= high_concurrency_threshold) return HIGH;
     if (sm_ratio >= low_concurreny_threshold) return MEDIUM;
     return LOW;
@@ -111,7 +111,7 @@ void pressure_scheduler::enqueue_graph_by_cost(const graph_ref& ref) {
     }
 
     double sm_ratio = static_cast<double>(sm_used) / total_SM;
-    int level = get_pressure_level(sm_ratio);
+    int level = get_bucket_level(sm_ratio);
 
     // For now, everything is memory-bound; place in appropriate memory queue
     switch(level) {
@@ -141,8 +141,7 @@ void pressure_scheduler::try_dispatch_queue(std::deque<graph_ref>& q) {
 
         double sm_ratio = static_cast<double>(sm_used) / total_SM;
 
-        // Dispatch cutoff: don't exceed 100% SM usage
-        if (current_sm_pressure + sm_ratio > resource_threshold) break;
+        if (current_sm_pressure + sm_ratio > high_concurrency_threshold) break;
 
         q.pop_front();
         token_ptr op = g->getOperation();
@@ -211,8 +210,14 @@ int pressure_scheduler::get_resource_pressure(int blocks_consumed) {
     return blocks_consumed > 0 ? blocks_consumed : 1;
 }
 
-int pressure_scheduler::get_concurrency_pressure(int blocks_consumed) {
-    return get_resource_pressure(blocks_consumed);
+int pressure_scheduler::get_concurrency_pressure(int sm_used) {
+    double ratio = double(sm_used) / double(total_SM);
+
+    if (ratio < 0.10) return 1;
+    if (ratio < 0.25) return 2;
+    if (ratio < 0.50) return 4;
+    if (ratio < 0.75) return 8;
+    return 16;
 }
 
 } // namespace caf::cuda
