@@ -78,6 +78,21 @@ void multilevel_usage_behavior::create_new_graph(const token_ptr& tok) {
     }
 
     int dep = tok->getDependency();
+    
+    //check to ensure that the token is not found on another device
+    if (state_.multiple_gpus) {
+	    int dev_num = get_device_for_dependency(dep);
+
+	    //found elsewhere
+	    if (dev_num != state_.device_number && dev_num != -1) {
+	    
+		    anon_mail(tok).send(state_.schedulers[dev_num]);
+		    return;
+	    }
+    }
+    
+    
+    
     if (graphs.contains(dep)) {
         graphs[dep].add_operation(tok);
         // If graph already existed, ensure it's enqueued only if not currently in any queue
