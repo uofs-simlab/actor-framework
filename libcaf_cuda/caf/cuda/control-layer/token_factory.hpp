@@ -49,6 +49,15 @@ CAF_CUDA_EXPORT response_token_ptr make_memory_response_token(actor receiver,
 
 
 
+/// Creates a transfer_token from a launch_token
+CAF_CUDA_EXPORT response_token_ptr make_transfer_token(
+    caf::actor receiver,
+    const launch_token& orig,
+    int device_number,
+    int stream_id
+);
+
+
 //do not use this, for testing only 
 CAF_CUDA_EXPORT mem_ptr<int> make_mem_ptr(size_t num_elements);
 

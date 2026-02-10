@@ -3,6 +3,7 @@
 #include "caf/cuda/control-layer/launch_response_token.hpp"
 #include "caf/cuda/control-layer/behavior_token.hpp"
 #include "caf/cuda/control-layer/memory_response_token.hpp"
+#include "caf/cuda/control-layer/transfer_token.hpp"
 
 namespace caf::cuda {
 
@@ -61,6 +62,20 @@ response_token_ptr make_memory_response_token(actor receiver,
 				     int stream_id) {
     return response_token_ptr(new memory_response_token(receiver, orig,device_number,stream_id));
 }
+
+response_token_ptr make_transfer_token(caf::actor receiver,
+                                       const launch_token& orig,
+                                       int device_number,
+                                       int stream_id)
+{
+    return response_token_ptr(
+        new transfer_token(receiver,
+                           orig,
+                           device_number,
+                           stream_id));
+}
+
+
 
 
 /// Factory function: create a mem_ptr<int> with fake data
