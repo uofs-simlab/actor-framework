@@ -120,7 +120,9 @@ private:
     int get_resource_pressure(int blocks_consumed);
     int get_concurrency_pressure(int);
     int get_bucket_level(double); 
-    
+
+    double clamp_sm_ratio(double) const;
+
 };
 
 
