@@ -177,6 +177,8 @@ public:
 
   device_ptr find_device(int id);
 
+  int get_num_devices();
+
   //methods used to send scheduler actors messages
   void send_scheduler_actor_message(token_ptr token,int device_number = -1);
   void send_scheduler_actor_message(std::vector<token_ptr> tokens,int device_number = -1);

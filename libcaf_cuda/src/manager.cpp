@@ -66,7 +66,7 @@ void manager::init(caf::actor_system& sys, manager_config config) {
     }
 }
 
-
+int manager::get_num_devices() {return platform_ -> get_num_devices();}
 
 void manager::init_scheduler_actors(caf::actor_system& sys) {
 
