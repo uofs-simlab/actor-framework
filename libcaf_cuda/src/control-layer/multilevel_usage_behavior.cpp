@@ -200,7 +200,7 @@ void multilevel_usage_behavior::reclaim(ack return_msg) {
 	if (return_msg.getType() == TIMER) {
 
 		//check if load balance logic goes here
-	     send_timed_msg();	
+		send_timed_msg();	
 	}
 
 
@@ -208,42 +208,57 @@ void multilevel_usage_behavior::reclaim(ack return_msg) {
 
 
 kernel_graph* multilevel_usage_behavior::resolve(const graph_ref& ref) {
-    switch (ref.kind) {
-        case graph_ref::kind_t::dependent: {
-            auto it = graphs.find(ref.dependency);
-            if (it == graphs.end()) return nullptr;
-            return &it->second;
-        }
-        case graph_ref::kind_t::independent: {
-            if (ref.index >= independent_graphs.size()) return nullptr;
-            return &independent_graphs[ref.index];
-        }
-    }
-    return nullptr;
+	switch (ref.kind) {
+		case graph_ref::kind_t::dependent: {
+							   auto it = graphs.find(ref.dependency);
+							   if (it == graphs.end()) return nullptr;
+							   return &it->second;
+						   }
+		case graph_ref::kind_t::independent: {
+							     if (ref.index >= independent_graphs.size()) return nullptr;
+							     return &independent_graphs[ref.index];
+						     }
+	}
+	return nullptr;
 }
 
 
-    //multi GPU load balancing methods
-    void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
-	    //TODO IMPLEMENT
+//multi GPU load balancing methods
+void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
+	//TODO IMPLEMENT
 
 
-	    //we should only accept to transfer work if we are busy as is 
-	    //since otherwise whats the point?
-	    if (available_SM >= low_threshold) {
-	    
-	    
-	    } 
+	//we should only accept to transfer work if we are busy as is 
+	//since otherwise whats the point?
+	if (available_SM >= low_threshold) {
+
+
+	} 
 
 
 
-    }
-    void multilevel_usage_behavior::receive_work(std::vector<kernel_graph> work_graphs) {  
-	    //TODO IMPLEMENT
-    
-    }
+}
+void multilevel_usage_behavior::receive_work(std::vector<kernel_graph> work_graphs) {  
+	//TODO IMPLEMENT
 
+}
 
+void multilevel_usage_behavior::add_dependency_to_device(int dependency_number, int device_number) {
+	// Always override existing value
+	dependency_device_map[dependency_number] = device_number;
+}
+
+void multilevel_usage_behavior::remove_dependency(int dependency_number) {
+	dependency_device_map.erase(dependency_number);
+}
+
+int multilevel_usage_behavior::get_device_for_dependency(int dependency_number) const {
+	auto it = dependency_device_map.find(dependency_number);
+	if (it != dependency_device_map.end()) {
+		return it->second;
+	}
+	return -1; // not found
+}
 
 } // namespace caf::cuda
 

@@ -11,6 +11,7 @@
 #include <optional>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace caf::cuda {
 
@@ -48,7 +49,7 @@ public:
 protected:
     int num_devices;
     void process_launch_token(const token_ptr& tok, int stream_id) override;
-   
+       
 
 private:
     device_ptr device_;
@@ -63,6 +64,10 @@ private:
     int current_stream = 0;
     int low_threshold = 0; //this is used to check if we should request more work
 			   //or not
+
+    // dependency -> device mapping
+    std::unordered_map<int, int> dependency_device_map;
+
 
     //tracking graphs
     std::unordered_map<int,kernel_graph> graphs;
@@ -87,6 +92,12 @@ private:
     kernel_graph* resolve(const graph_ref& ref);
 
     void send_timed_msg();
+
+    void add_dependency_to_device(int dependency_number, int device_number);
+    void remove_dependency(int dependency_number);
+    int get_device_for_dependency(int dependency_number) const;
+
+
 };
 
 
