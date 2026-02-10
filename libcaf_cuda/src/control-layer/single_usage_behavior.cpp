@@ -45,7 +45,7 @@ void single_usage_behavior::reclaim(int blocks_consumed,
 }
 
 void single_usage_behavior::process_launch_token(const token_ptr& tok, int stream_id) {
-    scoped_timer timer("single_usage_behavior::process_launch_token");
+    //scoped_timer timer("single_usage_behavior::process_launch_token");
 
     // For pure single-usage mode we usually don't care about the heuristic cost
     // but we can still compute it for logging / debugging
