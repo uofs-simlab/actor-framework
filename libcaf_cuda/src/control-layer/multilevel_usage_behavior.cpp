@@ -19,6 +19,7 @@ void multilevel_usage_behavior::init_state() {
     available_memory = static_cast<int>(device_->total_memory_bytes());
     num_streams = state_.num_streams;
     low_threshold = total_SM / 6;
+    num_devices = manager::get().get_num_devices();
 }
 
 void multilevel_usage_behavior::on_enter() {
@@ -202,6 +203,7 @@ void multilevel_usage_behavior::reclaim(ack return_msg) {
 	     send_timed_msg();	
 	}
 
+
 }
 
 
@@ -224,6 +226,16 @@ kernel_graph* multilevel_usage_behavior::resolve(const graph_ref& ref) {
     //multi GPU load balancing methods
     void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
 	    //TODO IMPLEMENT
+
+
+	    //we should only accept to transfer work if we are busy as is 
+	    //since otherwise whats the point?
+	    if (available_SM >= low_threshold) {
+	    
+	    
+	    } 
+
+
 
     }
     void multilevel_usage_behavior::receive_work(std::vector<kernel_graph> work_graphs) {  

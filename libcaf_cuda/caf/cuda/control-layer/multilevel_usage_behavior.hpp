@@ -46,7 +46,9 @@ public:
 
 
 protected:
+    int num_devices;
     void process_launch_token(const token_ptr& tok, int stream_id) override;
+   
 
 private:
     device_ptr device_;
