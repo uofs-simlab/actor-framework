@@ -43,6 +43,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
     state.table.add("core_usage",   &core_behavior);
     state.table.add("multilevel",   &multi_behavior);
     state.table.add("pressure",   &pressure);
+    state.table.add("single_usage",   &single_behavior);
 
     // default behavior
     state.current_behavior = state.table.get(behavior_token("green"));
