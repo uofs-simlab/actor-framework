@@ -46,7 +46,8 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
     state.table.add("single_usage",   &single_behavior);
 
     // default behavior
-    state.current_behavior = state.table.get(behavior_token("green"));
+    //state.current_behavior = state.table.get(behavior_token("green"));
+    state.current_behavior = state.table.get(behavior_token("single_usage"));
     state.current_behavior->on_enter();
 
 
@@ -90,6 +91,8 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
 	
 	//message handler for reclaim
 	[&](int value, int memory,int runtime,int dependency) {	
+
+                //std::cout << "Received reclaim request\n";
 		state.current_behavior->reclaim(value,memory,runtime,dependency);
 	},
 
