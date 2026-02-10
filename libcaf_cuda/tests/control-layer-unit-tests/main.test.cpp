@@ -13,6 +13,8 @@
 #include <vector>
 #include <string>
 #include <stdexcept>
+#include <chrono>
+#include <thread>
 #include <cassert>
 
 using namespace caf::cuda;
@@ -113,8 +115,54 @@ void test_kernel_graph_push_pop([[maybe_unused]] caf::actor_system& sys) {
 }
 
 
+void test_kernel_graph_can_move_initial([[maybe_unused]] caf::actor_system& sys) {
+    kernel_graph g(/*device*/0, /*stream*/0);
+
+    // Fresh graph should be allowed to move immediately
+    if (!g.canMove()) {
+        throw std::runtime_error("fresh kernel_graph cannot move");
+    }
+
+    std::cout << "[test_kernel_graph_can_move_initial] OK\n";
+}
+
+void test_kernel_graph_mark_moved_blocks([[maybe_unused]] caf::actor_system& sys) {
+    kernel_graph g(/*device*/0, /*stream*/0);
+
+    // First move allowed
+    if (!g.canMove()) {
+        throw std::runtime_error("kernel_graph cannot move initially");
+    }
+
+    // Mark as moved
+    g.markMoved();
+
+    // Immediately after marking, movement should be blocked
+    if (g.canMove()) {
+        throw std::runtime_error("kernel_graph canMove() returned true too soon after markMoved()");
+    }
+
+    std::cout << "[test_kernel_graph_mark_moved_blocks] OK\n";
+}
+
+void test_kernel_graph_can_move_after_delay([[maybe_unused]] caf::actor_system& sys) {
+    kernel_graph g(/*device*/0, /*stream*/0);
+
+    g.markMoved();
+
+    // Sleep slightly longer than the default 2s threshold
+    std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+
+    if (!g.canMove()) {
+        throw std::runtime_error("kernel_graph still blocked after delay");
+    }
+
+    std::cout << "[test_kernel_graph_can_move_after_delay] OK\n";
+}
+
+
+
 // 3) Test core_heuristic_function
-#include <cassert>  // for assert
 
 void test_core_heuristic_function([[maybe_unused]] caf::actor_system& sys) {
     caf::cuda::manager::init(sys);
@@ -173,9 +221,13 @@ void test_core_heuristic_function([[maybe_unused]] caf::actor_system& sys) {
 
 // Register tests
 const std::vector<Test> tests = {
-    {"test_kernel_graph_empty", test_kernel_graph_empty},
-    {"test_kernel_graph_push_pop", test_kernel_graph_push_pop},
-    {"test_core_heuristic_function", test_core_heuristic_function}
+	{"test_kernel_graph_empty", test_kernel_graph_empty},
+	{"test_kernel_graph_push_pop", test_kernel_graph_push_pop},
+	{"test_kernel_graph_can_move_initial", test_kernel_graph_can_move_initial},
+	{"test_kernel_graph_mark_moved_blocks", test_kernel_graph_mark_moved_blocks},
+	{"test_kernel_graph_can_move_after_delay", test_kernel_graph_can_move_after_delay},
+	{"test_core_heuristic_function", test_core_heuristic_function}
+
 };
 
 // Run a single test and return status code:
