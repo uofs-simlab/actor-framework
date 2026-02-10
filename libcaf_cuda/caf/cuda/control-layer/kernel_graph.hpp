@@ -27,14 +27,16 @@ public:
                  int dependency_number)
         : device_number_(device_number),
           stream_id_(stream_id),
-          dependency_number_(dependency_number) {}
+          dependency_number_(dependency_number),
+          last_move_(clock_t::now() - std::chrono::seconds{10})	{}
 
 
         // Convenience constructor for independent graphs
     kernel_graph(int device_number, int stream_id)
         : device_number_(device_number),
           stream_id_(stream_id),
-          dependency_number_(INDEPENDENT) {}
+          dependency_number_(INDEPENDENT),
+          last_move_(clock_t::now() - std::chrono::seconds{10})	{}
 
 
     // returns the next operation/token_ptr that can be dequeued
@@ -89,8 +91,7 @@ private:
     int dependency_number_;
     int status = READY;
     std::vector<token_ptr> operations;
-    clock_t::time_point last_move_ = clock_t::time_point::min();
-
+    clock_t::time_point last_move_;
 };
 
 
