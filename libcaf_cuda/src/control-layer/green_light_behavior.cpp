@@ -24,7 +24,11 @@ void green_light_behavior::schedule() {
 }
 
 void green_light_behavior::receive(const token_ptr& tok) {
-    if (tok->getType() == LAUNCH) {
+   
+
+//	std::cout << "Green light receive\n";
+
+     if (tok->getType() == LAUNCH) {
         //use 0 as stream id for now, eventually will have to figure out
         //stream load balancing
         process_launch_token(tok, 0);

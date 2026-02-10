@@ -10,6 +10,7 @@ void scheduler_actor_behavior::process_launch_token(const token_ptr& tok, int st
     anon_mail(response).send(launch.getReplyActor());
 }
 
+
 void scheduler_actor_behavior::process_memory_transfer_token(const token_ptr& tok, int stream_id) {
     const auto& mem = static_cast<const memory_transfer_token&>(*tok);
     auto response = make_memory_response_token(state_.self, mem, state_.device_number, stream_id);

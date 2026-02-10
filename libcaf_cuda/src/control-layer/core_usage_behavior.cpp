@@ -47,6 +47,9 @@ void core_usage_behavior::reclaim(int blocks_consumed,
 
 void core_usage_behavior::process_launch_token(const token_ptr& tok,int stream_id )  {
 
+    
+	scoped_timer timer("core_usage_behavior::process_launch_token");
+	
 	int cost = heuristic -> getCost(tok);
 
 	const auto& launch = static_cast<const launch_token&>(*tok);
@@ -58,7 +61,7 @@ void core_usage_behavior::process_launch_token(const token_ptr& tok,int stream_i
 
 void core_usage_behavior::receive(const token_ptr& tok) {
 
-	//std::cout <<"YARRRRRRRRRRRRRRRRRRRRR\n ";
+    scoped_timer timer("core_usage_behavior::receive");
     
 	if (tok->getType() == LAUNCH) {
         create_new_graph(tok);
