@@ -240,19 +240,72 @@ kernel_graph* multilevel_usage_behavior::resolve(const graph_ref& ref) {
 
 //multi GPU load balancing methods
 void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
-	//TODO IMPLEMENT
+    
+    // Only transfer work if we are busy
+    if (available_SM < low_threshold) {
+        return; // GPU not busy enough, do nothing
+    }
 
+    std::vector<kernel_graph> work_to_transfer;
 
-	//we should only accept to transfer work if we are busy as is 
-	//since otherwise whats the point?
-	if (available_SM >= low_threshold) {
+    // ---- Helper lambda to collect transferable graphs from a queue ----
+    auto collect_graphs_from_queue = [&](std::deque<graph_ref>& q, std::size_t max_count) {
+        std::size_t collected = 0;
 
+        for (auto it = q.begin(); it != q.end() && collected < max_count;) {
+            graph_ref ref = *it;
+            kernel_graph* g = resolve(ref);
 
-	} 
+            if (!g || g->empty() || !g->canMove()) {
+                ++it;
+                continue; // skip invalid or non-movable graphs
+            }
 
+            // Move the graph into the transfer vector
+            work_to_transfer.push_back(std::move(*g));
+            ++collected;
 
+            // Clean up local structures
+            if (ref.kind == graph_ref::kind_t::dependent) {
+                remove_dependency(ref.dependency);
+                graphs.erase(ref.dependency);
+            } else { // independent
+                if (ref.index < independent_graphs.size()) {
+		    //TODO come up with a better way to clean this up
+                    independent_graphs[ref.index] = kernel_graph(); // reset empty
+                }
+            }
 
+            // Remove from queue
+            it = q.erase(it);
+        }
+    };
+
+    // ---- Step 1: transfer independent graphs first ----
+    std::size_t max_independent = independent_graphs.size() / 2;
+    std::size_t transferred_independent = 0;
+
+    for (std::size_t i = 0; i < independent_graphs.size() && transferred_independent < max_independent; ++i) {
+        kernel_graph& g = independent_graphs[i];
+        if (g.empty() || !g.canMove()) continue;
+
+        work_to_transfer.push_back(std::move(g));
+        independent_graphs[i] = kernel_graph(); // reset
+        ++transferred_independent;
+    }
+
+    // ---- Step 2: transfer from high and medium queues ----
+    std::size_t max_high_med = (high_queue.size() + med_queue.size()) / 2;
+    collect_graphs_from_queue(high_queue, max_high_med);
+    collect_graphs_from_queue(med_queue, max_high_med);
+
+    // ---- Step 3: send if we have anything ----
+    if (!work_to_transfer.empty()) {
+        anon_mail(work_to_transfer).send(state_.schedulers[device_number]);
+    }
 }
+
+
 void multilevel_usage_behavior::receive_work(std::vector<kernel_graph> work_graphs) {  
 	//TODO IMPLEMENT
 
