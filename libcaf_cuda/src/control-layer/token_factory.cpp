@@ -4,6 +4,7 @@
 #include "caf/cuda/control-layer/behavior_token.hpp"
 #include "caf/cuda/control-layer/memory_response_token.hpp"
 #include "caf/cuda/control-layer/transfer_token.hpp"
+#include "caf/cuda/control-layer/all-control-layer.hpp"
 
 namespace caf::cuda {
 
