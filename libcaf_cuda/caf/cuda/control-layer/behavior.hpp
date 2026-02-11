@@ -42,7 +42,7 @@ public:
 
     //this is here to ensure that payloads on return can conform to an interface
     //rather than changing the interface to accomidate every scheduling need
-    virtual void reclaim(ack payload) {
+    virtual void reclaim(ack& payload) {
 	    //default implementation is to do nothing, this should be overidden
 	    //by children classes 
     }

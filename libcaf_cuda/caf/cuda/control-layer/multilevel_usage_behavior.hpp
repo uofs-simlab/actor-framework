@@ -33,7 +33,7 @@ public:
 
     //more improved version of reclaim, meant for when we need to dispatch transfer
     //tokens
-    void reclaim(ack return_msg) override;
+    void reclaim(ack& return_msg) override;
 
     std::string name() const override { return "multilevel_usage\n"; }
 

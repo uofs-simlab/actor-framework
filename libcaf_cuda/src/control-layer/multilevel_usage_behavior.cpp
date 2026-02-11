@@ -208,7 +208,7 @@ void multilevel_usage_behavior::reclaim(int blocks_consumed,
     schedule();
 }
 
-void multilevel_usage_behavior::reclaim(ack return_msg) {
+void multilevel_usage_behavior::reclaim(ack& return_msg) {
 
 	//TODO IMPLEMENT TIMER ACK AND TRANSFER ACK 
 
