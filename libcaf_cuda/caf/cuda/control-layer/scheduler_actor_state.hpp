@@ -12,7 +12,8 @@ class scheduler_actor_behavior;
 struct scheduler_actor_state {
     caf::actor  self;
     scheduler_actor_behavior* current_behavior = nullptr;
-    behavior_table table;
+    std::unique_ptr<behavior_table> table;
+    //behavior_table table;
     std::queue<token_ptr> queue; // here for legacy prototype schedulers
     std::vector<kernel_graph> operations; //more modern dependency based data structure 
     int device_number;

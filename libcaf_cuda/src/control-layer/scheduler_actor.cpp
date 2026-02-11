@@ -28,26 +28,9 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
     //check if multiple gpus
     state.multiple_gpus = multi_gpu;
 
-    //static declarations may cause issues when expanding to
-    //multiple GPUs
-    static red_light_behavior red_behavior(state);
-    static green_light_behavior green_behavior(state);
-    static core_usage_behavior core_behavior(state);
-    static single_usage_behavior single_behavior(state);
-    static multilevel_usage_behavior multi_behavior(state);
-    static pressure_scheduler pressure(state);
-
-    // populate the behavior table
-    state.table.add("red", &red_behavior);
-    state.table.add("green",   &green_behavior);
-    state.table.add("core_usage",   &core_behavior);
-    state.table.add("multilevel",   &multi_behavior);
-    state.table.add("pressure",   &pressure);
-    state.table.add("single_usage",   &single_behavior);
-
-    // default behavior
-    //state.current_behavior = state.table.get(behavior_token("green"));
-    state.current_behavior = state.table.get(behavior_token("single_usage"));
+   // default behavior
+    state.table = std::make_unique<behavior_table>(state);
+    state.current_behavior = state.table -> get(behavior_token("single_usage"));
     state.current_behavior->on_enter();
 
 
@@ -59,7 +42,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
         },
         
    [&state](const caf::cuda::behavior_token_ptr& tok) -> bool {
-    auto* next = state.table.get(*tok);
+    auto* next = state.table -> get(*tok);
     if (next) {
         if (next != state.current_behavior) {
             state.current_behavior->on_exit();   // cleanup current behavior
