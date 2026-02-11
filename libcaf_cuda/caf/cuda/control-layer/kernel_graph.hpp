@@ -84,6 +84,14 @@ public:
     void set_status(int s) noexcept {status = s;}
     int get_status() const noexcept {return status;}
 
+     bool is_independent() const noexcept {
+        return dependency_number_ == INDEPENDENT;
+    }
+
+    int get_dependency_number() const noexcept {
+        return dependency_number_;
+    }
+
 
 private:
     int device_number_;
