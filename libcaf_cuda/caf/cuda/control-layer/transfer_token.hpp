@@ -71,7 +71,8 @@ public:
 
             // Upcast explicitly to ack reference before sending
             const ack& base_ack = ack_obj;
-            caf::anon_mail(base_ack).urgent().send(receiver_);
+	    caf::anon_mail(std::move(ack_obj)).urgent().send(receiver_);
+
 
         } catch (...) {
             // destructor-safe
