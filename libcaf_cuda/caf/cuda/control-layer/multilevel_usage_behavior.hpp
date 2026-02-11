@@ -44,6 +44,7 @@ public:
     //across all gpus 
     void handle_load_balance_request(int device_number) override;
     void receive_work(std::vector<kernel_graph> work_graphs) override;
+    void request_load_balance();
 
 
 protected:

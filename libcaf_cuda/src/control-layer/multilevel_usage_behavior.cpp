@@ -214,7 +214,7 @@ void multilevel_usage_behavior::reclaim(ack& return_msg) {
 
 	if (return_msg.getType() == TIMER) {
 
-		//check if load balance logic goes here
+			
 		send_timed_msg();	
 	}
 
@@ -245,6 +245,25 @@ void multilevel_usage_behavior::process_transfer_ack(ack& msg) {
 }
 
 
+void multilevel_usage_behavior::request_load_balance() {
+    if (!state_.multiple_gpus)
+        return;
+
+    // Only request work if we're underutilized
+    if (available_SM >= low_threshold)
+        return;
+
+    int my_device = state_.device_number;
+
+    for (int i = 0; i < num_devices; ++i) {
+        // Skip sending to self
+        if (i == my_device)
+            continue;
+
+        // Send our device number to other scheduler actors
+        anon_mail(my_device).urgent().send(state_.schedulers[i]);
+    }
+}
 
 
 
