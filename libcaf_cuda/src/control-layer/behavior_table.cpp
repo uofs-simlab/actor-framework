@@ -7,6 +7,7 @@
 // If your derived classes have important cleanup, also include them if needed
 #include "caf/cuda/control-layer/green_light_behavior.hpp"
 #include "caf/cuda/control-layer/red_light_behavior.hpp"
+#include "caf/cuda/control-layer/all-control-layer.hpp"
 
 namespace caf::cuda {
 

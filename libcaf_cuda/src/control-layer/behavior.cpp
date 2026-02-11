@@ -1,5 +1,6 @@
 #include "caf/cuda/control-layer/all-control-layer.hpp"
 #include "caf/cuda/control-layer/behavior.hpp"
+#include "caf/cuda/control-layer/return_payloads/all_return_payloads.hpp"
 #include "caf/all.hpp"
 
 namespace caf::cuda {
@@ -16,5 +17,24 @@ void scheduler_actor_behavior::process_memory_transfer_token(const token_ptr& to
     auto response = make_memory_response_token(state_.self, mem, state_.device_number, stream_id);
     anon_mail(response).send(mem.getReplyActor());
 }
+
+
+void scheduler_actor_behavior::dispatch_transfer_token(const token_ptr& tok, int stream_id) {
+    
+   //for right now only assumes launch tokens
+   //anything else is undefined behavior 
+    const auto& launch = static_cast<const launch_token&>(*tok);
+    
+     response_token_ptr transfer = make_transfer_token(
+            state_.self,                    // ack should return to this scheduler
+            launch,                    // original launch token
+            state_.device_number,           // new device
+            stream_id        // stream we stored it under
+        );
+    
+    anon_mail(transfer).send(launch.getReplyActor());
+}
+
+
 
 } // namespace caf::cuda

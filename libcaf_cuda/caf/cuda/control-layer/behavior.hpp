@@ -2,10 +2,10 @@
 #include "caf/cuda/control-layer/launch_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
 #include "caf/cuda/control-layer/memory_transfer_token.hpp"
+#include "caf/cuda/control-layer/transfer_token.hpp"
 #include "caf/cuda/control-layer/scheduler_actor_state.hpp"
 #include "caf/cuda/control-layer/token.hpp"
-#include "caf/cuda/control-layer/token_factory.hpp"
-#include "caf/cuda/control-layer/return_payloads/ack.hpp"
+#include "caf/cuda/control-layer/return_payloads/all_return_payloads.hpp"
 
 #include <string>
 
@@ -80,6 +80,7 @@ protected:
     // Default implementation (immediate response) – takes token_ptr and casts internally
     virtual void process_launch_token(const token_ptr& tok, int stream_id);
     virtual void process_memory_transfer_token(const token_ptr& tok, int stream_id);
+    virtual void dispatch_transfer_token(const token_ptr& tok, int stream_id);
 };
 
 } // namespace caf::cuda
