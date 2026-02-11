@@ -221,6 +221,29 @@ void multilevel_usage_behavior::reclaim(ack& return_msg) {
 
 }
 
+void multilevel_usage_behavior::process_transfer_ack(ack& msg) {
+    // We already verified type before calling this
+    auto& transfer = static_cast<transfer_ack&>(msg);
+
+    int dep = transfer.dependency();
+
+    // Check if we still own this dependency
+    auto it = graphs.find(dep);
+    if (it == graphs.end())
+        return;
+
+    graph_ref ref;
+    ref.kind = graph_ref::kind_t::dependent;
+    ref.dependency = dep;
+
+    enqueue_graph_by_cost(ref);
+
+    schedule();
+}
+
+
+
+
 
 kernel_graph* multilevel_usage_behavior::resolve(const graph_ref& ref) {
 	switch (ref.kind) {

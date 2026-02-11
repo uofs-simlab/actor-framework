@@ -34,6 +34,7 @@ public:
     //more improved version of reclaim, meant for when we need to dispatch transfer
     //tokens
     void reclaim(ack& return_msg) override;
+    void process_transfer_ack(ack& msg); 
 
     std::string name() const override { return "multilevel_usage\n"; }
 
@@ -43,7 +44,6 @@ public:
     //across all gpus 
     void handle_load_balance_request(int device_number) override;
     void receive_work(std::vector<kernel_graph> work_graphs) override;
-    
 
 
 protected:
