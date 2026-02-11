@@ -306,10 +306,65 @@ void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
 }
 
 
-void multilevel_usage_behavior::receive_work(std::vector<kernel_graph> work_graphs) {  
-	//TODO IMPLEMENT
+void multilevel_usage_behavior::receive_work(std::vector<kernel_graph> work_graphs) {
+    for (auto& g : work_graphs) {
 
+        if (g.empty() || !g.canMove())
+            continue;
+
+        token_ptr tok = g.peek();
+        if (!tok)
+            continue;
+
+        int dep = tok->getDependency();
+
+        // ============================
+        // Independent Graph
+        // ============================
+        if (dep == INDEPENDENT) {
+
+            g.markMoved();
+
+            independent_graphs.push_back(std::move(g));
+
+            graph_ref ref;
+            ref.kind = graph_ref::kind_t::independent;
+            ref.index = independent_graphs.size() - 1;
+
+            enqueue_graph_by_cost(ref);
+            continue;
+        }
+
+        // ============================
+        // Dependent Graph
+        // ============================
+
+        // We are taking ownership of this dependency
+        add_dependency_to_device(dep, state_.device_number);
+
+        g.markMoved();
+
+        // Store or merge into graphs map
+        auto it = graphs.find(dep);
+        if (it == graphs.end()) {
+            graphs.emplace(dep, std::move(g));
+        } else {
+            // Merge operations into existing graph
+            while (!g.empty()) {
+                token_ptr op = g.getOperation();
+                if (!op) break;
+                it->second.add_operation(op);
+            }
+        }
+
+        // Send transfer token to actor so it migrates dependencies
+	dispatch_transfer_token(tok,g.stream_id());
+   }
+
+    // Only independent graphs were enqueued here
+    schedule();
 }
+
 
 void multilevel_usage_behavior::add_dependency_to_device(int dependency_number, int device_number) {
 	// Always override existing value
