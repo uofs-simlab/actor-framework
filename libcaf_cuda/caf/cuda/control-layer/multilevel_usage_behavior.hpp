@@ -66,6 +66,7 @@ private:
     int low_threshold = 0; //this is used to check if we should request more work
 			   //or not
 
+    int transfer_threshold =0; //check if we should transfer work or not
     // dependency -> device mapping
     std::unordered_map<int, int> dependency_device_map;
 

@@ -19,11 +19,13 @@ void multilevel_usage_behavior::init_state() {
     available_memory = static_cast<int>(device_->total_memory_bytes());
     num_streams = state_.num_streams;
     low_threshold = total_SM / 6;
+    transfer_threshold = total_SM / 2;
     num_devices = manager::get().get_num_devices();
 }
 
 void multilevel_usage_behavior::on_enter() {
 
+	//std::cout << "scheduler actor with device number " << state_.device_number << " Says hello\n";
 	//trigger load balancing mechanisms
 	if (state_.multiple_gpus) {	
 		send_timed_msg();
@@ -212,9 +214,12 @@ void multilevel_usage_behavior::reclaim(ack& return_msg) {
 
 	//TODO IMPLEMENT TIMER ACK AND TRANSFER ACK 
 
+	//std::cout << "scheduler actor with device number " << state_.device_number << " got an ack\n";
 	if (return_msg.getType() == TIMER) {
 
-			
+	//std::cout << "scheduler actor with device number " << state_.device_number << " got a timer ack\n";
+	
+		request_load_balance();	
 		send_timed_msg();	
 	}
 
@@ -246,13 +251,20 @@ void multilevel_usage_behavior::process_transfer_ack(ack& msg) {
 
 
 void multilevel_usage_behavior::request_load_balance() {
-    if (!state_.multiple_gpus)
-        return;
+	//std::cout << "Scheduler with device number " << state_.device_number << "is requesting load balance\n";  
+  if (!state_.multiple_gpus)  {
 
+        return;
+  }
     // Only request work if we're underutilized
-    if (available_SM >= low_threshold)
-        return;
 
+    int busy_SM = total_SM - available_SM;
+    if (busy_SM > low_threshold)
+    {
+	 // std::cout << "Returning from since too busy\n";
+        return;
+    }
+    //std::cout << "Hello from request load_balance\n";
     int my_device = state_.device_number;
 
     for (int i = 0; i < num_devices; ++i) {
@@ -287,7 +299,9 @@ kernel_graph* multilevel_usage_behavior::resolve(const graph_ref& ref) {
 void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
     
     // Only transfer work if we are busy
-    if (available_SM < low_threshold) {
+
+    int free_SM = total_SM -  available_SM;
+    if (free_SM < transfer_threshold) {
         return; // GPU not busy enough, do nothing
     }
 
