@@ -218,6 +218,9 @@ void multilevel_usage_behavior::reclaim(ack& return_msg) {
 		send_timed_msg();	
 	}
 
+	else if (return_msg.getType() == CAF_CUDA_ACK_TRANSFER) {
+		process_transfer_ack(return_msg);
+	}
 
 }
 
