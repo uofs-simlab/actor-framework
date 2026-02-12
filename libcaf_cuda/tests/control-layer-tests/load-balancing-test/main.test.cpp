@@ -702,7 +702,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 
             const auto& stage = res_token->name();
 
-	    if (res_token->getType() == LAUNCH) {
+	    if (res_token->getType() == LAUNCH_RESPONSE) {
 
 		    // --------------------- Stage 1: init_denominators ---------------------
 		    if (stage == "stage1") {
@@ -833,6 +833,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 
 		   if (stage == "stage1") {
 			   res_token->release(); // no dependencies at this point clear to continue
+		   	   return;
 		   } 
 
 		   else if (stage == "stage2") {
@@ -844,7 +845,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 			    self->state().d_results = div_cmd.transfer_memory(res_token,temp_buffer);
 			    //all done
 			    res_token->release();
-		   
+		   	    return;
 		   }
 
 		   else if (stage == "stage3") {
@@ -853,6 +854,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 			    self->state().d_results = div_cmd.transfer_memory(res_token,in_out<float>{self->state().d_results->copy_to_host()});
 			    //all done
 			    res_token->release();
+			    return;
 		   }
 
 		   else { 
@@ -931,7 +933,7 @@ void caf_main(caf::actor_system& sys) {
 
 
 	//dependencies
-	run_load_balance_test_with_dependencies(sys,1000,2000);
+	run_load_balance_test_with_dependencies(sys,1000,1);
 
 
 }
