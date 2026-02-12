@@ -687,7 +687,12 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
         );
 
 	//do not specifiy a device number to send it to, let it figure it out
-	caf::cuda::manager::get().send_scheduler_actor_message(tok);
+	//caf::cuda::manager::get().send_scheduler_actor_message(tok);
+    
+	//forcefully send to the first scheduler actor
+	caf::actor scheduler = caf::cuda::manager::get().get_scheduler_actor();
+	anon_mail(tok).send(scheduler);
+
     };
 
     // fire all three tokens (scheduler will reply with response_token on grants)
@@ -708,7 +713,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 		    if (stage == "stage1") {
 			    // allocate device buffer for denominators (persist in state)
 
-			    std::cout << "Starting stage 1\n";
+			    //std::cout << "Starting stage 1\n";
 			    unsigned long long seed = static_cast<unsigned long long>(
 					    std::chrono::high_resolution_clock::now().time_since_epoch().count()
 					    );
@@ -729,7 +734,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 					    caf::cuda::create_in_arg(seed)     // seed
 					    );
 
-			    std::cout << "Finished stage 1\n";
+			    //std::cout << "Finished stage 1\n";
 			    // stage1 intentionally no checks — data may contain zeros
 			    return;
 		    }
@@ -739,7 +744,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 			    // allocate device buffer for results (persist in state)
 			    std::vector<float> buffer1(n);
 
-			    std::cout << "Starting stage 2\n";
+			    //std::cout << "Starting stage 2\n";
 			    self->state().d_results = div_cmd.transfer_memory(res_token,out<float>{buffer1});
 
 			    // create a host numerators vector (all ones)
@@ -817,7 +822,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 
 			    std::vector<float> buf = self->state().d_sum -> copy_to_host();
 			    float final_sum = buf[0];
-			    std::cout << "[pipeline] completed, sum = " << final_sum << "\n";
+			    //std::cout << "[pipeline] completed, sum = " << final_sum << "\n";
 
 			    anon_mail(1).send(supervisor);
 
@@ -933,7 +938,7 @@ void caf_main(caf::actor_system& sys) {
 
 
 	//dependencies
-	run_load_balance_test_with_dependencies(sys,1000,1);
+	run_load_balance_test_with_dependencies(sys,10000,5000);
 
 
 }
