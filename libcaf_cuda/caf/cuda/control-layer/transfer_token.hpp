@@ -51,7 +51,7 @@ public:
         release();
     }
 
-    int getType() const override { return LAUNCH_RESPONSE; }
+    int getType() const override { return TRANSFER; }
 
     const nd_range& getRange() const { return range_; }
     const std::string& getId() const { return id_; }
