@@ -875,7 +875,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 //otherwise the schedulers wont care to do this fast enough
 void run_load_balance_test_with_dependencies(
     caf::actor_system& sys,
-    const int N,
+    const int n,
     int num_actors,
     bool randomize = false)
 {
@@ -931,7 +931,7 @@ void caf_main(caf::actor_system& sys) {
 
 
 	//dependencies
-	run_load_balance_test_with_dependencies(sys,1000,2000)
+	run_load_balance_test_with_dependencies(sys,1000,2000);
 
 
 }
