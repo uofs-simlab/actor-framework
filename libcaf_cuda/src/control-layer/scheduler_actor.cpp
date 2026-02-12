@@ -106,6 +106,13 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
 	[&](std::vector<kernel_graph> work_graphs) {
 		state.current_behavior -> receive_work(work_graphs);
 	},
+	
+	//TEMPORARY FIX SINCE CAF TYPE ID IS STATIC SO POLYMORPHISM WONT WORK HERE
+	//TODO FIGURE OUT A WAY FOR ACK AND ITS CHILDREN TO BE 1 SINGLE CLASS AND
+	//DOWNCASTED EASILY
+	[&](transfer_ack payload) {
+		state.current_behavior->reclaim(static_cast<ack&>(payload));
+	}
     };
 }
 
