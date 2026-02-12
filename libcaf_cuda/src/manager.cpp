@@ -98,7 +98,7 @@ void manager::init_scheduler_actors(caf::actor_system& sys) {
 // Static get()
 // --------------------------------
 manager& manager::get() {
-    std::lock_guard<std::mutex> guard(mutex_);
+    //std::lock_guard<std::mutex> guard(mutex_);
 
     if (!instance_) {
         throw std::runtime_error(
