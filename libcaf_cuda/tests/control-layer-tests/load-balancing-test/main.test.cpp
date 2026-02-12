@@ -844,7 +844,8 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 		   else if (stage == "stage2") {
 		  
 			   //at this point the d_results needs to be transfer over to the other device
-			    
+			   
+			  //TODO FIX SEGFAULT TRIGGERED BY THIS LINE 
 			    in_out<float> temp_buffer{self->state().d_results -> copy_to_host()};
 
 			    self->state().d_results = div_cmd.transfer_memory(res_token,temp_buffer);
