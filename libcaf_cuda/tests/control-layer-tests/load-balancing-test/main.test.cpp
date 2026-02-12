@@ -875,7 +875,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 //otherwise the schedulers wont care to do this fast enough
 void run_load_balance_test_with_dependencies(
     caf::actor_system& sys,
-    const std::vector<int>& sizes,
+    const int N,
     int num_actors,
     bool randomize = false)
 {
@@ -890,54 +890,22 @@ void run_load_balance_test_with_dependencies(
     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
     caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
+    caf::cuda::program_ptr p1 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","init_denominators");
+    caf::cuda::program_ptr p2 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","perform_division");
+    caf::cuda::program_ptr p3 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","sum_results");
 
-    std::vector<caf::cuda::token_ptr> tokens(num_actors);
 
-    std::mt19937 rng(123456);
-    std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
 
-    const int THREADS = 32;
+
+
 
     auto t_start = std::chrono::steady_clock::now();
 
 for (int i = 0; i < num_actors; ++i) {
-    int N = randomize ? sizes[dist(rng)] : sizes[i % sizes.size()];
-    int BLOCKS = (N + THREADS - 1) / THREADS;
-
-    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1,
-                             THREADS, THREADS, 1);
-
-    caf::actor a = sys.spawn(
-        mmul_actor_fun_no_verify,
-        exit_actor,
-        N,
-        program,
-        dims,
-        false
-    );
-
-    tokens[i] = caf::cuda::make_launch_token(
-        program,
-        dims,
-        0, // memory usage is zero for now, we still do not track it at all
-        "hello",
-        a
-    );
+	sys.spawn(pipeline_actor, exit_actor, p1, p2, p3, n);	
 }
-
-auto t_end = std::chrono::steady_clock::now();
-
-auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-              t_end - t_start
-          ).count();
-
-std::cout << "Actor spawn + token creation loop took "
-          << us << " us\n";
-
-   
-	  //send the tokens to only 1 GPU and let them
-	  //figure out that there is a load imbalance 
-	  mgr.send_scheduler_actor_message(tokens);
+  
+	  //this time the gpu actors can figure out how to send tokens to the correct GPU scheduler
           sys.await_all_actors_done();
 }
 
@@ -954,9 +922,16 @@ void caf_main(caf::actor_system& sys) {
   
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
-	std::vector<int> sizes = {32, 64, 128, 256, 512, 1024,2048,4096};
-	const int num_actors = 2000;
-	run_load_balance_test(sys,sizes,num_actors);
+	
+	
+	//no dependencies
+//	std::vector<int> sizes = {32, 64, 128, 256, 512, 1024,2048,4096};
+//	const int num_actors = 2000;
+//	run_load_balance_test(sys,sizes,num_actors);
+
+
+	//dependencies
+	run_load_balance_test_with_dependencies(sys,1000,2000)
 
 
 }
