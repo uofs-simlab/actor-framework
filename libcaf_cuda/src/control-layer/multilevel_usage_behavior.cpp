@@ -328,6 +328,7 @@ void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
             if (ref.kind == graph_ref::kind_t::dependent) {
                 remove_dependency(ref.dependency);
                 graphs.erase(ref.dependency);
+		add_dependency_to_device(ref.dependency,device_number);
             } else { // independent
                 if (ref.index < independent_graphs.size()) {
 		    //TODO come up with a better way to clean this up
