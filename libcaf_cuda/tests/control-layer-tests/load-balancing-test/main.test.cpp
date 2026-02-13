@@ -812,7 +812,9 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* 
                      gen_range,
                      sizeof(int) * N * N,
                      name,
-                     self
+                     self,
+		     self->state().id //use this for dependency number
+				      //required for scheduler actor internal bookeeping
                    );
         anon_mail(tok).send(mgr.get_scheduler_actor());
       };
@@ -838,6 +840,7 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* 
         auto host_copy = self->state().d_genA->copy_to_host();
         self->state().d_genA =
           randomMatrix.transfer_memory(res_token, in_out<int>{host_copy});
+	std::cout << "Moved genA over to new device\n";
       }
 
       if (name == "genB" && self->state().d_genB) {
@@ -852,6 +855,8 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* 
           self->state().d_genA =
             randomMatrix.transfer_memory(res_token, in_out<int>{host_copyA});
         }
+
+	std::cout << "Moved genA and genB over to new device\n";
       }
 
       res_token->release();
@@ -919,7 +924,8 @@ if (self->state().have_genA && self->state().have_genB) {
       mmul_range,
       sizeof(int) * N * N,
       "mmul",
-      self
+      self,
+      self ->state().id //needed to help track depedencies
     );
 
     // Send the launch token to the scheduler actor
@@ -1040,7 +1046,7 @@ void caf_main(caf::actor_system& sys) {
 
 
 	//dependencies
-	run_load_balance_test_with_large_dependencies(sys,1024,2000);
+	run_load_balance_test_with_large_dependencies(sys,1024,1);
 
 
 }
