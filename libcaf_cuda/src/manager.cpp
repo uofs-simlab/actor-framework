@@ -313,7 +313,7 @@ void manager::send_scheduler_actor_message(token_ptr token, int device_number) {
         target = device_number;
     } else {
         // No device specified
-        if (token->isIndependent()) {
+        if (!token->isIndependent()) {
             target = token->getDependency() % num_devices;
             if (target < 0)
                 target += num_devices;
