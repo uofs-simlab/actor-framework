@@ -80,7 +80,7 @@ caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int lim
 		[=](int num_completed) {
 			self->state().completed += num_completed;
 			
-			std::cout << "Actors finished is " << self->state().completed << "\n";
+//			std::cout << "Actors finished is " << self->state().completed << "\n";
 			if (self->state().completed >= limit) {
 			
 				caf::cuda::manager::shutdown();
@@ -837,7 +837,7 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* 
     // ----------------------------
 if (type == TRANSFER) {
 
-  std::cout << "TRANSFER for " << name << std::endl;
+  //std::cout << "TRANSFER for " << name << std::endl;
 
   // If mmul is moving, move BOTH matrices
   if (name == "mmul") {
@@ -854,7 +854,9 @@ if (type == TRANSFER) {
         randomMatrix.transfer_memory(res_token, in_out<int>{host_copyB});
     }
 
-    std::cout << "Moved genA and genB for mmul\n";
+    if (res_token->getDeviceNumber() == 1) {
+    //std::cout << "Moved genA and genB for mmul\n";
+  } 
   }
 
   res_token->release();
