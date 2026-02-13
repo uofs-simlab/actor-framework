@@ -97,60 +97,6 @@ caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int lim
 
 
 
-// Define a custom type ID block for custom actors
-CAF_ADD_ATOM(cuda,shared_mem)
-
-
-
-
-
-// Extend your actor state to keep the start time
-struct mmul_actor_state {
-  static inline const char* name = "mmul_actor";
-
-  int N = 0;
-  int id = rand();
-
-  // timing / bookkeeping only
-  std::chrono::high_resolution_clock::time_point start_time;
-  int times = 0;
-};
-
-
-
-
-
-//commands classes used to launch kernels 
-using mmulCommand = caf::cuda::command_runner<in<int>,in<int>,out<int>,in<int>>;
-using matrixGenCommand = caf::cuda::command_runner<out<int>,in<int>,in<int>,in<int>>;
-
-using mmulAsyncCommand = caf::cuda::command_runner<caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int>,out<int>,in<int>>;
-
-mmulCommand mmul;
-matrixGenCommand randomMatrix;
-mmulAsyncCommand mmulAsync;
-
-
-void serial_matrix_multiply(const std::vector<int>& a,
-                            const std::vector<int>& b,
-                            std::vector<int>& c,
-                            int N) {
-  
-
- for (int i = 0; i < N; ++i) {
-    for (int j = 0; j < N; ++j) {
-      int sum = 0;
-      for (int k = 0; k < N; ++k) {
-        sum += a[i * N + k] * b[k * N + j];
-      }
-      c[i * N + j] = sum;
-    }
-  }
-}
-
-
-
-
 // Stateful actor behavior
 caf::behavior mmul_actor_fun(
     caf::stateful_actor<mmul_actor_state>* self,
@@ -160,8 +106,6 @@ caf::behavior mmul_actor_fun(
     caf::cuda::nd_range dims)
 {
 
-	//set the value of N correctly to overide the base option.	
-	self->state().N = N;
 
 	caf::cuda::manager& mgr = caf::cuda::manager::get();
 
@@ -184,7 +128,6 @@ caf::behavior mmul_actor_fun(
 			if (res_token -> getType() == LAUNCH_RESPONSE) {
 				//std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
 				//assume N = 1024
-				int N = self -> state().N;
 				std::vector<int> matrix1(N*N);
 				matrix1.reserve(N);
 				std::vector<int> matrix2(N*N);
@@ -293,7 +236,6 @@ caf::behavior mmul_actor_fun_no_verify(
 {
 
 	//set the value of N correctly to overide the base option.	
-	self->state().N = N;
 
 	caf::cuda::manager& mgr = caf::cuda::manager::get();
 
@@ -317,7 +259,6 @@ caf::behavior mmul_actor_fun_no_verify(
 			if (res_token -> getType() == LAUNCH_RESPONSE) {
 				//std::cout << "GPU ACTOR RECEIVED PERMISSION TO LAUNCH\n"; 
 				//assume N = 1024
-				int N = self -> state().N;
 				std::vector<int> matrix1(N*N);
 				matrix1.reserve(N);
 				std::vector<int> matrix2(N*N);
@@ -396,196 +337,6 @@ caf::behavior mmul_actor_fun_no_verify(
 
 
 
-// Stateful actor behavior
-// this actor does not invoke the scheduler at all 
-caf::behavior mmul_actor_fun_no_schedule(
-    caf::stateful_actor<mmul_actor_state>* self,
-    caf::actor exit_actor,
-    int N,
-    caf::cuda::program_ptr program,
-    caf::cuda::nd_range dims) {
-
-    self->state().N = N;
-
-    std::vector<int> matrix1(N * N);
-    std::vector<int> matrix2(N * N);
-
-    // send initial mail to self
-    self->mail(matrix1, matrix2, N).send(self);
-
-    return {
-        // GPU atom + matrices + N
-        [=](const std::vector<int>& matrixA,
-            const std::vector<int>& matrixB,
-            int N_local) {   // avoid shadowing outer N
-            
-	    
-    	    //std::cout << "Hello\n";
-	    caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-            auto arg1 = caf::cuda::create_in_arg(matrixA);
-            auto arg2 = caf::cuda::create_in_arg(matrixB);
-            auto arg3 = caf::cuda::create_out_arg(N_local * N_local);
-            auto arg4 = caf::cuda::create_in_arg(N_local);
-
-            auto tempC = mmul.run(program, dims, self->state().id, arg1, arg2, arg3, arg4);
-            std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
-
-	    self->mail(1).send(exit_actor);
-            self->quit();
-        },
-
-        // CPU verification
-        [=](const std::vector<int>& matrixA,
-            const std::vector<int>& matrixB,
-            const std::vector<int>& matrixC,
-            int N_local) {
-
-            std::vector<int> result(N_local * N_local);
-            serial_matrix_multiply(matrixA, matrixB, result, N_local);
-
-            if (result == matrixC) {
-                std::cout << "actor with id " << self->state().id << " references match\n";
-            } else {
-                std::cout << "actor with id " << self->state().id << " references did not match\n";
-            }
-
-            self->quit();
-        }
-    };
-}
-
-
-
-
-
-
-
-
-
-
-void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
-  if (num_actors < 1) {
-    std::cerr << "[ERROR] Number of actors must be >= 1\n";
-    return;
-  }
-
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-  //change the scheduler to core_usage
-  anon_mail(
-	caf::cuda::make_behavior_token("core_usage")
-	).send(mgr.get_scheduler_actor());
-
-  // CREATE ONCE
-  auto program =
-      mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-  const int THREADS = 32;
-  const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims(
-      BLOCKS, BLOCKS, 1,
-      THREADS, THREADS, 1);
-
-  caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-  for (int i = 0; i < num_actors; ++i) {
-    /*
-    sys.spawn(
-        mmul_actor_fun,
-        exit_actor,
-        matrix_size,
-        program,
-        dims);
-    */
-      sys.spawn(
-        mmul_actor_fun_no_verify,
-        exit_actor,
-        matrix_size,
-        program,
-        dims,
-	true);
-    
-  }
-
-  sys.await_all_actors_done();
-}
-
-
-void run_mmul_test_no_scheduler(caf::actor_system& sys, int matrix_size, int num_actors) {
-  if (num_actors < 1) {
-    std::cerr << "[ERROR] Number of actors must be >= 1\n";
-    return;
-  }
-
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-  /*
-  //change the scheduler to core_usage
-  anon_mail(
-	caf::cuda::make_behavior_token("core_usage")
-	).send(mgr.get_scheduler_actor());
-
-  */
-
-
-  // CREATE ONCE
-  auto program =
-      mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-  const int THREADS = 32;
-  const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims(
-      BLOCKS, BLOCKS, 1,
-      THREADS, THREADS, 1);
-
-  caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-  for (int i = 0; i < num_actors; ++i) {
-    
-	sys.spawn(
-        mmul_actor_fun_no_verify,
-        exit_actor,
-        matrix_size,
-        program,
-        dims,
-	true);
-    
-  
-  }
-
-  sys.await_all_actors_done();
-}
-
-void run_mmul_test_no_scheduler_actor(caf::actor_system& sys, int matrix_size, int num_actors) {
-    if (num_actors < 1) {
-        std::cerr << "[ERROR] Number of actors must be >= 1\n";
-        return;
-    }
-
-    caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-    // CREATE ONCE
-    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    const int THREADS = 32;
-    const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
-    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
-
-    for (int i = 0; i < num_actors; ++i) {
-        sys.spawn(
-            mmul_actor_fun_no_schedule,
-            exit_actor,
-            matrix_size,
-            program,
-            dims
-        );
-    }
-
-    sys.await_all_actors_done();
-}
 
 
 template <class Fn>
@@ -1169,7 +920,246 @@ for (int i = 0; i < num_actors; ++i) {
 
 
 
+struct mmul_async_actor_state {
+  static inline const char* name = "mmul_actor";
 
+  int N = 0;
+  int id = rand();
+
+  // timing / bookkeeping only
+  std::chrono::high_resolution_clock::time_point start_time;
+  int times = 0;
+
+  // --- mmul_async state (added) -------------------------------------------
+  caf::cuda::mem_ptr<int> d_genA;                // device buffer for generated A
+  caf::cuda::mem_ptr<int> d_genB;                // device buffer for generated B
+  bool have_genA = false;
+  bool have_genB = false;
+};
+
+
+caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* self) {
+  return {
+
+    // ------------------------------------------------------------------
+    // 1) Initial request: generate two matrices
+    // ------------------------------------------------------------------
+    [=](int N) {
+      caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+      self->state().N = N;
+      self->state().have_genA = false;
+      self->state().have_genB = false;
+      self->state().d_genA = nullptr;
+      self->state().d_genB = nullptr;
+
+      // Explicit generator launch configuration
+      const int THREADS = 256;
+      const int BLOCKS  = (N * N + THREADS - 1) / THREADS;
+      caf::cuda::nd_range gen_range(BLOCKS, 1, 1,
+                                    THREADS, 1, 1);
+
+      auto gen_program =
+        mgr.create_program_from_fatbin(
+          "../generate_random_matrix.fatbin",
+          "generate_random_matrix");
+
+      auto send_launch = [&](const std::string& name) {
+        auto tok = caf::cuda::make_launch_token(
+                     gen_program,
+                     gen_range,
+                     sizeof(int) * N * N,
+                     name,
+                     self
+                   );
+        anon_mail(tok).send(mgr.get_scheduler_actor());
+      };
+
+      send_launch("genA");
+      send_launch("genB");
+    },
+
+    // ------------------------------------------------------------------
+    // 2) Handle scheduler response tokens
+    // ------------------------------------------------------------------
+    [=](caf::cuda::response_token_ptr res_token) mutable {
+
+      const auto type = res_token->getType();
+      const auto name = res_token->name();
+      int N = self->state().N;
+
+      // --------------------------------------------------------------
+      // TRANSFER handling
+      // --------------------------------------------------------------
+      if (type == TRANSFER) {
+
+        if (name == "genA" && self->state().d_genA) {
+          auto host_copy = self->state().d_genA->copy_to_host();
+          self->state().d_genA =
+            randomMatrix.transfer_memory(
+              res_token,
+              in_out<int>{host_copy});
+          res_token->release();
+          return;
+        }
+
+        if (name == "genB" && self->state().d_genB) {
+          auto host_copy = self->state().d_genB->copy_to_host();
+          self->state().d_genB =
+            randomMatrix.transfer_memory(
+              res_token,
+              in_out<int>{host_copy});
+          
+	  //since GenA comes before GenB we have to transfer over both memories to enusure
+	  //they are both on the same GPU
+	  auto host_copy_2 = self->state().d_genA->copy_to_host();
+          self->state().d_genA =
+            randomMatrix.transfer_memory(
+              res_token,
+              in_out<int>{host_copy_2});
+
+	  
+	  
+	  res_token->release();
+          return;
+        }
+
+        return;
+      }
+
+      // --------------------------------------------------------------
+      // LAUNCH_RESPONSE handling
+      // --------------------------------------------------------------
+      if (type != LAUNCH_RESPONSE)
+        return;
+
+      // ----------------------------
+      // Generator completion
+      // ----------------------------
+      if (name == "genA" || name == "genB") {
+
+        auto out_arg     = caf::cuda::create_out_arg(N * N);
+        auto size_arg    = caf::cuda::create_in_arg(N * N);
+        auto seed_arg    = caf::cuda::create_in_arg(rand());
+        auto maxval_arg  = caf::cuda::create_in_arg(9999);
+
+        const int THREADS = 256;
+        const int BLOCKS  = (N * N + THREADS - 1) / THREADS;
+        caf::cuda::nd_range gen_range(BLOCKS,1,1,
+                                      THREADS,1,1);
+
+        auto gen_program =
+          caf::cuda::manager::get().create_program_from_fatbin(
+            "../generate_random_matrix.fatbin",
+            "generate_random_matrix");
+
+        auto result =
+          randomMatrix.run_async(
+            gen_program,
+            gen_range,
+            res_token,
+            out_arg,
+            size_arg,
+            seed_arg,
+            maxval_arg);
+
+        auto device_buffer = std::get<0>(result);
+
+        if (name == "genA") {
+          self->state().d_genA = device_buffer;
+          self->state().have_genA = true;
+        } else {
+          self->state().d_genB = device_buffer;
+          self->state().have_genB = true;
+        }
+
+        res_token->release();
+
+        // ----------------------------------------------------------
+        // If BOTH matrices exist → request mmul launch
+        // ----------------------------------------------------------
+        if (self->state().have_genA &&
+            self->state().have_genB) {
+
+          const int THREADS_M = 32;
+          int BLOCKS_M = (N + THREADS_M - 1) / THREADS_M;
+
+          caf::cuda::nd_range mmul_range(
+            BLOCKS_M, BLOCKS_M, 1,
+            THREADS_M, THREADS_M, 1);
+
+          auto mmul_program =
+            caf::cuda::manager::get()
+              .create_program_from_cubin(
+                "../mmul.cubin",
+                "matrixMul");
+
+          auto mmul_token =
+            caf::cuda::make_launch_token(
+              mmul_program,
+              mmul_range,
+              sizeof(int) * N * N,
+              "mmul",
+              self);
+
+          anon_mail(mmul_token)
+            .send(caf::cuda::manager::get()
+                    .get_scheduler_actor());
+        }
+
+        return;
+      }
+
+      // ----------------------------
+      // mmul completion
+      // ----------------------------
+      if (name == "mmul") {
+
+        const int THREADS_M = 32;
+        int BLOCKS_M = (N + THREADS_M - 1) / THREADS_M;
+
+        caf::cuda::nd_range mmul_range(
+          BLOCKS_M, BLOCKS_M, 1,
+          THREADS_M, THREADS_M, 1);
+
+        auto mmul_program =
+          caf::cuda::manager::get()
+            .create_program_from_cubin(
+              "../mmul.cubin",
+              "matrixMul");
+
+        auto outC = caf::cuda::create_out_arg(N * N);
+        auto inN  = caf::cuda::create_in_arg(N);
+
+        auto result =
+          mmulAsync.run(
+            mmul_program,
+            mmul_range,
+            res_token,
+            self->state().d_genA,
+            self->state().d_genB,
+            outC,
+            inN);
+
+        std::vector<int> matrixC =
+          caf::cuda::extract_vector<int>(result, 2);
+
+        std::vector<int> matrixA =
+          self->state().d_genA->copy_to_host();
+
+        std::vector<int> matrixB =
+          self->state().d_genB->copy_to_host();
+
+        self->state().have_genA = false;
+        self->state().have_genB = false;
+        self->state().d_genA.reset();
+        self->state().d_genB.reset();
+
+        res_token->release();
+      }
+    }
+  };
+}
 
 
 
