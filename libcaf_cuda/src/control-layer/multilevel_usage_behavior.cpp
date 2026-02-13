@@ -300,7 +300,7 @@ void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
     
     // Only transfer work if we are busy
 
-    int free_SM = total_SM -  available_SM;
+    int free_SM = available_SM;
     if (free_SM > transfer_threshold) {
         return; // GPU not busy enough, do nothing
     }
