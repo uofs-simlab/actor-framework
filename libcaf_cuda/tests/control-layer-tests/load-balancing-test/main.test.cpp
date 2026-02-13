@@ -710,170 +710,6 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
 
 
 
-// Stateful actor behavior
-caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
-  return {
-    // 1st handler: Just int N, and who to send the matrices to
-    [=](int N, std::vector<caf::actor> receivers) {
-
-        caf::cuda::manager& mgr = caf::cuda::manager::get();
-        //create the program and configure the dimesnions of the kernel
-        auto program = mgr.create_program_from_fatbin("../generate_random_matrix.fatbin","generate_random_matrix");
-        int THREADS = 256;
-        int BLOCKS = (N*N + THREADS - 1) / THREADS;
-        caf::cuda::nd_range dim(BLOCKS,1, 1, THREADS,1, 1);
-
-        //tag the arguments so that caf::cuda knows what to do with them
-         auto arg1 = caf::cuda::create_out_arg(N*N); //output buffer indicate its size, caf::cuda will handle the rest
-          auto arg2 = caf::cuda::create_in_arg(N*N); //matrix size
-          auto arg3 = caf::cuda::create_in_arg(rand()); //seed
-          auto arg4 = caf::cuda::create_in_arg(9999); //max valux
-
-          auto arg3B = caf::cuda::create_in_arg(rand()); //seed
-          int device_number= 74; //arbitary number to show that
-                                 //can give illusion of selecting gpus that are
-                                 //not there
-
-
-          //launch kernels and collect their outputs
-          auto tempA = randomMatrix.run_async(program,dim, self -> state().id,0,device_number,arg1,arg2,arg3,arg4);
-          auto tempB = randomMatrix.run_async(program,dim, self -> state().id,0,device_number,arg1,arg2,arg3B,arg4);
-          caf::cuda::mem_ptr<int> matrixA =  std::get<0>(tempA);
-          caf::cuda::mem_ptr<int> matrixB = std::get<0>(tempB);
-
-          //ensure the data is actually done being worked on
-          matrixA -> synchronize();
-          matrixB -> synchronize();
-
-
-
-
-          //cpu code
-          //std::vector<int> matrixA(N*N);
-          //std::vector<int> matrixB(N*N);
-
-          // std::generate(matrixA.begin(), matrixA.end(), []() { return rand() % 10; });
-           //std::generate(matrixB.begin(), matrixB.end(), []() { return rand() % 10; });
-
-
-          std::cout << "Broadcasting\n";
-          //broadcast the result out to receviers.
-          for (auto actor: receivers) {
-
-                  self->mail(3,matrixA,matrixB,N,device_number).send(actor);
-          }
-
-    },
-
-    // 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
-    [=](const caf::cuda::mem_ptr<int> matrixA,
-        const caf::cuda::mem_ptr<int> matrixB, int N,int device_number) {
-
-
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-  //create program and dims
-  auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
-  const int THREADS = 32;
-  const int BLOCKS = (N + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-    //create args
-    auto arg1 = matrixA;
-    auto arg2 = matrixB;
-    auto arg3 = caf::cuda::create_out_arg(N*N);
-    auto arg4 = caf::cuda::create_in_arg(N);
-
-
-    auto tempC = mmulAsync.run(program,dims,self -> state().id,0,device_number,arg1,arg2,arg3,arg4);
-
-    std::vector<int> matrix1 = matrixA -> copy_to_host();
-    std::vector<int> matrix2 = matrixB -> copy_to_host();
-    std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC,2);
-
-    //verify its own result
-    self -> mail(matrix1,matrix2,matrixC,N).send(self);
-
-    },
-
- // 3nd handler: GPU atom + matrices + N, launches a kenrel using shared memory and sends its result to itself for verification
-    [=](int x,const caf::cuda::mem_ptr<int> matrixA,
-        const caf::cuda::mem_ptr<int> matrixB, int N,int device_number) {
-
-
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-  //create program and dims
-  auto program = mgr.create_program_from_cubin("../shared_mmul.cubin","matrixMul");
-  const int THREADS = 32;
-  const int BLOCKS = (N + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-  int shared_mem = 8192; //we need 8KB of shared memory here
-    //create args
-    auto arg1 = matrixA;
-    auto arg2 = matrixB;
-    auto arg3 = caf::cuda::create_out_arg(N*N);
-    auto arg4 = caf::cuda::create_in_arg(N);
-
-
-    auto tempC = mmulAsync.run(program,dims,self -> state().id,shared_mem,device_number,arg1,arg2,arg3,arg4);
-
-    std::vector<int> matrix1 = matrixA -> copy_to_host();
-    std::vector<int> matrix2 = matrixB -> copy_to_host();
-    std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC,2);
-
-    //verify its own result
-    self -> mail(matrix1,matrix2,matrixC,N).send(self);
-
-    },
-
-
-
-    // 3rd handler: CPU atom + matrices + N
-    [=](const std::vector<int>& matrixA,
-    const std::vector<int> &matrixB,
-    const std::vector<int> &matrixC, int N) {
-
-    std::vector<int> result(N * N);
-
-    serial_matrix_multiply(matrixA, matrixB, result, N);
-
-    if (result == matrixC) {
-        std::cout << "actor with id " << self->state().id << " references match\n";
-    }
-    else {
-        std::cout << "actor with id " << self->state().id << " references did not match\n";
-
-    }
-
-
-    /*
-    auto print_matrix = [N](const std::vector<int>& mat, const std::string& name) {
-            std::cout << name << ":\n";
-            for (int i = 0; i < N; ++i) {
-                for (int j = 0; j < N; ++j) {
-                    std::cout << mat[i * N + j] << " ";
-                }
-                std::cout << "\n";
-            }
-            std::cout << std::endl;
-        };
-
-        print_matrix(matrixA, "Matrix A");
-        print_matrix(matrixB, "Matrix B");
-        print_matrix(result, "Result Matrix");
-        print_matrix(matrixC, "GPU Result Matrix");
-        */
-    self->quit();
-    }
-  };
-}
-
-
-
-
-
 
 
 
@@ -882,6 +718,8 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_actor_state>* self) 
 //migrate work to correct load imbalance
 //the sizes should be large enough such that the tests exceed 4-5 seconds in total
 //otherwise the schedulers wont care to do this fast enough
+//As it turns out pipeline actor does not do enough work in order to convince the GPUs
+//that it should even attempt to migrate it
 void run_load_balance_test_with_dependencies(
     caf::actor_system& sys,
     const int n,
@@ -938,7 +776,11 @@ struct mmul_async_actor_state {
 };
 
 
-caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* self) {
+
+//we intentionally send to only 1 actor to force load balancing and also
+//see what happens if an actor gets a request that it is not responsible for
+caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* self,
+		caf::actor exit_actor) {
   return {
 
     // ------------------------------------------------------------------
@@ -1156,6 +998,7 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* 
         self->state().d_genB.reset();
 
         res_token->release();
+        self->mail(1).send(exit_actor);
       }
     }
   };
@@ -1163,6 +1006,44 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* 
 
 
 
+
+//this test is meant to demonstrate the fact that scheduler actors can 
+//migrate work to correct load imbalance
+//the sizes should be large enough such that the tests exceed 4-5 seconds in total
+//otherwise the schedulers wont care to do this fast enough
+void run_load_balance_test_with_large_dependencies(
+    caf::actor_system& sys,
+    const int n,
+    int num_actors,
+    bool randomize = false)
+{
+    caf::cuda::manager& mgr = caf::cuda::manager::get(); 
+
+
+    //set the behaviors of each scheduler actor
+    for (int i = 0; i < mgr.get_num_devices();i++) {
+	    mgr.send_scheduler_actor_message("multilevel",i);
+    }
+
+    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+    caf::actor exit_actor = sys.spawn(exit_actor_fun, num_actors);
+
+
+
+
+
+
+    auto t_start = std::chrono::steady_clock::now();
+
+for (int i = 0; i < num_actors; ++i) {
+	caf::actor a = sys.spawn(mmul_async_actor_fun, exit_actor);
+	anon_mail(n).send(a);	
+}
+  
+	  //this time the gpu actors can figure out how to send tokens to the correct GPU scheduler
+          sys.await_all_actors_done();
+}
 
 
 
@@ -1179,7 +1060,7 @@ void caf_main(caf::actor_system& sys) {
 
 
 	//dependencies
-	run_load_balance_test_with_dependencies(sys,10000,10000);
+	run_load_balance_test_with_large_dependencies(sys,1024,2000);
 
 
 }
