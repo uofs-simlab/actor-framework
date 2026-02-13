@@ -41,7 +41,8 @@ public:
 
 
 protected:
-
+ int dependency_ = INDEPENDENT;
+ 
  friend void intrusive_ptr_add_ref(token* p) noexcept {
     p->ref_count_.fetch_add(1, std::memory_order_relaxed);
   }
@@ -54,7 +55,6 @@ protected:
 
 private:
  mutable std::atomic<size_t> ref_count_{0};
- int dependency_ = INDEPENDENT;
 
 
 };
