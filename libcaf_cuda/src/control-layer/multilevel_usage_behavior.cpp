@@ -301,7 +301,7 @@ void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
     // Only transfer work if we are busy
 
     int free_SM = total_SM -  available_SM;
-    if (free_SM < transfer_threshold) {
+    if (free_SM > transfer_threshold) {
         return; // GPU not busy enough, do nothing
     }
 
@@ -354,9 +354,12 @@ void multilevel_usage_behavior::handle_load_balance_request(int device_number) {
     }
 
     // ---- Step 2: transfer from high and medium queues ----
-    std::size_t max_high_med = (high_queue.size() + med_queue.size()) / 2;
-    collect_graphs_from_queue(high_queue, max_high_med);
-    collect_graphs_from_queue(med_queue, max_high_med);
+    std::size_t mid_high = high_queue.size() / 2;
+    std::size_t mid_med = med_queue.size() / 2;
+    std::size_t mid_low = low_queue.size() / 2;
+    collect_graphs_from_queue(high_queue, mid_high);
+    collect_graphs_from_queue(med_queue, mid_med);
+    collect_graphs_from_queue(low_queue, mid_low);
 
     // ---- Step 3: send if we have anything ----
     if (!work_to_transfer.empty()) {
