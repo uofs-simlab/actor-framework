@@ -835,33 +835,32 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_async_actor_state>* 
     // ----------------------------
     // TRANSFER handling
     // ----------------------------
-    if (type == TRANSFER) {
-      if (name == "genA" && self->state().d_genA) {
-        auto host_copy = self->state().d_genA->copy_to_host();
-        self->state().d_genA =
-          randomMatrix.transfer_memory(res_token, in_out<int>{host_copy});
-	std::cout << "Moved genA over to new device\n";
-      }
+if (type == TRANSFER) {
 
-      if (name == "genB" && self->state().d_genB) {
-        // Transfer B
-        auto host_copyB = self->state().d_genB->copy_to_host();
-        self->state().d_genB =
-          randomMatrix.transfer_memory(res_token, in_out<int>{host_copyB});
+  std::cout << "TRANSFER for " << name << std::endl;
 
-        // ALSO transfer A to the same device as B
-        if (self->state().d_genA) {
-          auto host_copyA = self->state().d_genA->copy_to_host();
-          self->state().d_genA =
-            randomMatrix.transfer_memory(res_token, in_out<int>{host_copyA});
-        }
+  // If mmul is moving, move BOTH matrices
+  if (name == "mmul") {
 
-	std::cout << "Moved genA and genB over to new device\n";
-      }
-
-      res_token->release();
-      return;
+    if (self->state().d_genA) {
+      auto host_copyA = self->state().d_genA->copy_to_host();
+      self->state().d_genA =
+        randomMatrix.transfer_memory(res_token, in_out<int>{host_copyA});
     }
+
+    if (self->state().d_genB) {
+      auto host_copyB = self->state().d_genB->copy_to_host();
+      self->state().d_genB =
+        randomMatrix.transfer_memory(res_token, in_out<int>{host_copyB});
+    }
+
+    std::cout << "Moved genA and genB for mmul\n";
+  }
+
+  res_token->release();
+  return;
+}
+
 
     // ----------------------------
     // LAUNCH_RESPONSE handling
@@ -983,9 +982,15 @@ if (self->state().have_genA && self->state().have_genB) {
       std::cerr << "d_genA deviceID: " << self->state().d_genA->deviceID() << "\n";
     if (self->state().d_genB)
       std::cerr << "d_genB deviceID: " << self->state().d_genB->deviceID() << "\n";
-    if (res_token)
+    if (res_token) {
       std::cerr << "res_token deviceID: " << res_token->getDeviceNumber() << "\n";
-  }
+      std::cerr << "res_token name: " << res_token->name() << "\n";
+    
+    }
+    
+    }
+
+
 }
 
   };
@@ -1046,7 +1051,7 @@ void caf_main(caf::actor_system& sys) {
 
 
 	//dependencies
-	run_load_balance_test_with_large_dependencies(sys,1024,1);
+	run_load_balance_test_with_large_dependencies(sys,1024,2000);
 
 
 }
