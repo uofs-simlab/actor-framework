@@ -100,7 +100,8 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
             // --------------------- Stage 1: init_denominators ---------------------
             if (stage == "stage1") {
                 // allocate device buffer for denominators (persist in state)
-               
+
+     	           std::cout << "Starting stage 1\n";		    
 		    unsigned long long seed = static_cast<unsigned long long>(
     std::chrono::high_resolution_clock::now().time_since_epoch().count()
 );
@@ -121,6 +122,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
                     caf::cuda::create_in_arg(seed)     // seed
                 );
 
+		std::cout << "Finished stage 1\n";
                 // stage1 intentionally no checks — data may contain zeros
                 return;
             }
@@ -130,6 +132,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
                 // allocate device buffer for results (persist in state)
 		    std::vector<float> buffer1(n); 
 
+     	           std::cout << "Starting stage 2\n";		    
 		self->state().d_results = div_cmd.transfer_memory(res_token,out<float>{buffer1});
 
                 // create a host numerators vector (all ones)
@@ -179,6 +182,7 @@ behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
             if (stage == "stage3") {
                 // allocate device scalar for sum result
                 
+     	           std::cout << "Starting stage 3\n";		    
 		    std::vector<float> buffer1(1); 
 
 		self->state().d_sum = div_cmd.transfer_memory(res_token,out<float>{buffer1});
