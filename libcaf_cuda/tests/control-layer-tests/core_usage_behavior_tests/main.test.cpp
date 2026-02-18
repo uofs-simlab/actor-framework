@@ -426,9 +426,9 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
 
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-  //change the scheduler to core_usage
+  //change the scheduler to mulitlevle_usage
   anon_mail(
-	caf::cuda::make_behavior_token("core_usage")
+	caf::cuda::make_behavior_token("multilevel")
 	).send(mgr.get_scheduler_actor());
 
   // CREATE ONCE
@@ -482,6 +482,7 @@ void run_mmul_test_no_scheduler(caf::actor_system& sys, int matrix_size, int num
 
   */
 
+    mgr.send_scheduler_actor_message("green",0);
 
   // CREATE ONCE
   auto program =
@@ -527,6 +528,8 @@ void run_mmul_test_no_scheduler_actor(caf::actor_system& sys, int matrix_size, i
 
     caf::cuda::manager& mgr = caf::cuda::manager::get();
 
+    mgr.send_scheduler_actor_message("green",0);
+
     // CREATE ONCE
     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
@@ -560,7 +563,7 @@ double time_run(Fn&& fn) {
 }
 void run_mmul_scaling_tests(caf::actor_system& sys,
                             caf::cuda::manager_config man_config) {
-    const int max_size   = 1024;
+    const int max_size   = 2048;
     const int min_actors = 1;
     const int max_actors = 1024;
 
@@ -580,8 +583,8 @@ void run_mmul_scaling_tests(caf::actor_system& sys,
         for (int actors : actor_counts) {
 
             /* ================= Scheduler-enabled (core_usage) ================= */
-            caf::cuda::manager::init(sys, man_config); // green-light scheduler enabled
-            std::cout << "\n[RUN] scheduler=core_usage "
+            caf::cuda::manager::init(sys, man_config); // scheduler enabled
+            std::cout << "\n[RUN] scheduler=multilevel_usage "
                       << "matrix_size=" << size
                       << " actors=" << actors << "\n";
 
@@ -597,9 +600,8 @@ void run_mmul_scaling_tests(caf::actor_system& sys,
 
             caf::cuda::manager::shutdown(); // make sure manager is cleaned up
 
-            /* ================= Scheduler-disabled actor (still uses green-light) ================= */
+            /* ================= Scheduler-disabled actor ( uses green-light) ================= */
 
-/*
 	    caf::cuda::manager::init(sys, man_config); // init with scheduler
             std::cout << "\n[RUN] scheduler=green_light_only "
                       << "matrix_size=" << size
@@ -617,7 +619,6 @@ void run_mmul_scaling_tests(caf::actor_system& sys,
 
             caf::cuda::manager::shutdown();
 
-	    */
             /* ================= No scheduler at all actor ================= */
             caf::cuda::manager_config no_sched_config(false); // disable scheduler
             caf::cuda::manager::init(sys, no_sched_config);
@@ -996,10 +997,10 @@ void run_mmul_fixed_256_batch_comparison(
 
 void caf_main(caf::actor_system& sys) {
   
-	//caf::cuda::manager_config man_config(true); //turns the scheduler on
+	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	//caf::cuda::manager::init(sys,man_config);
         // run_mmul_test(sys,10,64);	
-	//run_mmul_scaling_tests(sys,man_config);
+	run_mmul_scaling_tests(sys,man_config);
 
 	/*
    std::vector<int> sizes = {32, 64, 128, 256, 512, 1024,2048,4096};
@@ -1012,7 +1013,7 @@ void caf_main(caf::actor_system& sys) {
     //run_mmul_fixed_256_batch_comparison(sys, /*num_actors=*/200);
 
 
-	 test_core_usage_uniform_mmul(sys, 256, 1000,"multilevel");
+	// test_core_usage_uniform_mmul(sys, 256, 1000,"multilevel");
 	 //test_core_usage_mixed_mmul(sys, 256, 1000,"multilevel");
 
   //std::vector<int> sizes = {32, 64, 128, 256, 512, 1024};
