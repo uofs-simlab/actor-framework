@@ -69,6 +69,30 @@ int device::max_active_blocks_per_sm(const program_ptr& prog,
     }
 
 }
+// Returns the currently available memory on this device in bytes
+std::size_t device::available_memory_bytes() const {
+    CUcontext prev_ctx = nullptr;
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    CUresult res = cuMemGetInfo(&free_bytes, &total_bytes);
+
+    CHECK_CUDA(cuCtxPopCurrent(&prev_ctx));
+
+    if (res != CUDA_SUCCESS) {
+        const char* err_name = nullptr;
+        cuGetErrorName(res, &err_name);
+        throw std::runtime_error(std::string("cuMemGetInfo failed: ") + (err_name ? err_name : "unknown error"));
+    }
+
+    return free_bytes;
+}
+
+// Convenience: returns available memory in megabytes
+double device::available_memory_mb() const {
+    return static_cast<double>(available_memory_bytes()) / (1024.0 * 1024.0);
+}
 
 } // namespace caf::cuda
 

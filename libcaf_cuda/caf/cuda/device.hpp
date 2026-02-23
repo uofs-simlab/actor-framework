@@ -76,6 +76,12 @@ public:
   // Convenience: total memory in megabytes
   double total_memory_mb() const noexcept { return static_cast<double>(total_mem_bytes_) / (1024.0 * 1024.0); }
 
+  //total free memory on the device
+  std::size_t available_memory_bytes() const;
+  // Convenience: returns available memory in megabytes
+  double available_memory_mb() const;
+
+
   // Short human-readable device summary
   std::string device_summary() const {
 	  return std::string(name_) + " (id=" + std::to_string(id_) + ") - SMs: " + std::to_string(sm_count_) +
