@@ -1,4 +1,6 @@
 #include "caf/cuda/control-layer/all-control-layer.hpp"
+#include "caf/cuda/manager.hpp"
+#include "caf/cuda/control-layer/return_payloads/ack.hpp"
 #include <string>
 #include <iostream>
 
@@ -10,98 +12,105 @@ namespace caf::cuda {
 
 caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int num_devices) {
 
-   // set device number
-    state.device_number = device_number;
+	self -> state().num_devices = num_devices;
 
-    //check if multiple gpus
-    state.multiple_gpus = multi_gpu;
+	//initialize data structures 
 
-   // default behavior
-    state.table = std::make_unique<behavior_table>(state);
-    state.current_behavior = state.table -> get(behavior_token("single_usage"));
-    state.current_behavior->on_enter();
-
-
-
-    return {
-        [&](const token_ptr& tok) {
-            // std::cout << "Received token\n";
-            state.current_behavior->receive(tok);
-        },
-        
-   [&state](const caf::cuda::behavior_token_ptr& tok) -> bool {
-    auto* next = state.table -> get(*tok);
-    if (next) {
-        if (next != state.current_behavior) {
-            state.current_behavior->on_exit();   // cleanup current behavior
-            state.current_behavior = next;       // swap behavior
-            state.current_behavior->on_enter();  // init new behavior
-            std::cout << "[INFO] Behavior changed to: " << state.current_behavior->name() << "\n";
-	    return true; // behavior changed
-        } else {
-            std::cout << "[INFO] Behavior already active: " << state.current_behavior->name() << "\n";
-            return false; // behavior was already current
-        }
-    } else {
-        std::cout << "[WARN] No behavior found for token: " << tok->name() << "\n";
-        return false; // no change
-    }
+	for (int i = 0; i < num_devices; i++) {
+		std::queue<memory_request_token> r;
+		self->state().requests.emplace_back(std::move(r));
+		self->state().devices.emplace_back(manager::get().find_device(i));
 	}
-	,
-        [&](std::vector<token_ptr> tokens) {
-            for (size_t i = 0; i < tokens.size(); ++i) {
-                state.current_behavior->receive(tokens[i]);
-            }
-        },
-
-	//can send the scheduler a message if you want 
-	//it is more than happy to print it out for you 
-        [=](std::string word) {
-             std::cout << "Received message " << word << "\n";
-        },
-	
-	//message handler for reclaim
-	[&](int value, int memory,int runtime,int dependency) {	
-
-                //std::cout << "Received reclaim request\n";
-		state.current_behavior->reclaim(value,memory,runtime,dependency);
-	},
 
 
-	//message handler for reclaim
-	[&](ack payload) {	
-		state.current_behavior->reclaim(payload);
-	},
+	return {
+		[&](const memory_request_token& token) {
+			int device_number = token.getDeviceNumber();
+			int free_memory =
+				static_cast<int>(
+						self->state().devices[device_number]
+						->available_memory_bytes());
+			//if we have enough memory reply immediately
+			if (free_memory > token.getSize()) {
+				ack msg;
+				self->mail(std::move(msg))
+					.send(token.getReplyActor());
+
+			}
+			else {
+				self->state().requests[device_number].push(std::move(token));
+				if (!self->state().pending_requests) {
+					//will begin a timer to check if memory is free
+					anon_mail(ack(TIMER)).delay(std::chrono::seconds(1)).send(self);	
+					self -> state().pending_requests = true;
+				}
+				//otherwise it will awake and check at a later time
+			}
+
+
+		},
+
+			//typically here to peridocially check if memory is free
+			[&](ack message) {
+
+				if (message.getType() != TIMER)
+					return;
+
+				bool still_pending = false;
+
+				for (int i = 0; i < self->state().num_devices; i++) {
+
+					auto& q = self->state().requests[i];
+
+					if (q.empty())
+						continue;
+
+					int device_number = i;
+					int free_memory =
+						static_cast<int>(self->state().devices[device_number]
+								->available_memory_bytes());
+
+					// Traverse queue until:
+					//  - empty
+					//  - or first unsatisfied request
+					while (!q.empty()) {
+
+						auto token = std::move(q.front());
+
+						if (free_memory > token.getSize()) {
+
+							q.pop();
+
+							ack msg;
+							self->mail(std::move(msg))
+								.send(token.getReplyActor());
+
+							// optionally update free_memory if allocations are immediate
+							// free_memory -= token.getSize();
+
+						} else {
+							// cannot satisfy head → stop processing this queue
+							break;
+						}
+					}
+
+					if (!q.empty())
+						still_pending = true;
+				}
+
+				if (still_pending) {
+					anon_mail(ack(TIMER))
+						.delay(std::chrono::seconds(1))
+						.send(self);
+					self->state().pending_requests = true;
+				} else {
+					self->state().pending_requests = false;
+				}
+			} //end of lambda
 
 
 
-
-	//handler sent to set the scheduler actors 
-	//do not send a message more than once
-	//or else undefined behavior
-	[&](std::vector<caf::actor> s) {
-		state.schedulers = s;
-	},
-
-
-
-	//message handler for a request for work from another scheduler actor
-	[&](int device_number) {
-		state.current_behavior -> handle_load_balance_request(device_number);
-	},
-
-	//message handler for work being transfered over from another scheduler actor
-	[&](std::vector<kernel_graph> work_graphs) {
-		state.current_behavior -> receive_work(work_graphs);
-	},
-	
-	//TEMPORARY FIX SINCE CAF TYPE ID IS STATIC SO POLYMORPHISM WONT WORK HERE
-	//TODO FIGURE OUT A WAY FOR ACK AND ITS CHILDREN TO BE 1 SINGLE CLASS AND
-	//DOWNCASTED EASILY
-	[&](transfer_ack payload) {
-		state.current_behavior->reclaim(static_cast<ack&>(payload));
-	}
-    };
+	};
 }
 
 } // namespace caf::cuda
