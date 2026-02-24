@@ -56,14 +56,17 @@ void manager::init(caf::actor_system& sys, manager_config config) {
     caf::init_global_meta_objects<caf::id_block::cuda_control>();
 
     instance_->scheduler_on = config.getSchedulerOn();
+    instance_->memory_manager_on = config.getMemoryManagerOn();
 
-    if (instance_->scheduler_on) {
-        
-	    
+    if (instance_->scheduler_on) { 
 	    instance_ -> init_scheduler_actors(sys);
-	    //instance_->scheduler_actor_handle =
-          //  sys.spawn(scheduler_actor,0);
     }
+    if (instance_->memory_manager_on) {
+	    instance_->init_memory_actor(sys);
+    }
+
+
+
 }
 
 int manager::get_num_devices() {return platform_ -> get_num_devices();}
@@ -123,11 +126,6 @@ void manager::shutdown() {
         
 	for (int i = 0; i < instance_ ->  platform_ -> get_num_devices(); i++) {
 	    
-//	anon_send_exit(
-  //          instance_->scheduler_actor_handle,
-    //        caf::exit_reason::user_shutdown
-      //  );
-     
 	anon_send_exit(
             instance_->scheduler_actors[i],
             caf::exit_reason::user_shutdown
@@ -138,6 +136,12 @@ void manager::shutdown() {
     }
 
     }
+
+
+    if (instance_->memory_manager_on) {
+	    instance_->destroy_memory_actor();
+    }
+
 
     delete instance_;
     instance_ = nullptr;
@@ -365,6 +369,37 @@ void manager::send_scheduler_actor_message(behavior_token_ptr token, int device_
 void manager::send_scheduler_actor_message(std::string behavior, int device_number) {
     auto token = caf::cuda::make_behavior_token(std::move(behavior));
     send_scheduler_actor_message(token, device_number);
+}
+
+
+void manager::init_memory_actor(caf::actor_system& sys) {
+    if (memory_actor_handle)
+        return; // already initialized
+
+    int num_devices = platform_->get_num_devices();
+
+    memory_actor_handle =
+        sys.spawn(memory_actor, num_devices);
+}
+
+void manager::destroy_memory_actor() {
+    if (!memory_actor_handle)
+        return;
+
+    anon_send_exit(
+        memory_actor_handle,
+        caf::exit_reason::user_shutdown
+    );
+
+    memory_actor_handle = caf::actor{};
+}
+
+caf::actor manager::get_memory_actor() {
+    if (!instance_ || !instance_->memory_actor_handle) {
+        throw std::runtime_error("Memory actor not initialized");
+    }
+
+    return instance_->memory_actor_handle;
 }
 
 
