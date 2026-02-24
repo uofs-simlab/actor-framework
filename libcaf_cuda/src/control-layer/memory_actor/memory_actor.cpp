@@ -1,0 +1,107 @@
+#include "caf/cuda/control-layer/all-control-layer.hpp"
+#include <string>
+#include <iostream>
+
+/*
+ * This class is meant to handle memory managment/coordination  via s/r/r IPC
+ * it has nothing to do with the mem_ptr<T> (yet), that is kernel layer
+ */
+namespace caf::cuda {
+
+caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int num_devices) {
+
+   // set device number
+    state.device_number = device_number;
+
+    //check if multiple gpus
+    state.multiple_gpus = multi_gpu;
+
+   // default behavior
+    state.table = std::make_unique<behavior_table>(state);
+    state.current_behavior = state.table -> get(behavior_token("single_usage"));
+    state.current_behavior->on_enter();
+
+
+
+    return {
+        [&](const token_ptr& tok) {
+            // std::cout << "Received token\n";
+            state.current_behavior->receive(tok);
+        },
+        
+   [&state](const caf::cuda::behavior_token_ptr& tok) -> bool {
+    auto* next = state.table -> get(*tok);
+    if (next) {
+        if (next != state.current_behavior) {
+            state.current_behavior->on_exit();   // cleanup current behavior
+            state.current_behavior = next;       // swap behavior
+            state.current_behavior->on_enter();  // init new behavior
+            std::cout << "[INFO] Behavior changed to: " << state.current_behavior->name() << "\n";
+	    return true; // behavior changed
+        } else {
+            std::cout << "[INFO] Behavior already active: " << state.current_behavior->name() << "\n";
+            return false; // behavior was already current
+        }
+    } else {
+        std::cout << "[WARN] No behavior found for token: " << tok->name() << "\n";
+        return false; // no change
+    }
+	}
+	,
+        [&](std::vector<token_ptr> tokens) {
+            for (size_t i = 0; i < tokens.size(); ++i) {
+                state.current_behavior->receive(tokens[i]);
+            }
+        },
+
+	//can send the scheduler a message if you want 
+	//it is more than happy to print it out for you 
+        [=](std::string word) {
+             std::cout << "Received message " << word << "\n";
+        },
+	
+	//message handler for reclaim
+	[&](int value, int memory,int runtime,int dependency) {	
+
+                //std::cout << "Received reclaim request\n";
+		state.current_behavior->reclaim(value,memory,runtime,dependency);
+	},
+
+
+	//message handler for reclaim
+	[&](ack payload) {	
+		state.current_behavior->reclaim(payload);
+	},
+
+
+
+
+	//handler sent to set the scheduler actors 
+	//do not send a message more than once
+	//or else undefined behavior
+	[&](std::vector<caf::actor> s) {
+		state.schedulers = s;
+	},
+
+
+
+	//message handler for a request for work from another scheduler actor
+	[&](int device_number) {
+		state.current_behavior -> handle_load_balance_request(device_number);
+	},
+
+	//message handler for work being transfered over from another scheduler actor
+	[&](std::vector<kernel_graph> work_graphs) {
+		state.current_behavior -> receive_work(work_graphs);
+	},
+	
+	//TEMPORARY FIX SINCE CAF TYPE ID IS STATIC SO POLYMORPHISM WONT WORK HERE
+	//TODO FIGURE OUT A WAY FOR ACK AND ITS CHILDREN TO BE 1 SINGLE CLASS AND
+	//DOWNCASTED EASILY
+	[&](transfer_ack payload) {
+		state.current_behavior->reclaim(static_cast<ack&>(payload));
+	}
+    };
+}
+
+} // namespace caf::cuda
