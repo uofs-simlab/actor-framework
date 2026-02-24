@@ -18,7 +18,7 @@ namespace caf::cuda {
 
 struct memory_actor_state {
 
-	std::queue<memory_request_token> requests;
+	std::vector<std::queue<memory_request_token>> requests;
 	std::vector<device_ptr> devices;
 	int num_devices;
 
