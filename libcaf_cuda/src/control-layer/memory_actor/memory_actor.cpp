@@ -20,22 +20,23 @@ caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int
 		std::queue<memory_request_token> r;
 		self->state().requests.emplace_back(std::move(r));
 		self->state().devices.emplace_back(manager::get().find_device(i));
+		// Initialize internal memory counter
+		self->state().available_memory.push_back(
+				dev->available_memory_bytes()
+				);
 	}
 
 
 	return {
 		[&](const memory_request_token& token) {
 			int device_number = token.getDeviceNumber();
-			int free_memory =
-				static_cast<int>(
-						self->state().devices[device_number]
-						->available_memory_bytes());
-			//if we have enough memory reply immediately
-			if (free_memory > token.getSize()) {
-				ack msg;
-				self->mail(std::move(msg))
-					.send(token.getReplyActor());
+			auto& free_memory =
+				self->state().available_memory[device_number];
 
+			if (free_memory >= static_cast<std::size_t>(token.getSize())) {
+				free_memory -= token.getSize();
+				self->send(token.getReplyActor(),
+						ack(CAF_CUDA_ACK_MEMORY));
 			}
 			else {
 				self->state().requests[device_number].push(std::move(token));
@@ -58,6 +59,18 @@ caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int
 
 				bool still_pending = false;
 
+
+
+				//  First: synchronize internal counters with real device
+				for (int i = 0; i < self->state().num_devices; i++) {
+
+					if (!self->state().requests[i].empty()) {
+						self->state().available_memory[i] =
+							self->state().devices[i]->available_memory_bytes();
+					}
+				}
+
+				// Then process queues
 				for (int i = 0; i < self->state().num_devices; i++) {
 
 					auto& q = self->state().requests[i];
@@ -77,18 +90,16 @@ caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int
 
 						auto token = std::move(q.front());
 
-						if (free_memory > token.getSize()) {
+						if (free_memory >= token.getSize()) {
 
-							q.pop();
+							free_memory -= token.getSize();
 
-							ack msg;
-							self->mail(std::move(msg))
-								.send(token.getReplyActor());
+							self->send(token.getReplyActor(),
+									ack(CAF_CUDA_ACK_MEMORY));
+							q.pop();	
+				 		}
 
-							// optionally update free_memory if allocations are immediate
-							// free_memory -= token.getSize();
-
-						} else {
+						else {
 							// cannot satisfy head → stop processing this queue
 							break;
 						}
