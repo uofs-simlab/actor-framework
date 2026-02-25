@@ -10,7 +10,7 @@
  */
 namespace caf::cuda {
 
-caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int num_devices) {
+caf::behavior memory_actor(caf::stateful_actor<memory_actor_state>* self, int num_devices) {
 
 	self -> state().num_devices = num_devices;
 
