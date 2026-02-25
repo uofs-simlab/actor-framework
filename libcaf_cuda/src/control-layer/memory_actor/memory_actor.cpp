@@ -22,7 +22,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int
 		self->state().devices.emplace_back(manager::get().find_device(i));
 		// Initialize internal memory counter
 		self->state().available_memory.push_back(
-				dev->available_memory_bytes()
+				manager::get().find_device(i)->available_memory_bytes()
 				);
 	}
 
@@ -35,8 +35,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int
 
 			if (free_memory >= static_cast<std::size_t>(token.getSize())) {
 				free_memory -= token.getSize();
-				self->send(token.getReplyActor(),
-						ack(CAF_CUDA_ACK_MEMORY));
+				self->mail(ack(CAF_CUDA_ACK_MEMORY)).send(token.getReplyActor());
 			}
 			else {
 				self->state().requests[device_number].push(std::move(token));
@@ -87,18 +86,12 @@ caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int
 					//  - empty
 					//  - or first unsatisfied request
 					while (!q.empty()) {
-
 						auto token = std::move(q.front());
-
 						if (free_memory >= token.getSize()) {
-
-							free_memory -= token.getSize();
-
-							self->send(token.getReplyActor(),
-									ack(CAF_CUDA_ACK_MEMORY));
+							free_memory -= token.getSize();	
+							self->mail(ack(CAF_CUDA_ACK_MEMORY)).send(token.getReplyActor());
 							q.pop();	
 				 		}
-
 						else {
 							// cannot satisfy head → stop processing this queue
 							break;
