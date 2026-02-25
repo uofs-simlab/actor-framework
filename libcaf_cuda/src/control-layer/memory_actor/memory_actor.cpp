@@ -33,7 +33,7 @@ caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int
 			auto& free_memory =
 				self->state().available_memory[device_number];
 
-			if (free_memory >= static_cast<std::size_t>(token.getSize())) {
+			if (free_memory >= token.getSize()) {
 				free_memory -= token.getSize();
 				self->mail(ack(CAF_CUDA_ACK_MEMORY)).send(token.getReplyActor());
 			}
@@ -78,10 +78,8 @@ caf::behavior scheduler_actor(caf::stateful_actor<memory_actor_state>* self, int
 						continue;
 
 					int device_number = i;
-					int free_memory =
-						static_cast<int>(self->state().devices[device_number]
-								->available_memory_bytes());
-
+					std::size_t free_memory = self->state().devices[device_number]
+								->available_memory_bytes();
 					// Traverse queue until:
 					//  - empty
 					//  - or first unsatisfied request
