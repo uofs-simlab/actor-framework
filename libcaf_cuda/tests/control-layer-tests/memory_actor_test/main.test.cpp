@@ -85,6 +85,16 @@ caf::behavior memory_hog_actor_fun(caf::stateful_actor<mmul_actor_state>* self,c
 	return {
 
 	  [=] (caf::cuda::ack msg ) {
+		  caf::cuda::command_runner mem_transfer_command<>;
+		  std::vector<int> big_buffer(bytes/sizeof(int),0);
+
+		  caf::cuda_mem_ptr<int> temp = mem_transfer_command.transfer_memory(0,1,in_out{big_buffer});
+
+		  //hold onto memory for a few seconds
+		  std::cout << "Memory hog holding onto memory for 5 seconds\n";
+		  std::this_thread::sleep_for(std::chrono::seconds(5));
+		  std::cout << "Memory hog releasing memory\n";
+		  
 		  self->mail(1).send(exit_actor);
 		  self->quit();
 	  },

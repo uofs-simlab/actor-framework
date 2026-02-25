@@ -10,7 +10,7 @@ namespace caf::cuda {
 
 class CAF_CUDA_EXPORT memory_request_token {
 public:
-  memory_request_token(int size,
+  memory_request_token(std::size_t size,
                        int device_number,
                        caf::actor replyActor)
     : 
@@ -28,7 +28,7 @@ public:
   caf::actor getReplyActor() const { return replyActor_; }
 
 private:
-  int size_;
+  std::size_t size_;
   int device_number_;
   caf::actor replyActor_;
 };
