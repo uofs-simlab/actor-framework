@@ -23,7 +23,7 @@ public:
 
   int getType() const { return MEMORY; }
 
-  int getSize() const { return size_; }
+  std::size_t getSize() const { return size_; }
   int getDeviceNumber() const { return device_number_; }
   caf::actor getReplyActor() const { return replyActor_; }
 
