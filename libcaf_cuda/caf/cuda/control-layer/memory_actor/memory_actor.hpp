@@ -20,6 +20,7 @@ struct memory_actor_state {
 
 	std::vector<std::queue<memory_request_token>> requests;
 	std::vector<device_ptr> devices;
+	std::vector<std::size_t> available_memory;
 	int num_devices;
 	bool pending_requests = false;
 
