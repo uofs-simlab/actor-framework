@@ -46,20 +46,9 @@ caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int lim
 }
 
 
-
-
-
-
-
-
-
-// Extend your actor state to keep the start time
 struct memory_hog_actor_state {
-	int bytes;
+	std::size_t bytes;
 };
-
-
-
 
 //commands classes used to launch kernels 
 using mmulCommand = caf::cuda::command_runner<in<int>,in<int>,out<int>,in<int>>;
@@ -72,9 +61,8 @@ matrixGenCommand randomMatrix;
 mmulAsyncCommand mmulAsync;
 
 
-caf::behavior memory_hog_actor_fun(caf::stateful_actor<mmul_actor_state>* self,caf::actor exit_actor,int bytes) {
+caf::behavior memory_hog_actor_fun(caf::stateful_actor<memory_hog_actor_state>* self,caf::actor exit_actor,std::size_t bytes) {
  
-
 	self->state().bytes = bytes; 
 	caf::cuda::manager& mgr = caf::cuda::manager::get();
   	caf::actor memory_actor = mgr.get_memory_actor();
@@ -85,10 +73,10 @@ caf::behavior memory_hog_actor_fun(caf::stateful_actor<mmul_actor_state>* self,c
 	return {
 
 	  [=] (caf::cuda::ack msg ) {
-		  caf::cuda::command_runner mem_transfer_command<>;
+		  caf::cuda::command_runner<> mem_transfer_command;
 		  std::vector<int> big_buffer(bytes/sizeof(int),0);
 
-		  caf::cuda_mem_ptr<int> temp = mem_transfer_command.transfer_memory(0,1,in_out{big_buffer});
+		  caf::cuda::mem_ptr<int> temp = mem_transfer_command.transfer_memory(0,1,in_out{big_buffer});
 
 		  //hold onto memory for a few seconds
 		  std::cout << "Memory hog holding onto memory for 5 seconds\n";
@@ -104,27 +92,19 @@ caf::behavior memory_hog_actor_fun(caf::stateful_actor<mmul_actor_state>* self,c
 
 
 
-void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
+void run_memory_hog_test(caf::actor_system& sys, std::size_t bytes, int num_actors) {
   if (num_actors < 1) {
     std::cerr << "[ERROR] Number of actors must be >= 1\n";
     return;
   }
 
-  int limit = 1;
 
   caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors);
-
-  for (int i = 0; i < limit; i++) {
   // Spawn num_actors actors running the mmul behavior
   std::vector<caf::actor> actors;
   actors.reserve(num_actors);
-  for (int i = 0; i < num_actors; ++i) {
-    actors.push_back(sys.spawn(mmul_actor_fun,exit_actor,matrix_size));
-  }
-
-
- // std::cout << actors.size() << "\n";
-
+  for (int i = 0; i < num_actors; i++){
+    actors.push_back(sys.spawn(memory_hog_actor_fun,exit_actor,bytes));
   }
 
    sys.await_all_actors_done();
@@ -136,13 +116,9 @@ void caf_main(caf::actor_system& sys) {
   
 	
 
-	caf::cuda::manager_config man_config(true); //turns the scheduler on
+	caf::cuda::manager_config man_config(false,true); //turns the memory actor on
 	caf::cuda::manager::init(sys,man_config);
-       	run_async_mmul_test(sys,10,500);
-	
-	//tests will delete the old manager so will have to reinit if you do this 
-	//in conjunction with each other	
-	//caf::cuda::manager::init(sys,man_config);
+       	run_memory_hog_test(sys,3221225472,8);
 }
 
 
