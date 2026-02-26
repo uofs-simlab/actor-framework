@@ -28,8 +28,9 @@ caf::behavior memory_actor(caf::stateful_actor<memory_actor_state>* self, int nu
 
 
 	return {
-		[&](const memory_request_token& token) {
+		[self](const memory_request_token& token) {
 			int device_number = token.getDeviceNumber();
+			
 			auto& free_memory =
 				self->state().available_memory[device_number];
 
@@ -51,7 +52,7 @@ caf::behavior memory_actor(caf::stateful_actor<memory_actor_state>* self, int nu
 		},
 
 			//typically here to peridocially check if memory is free
-			[&](ack message) {
+			[self](ack message) {
 
 				if (message.getType() != TIMER)
 					return;
