@@ -282,8 +282,8 @@ caf::behavior mmul_actor_fun_no_verify(
 
 				//create program and dims   
 				//create args
-				auto arg1 = caf::cuda::create_in_arg(matrix1);
-				auto arg2 = caf::cuda::create_in_arg(matrix2);
+				auto arg1 = caf::cuda::create_in_arg(std::move(matrix1));
+				auto arg2 = caf::cuda::create_in_arg(std::move(matrix2));
 				auto arg3 = caf::cuda::create_out_arg(N*N);
 				auto arg4 = caf::cuda::create_in_arg(N);
 
@@ -325,8 +325,8 @@ caf::behavior mmul_actor_fun_no_verify(
 
 				//create program and dims   
 				//create args
-				auto arg1 = caf::cuda::create_in_arg(matrixA);
-				auto arg2 = caf::cuda::create_in_arg(matrixB);
+				auto arg1 = caf::cuda::create_in_arg(std::move(matrixA));
+				auto arg2 = caf::cuda::create_in_arg(std::move(matrixB));
 				auto arg3 = caf::cuda::create_out_arg(N*N);
 				auto arg4 = caf::cuda::create_in_arg(N);
 
@@ -377,8 +377,8 @@ caf::behavior mmul_actor_fun_no_schedule(
     	    //std::cout << "Hello\n";
 	    caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-            auto arg1 = caf::cuda::create_in_arg(matrixA);
-            auto arg2 = caf::cuda::create_in_arg(matrixB);
+            auto arg1 = caf::cuda::create_in_arg(std::move(matrixA));
+            auto arg2 = caf::cuda::create_in_arg(std::move(matrixB));
             auto arg3 = caf::cuda::create_out_arg(N_local * N_local);
             auto arg4 = caf::cuda::create_in_arg(N_local);
 
@@ -528,9 +528,6 @@ void run_mmul_test_no_scheduler_actor(caf::actor_system& sys, int matrix_size, i
 
     caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-    mgr.send_scheduler_actor_message("green",0);
-
-    // CREATE ONCE
     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
     const int THREADS = 32;
