@@ -63,6 +63,11 @@ in<T> create_in_arg(const std::vector<T>& buffer) {
   return in<T>{buffer};
 }
 
+template <typename T>
+in<T> create_in_out_arg(std::vector<T>&& buffer) {
+    return in<T>{std::move(buffer)}; // moves into variant, no copy
+}
+
 
 //creates an output buffer/ write only buffer on the gpu
 
@@ -90,6 +95,12 @@ template <typename T>
 in_out<T> create_in_out_arg(const T& val) {
   return in_out<T>{val};
 }
+
+template <typename T>
+in_out<T> create_in_out_arg(std::vector<T>&& buffer) {
+    return in_out<T>{std::move(buffer)}; // moves into variant, no copy
+}
+
 
 template <typename T>
 in_out<T> create_in_out_arg(const std::vector<T>& buffer) {
