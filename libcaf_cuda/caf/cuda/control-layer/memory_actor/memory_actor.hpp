@@ -5,7 +5,7 @@
 #include "caf/cuda/device.hpp"
 #include "caf/cuda/global_export.hpp"
 #include "caf/cuda/control-layer/memory_actor/memory_request_token.hpp"
-
+#include "caf/cuda/control-layer/memory_actor/mem_token.hpp"
 /*
  * The memory actor 
  * meant to help prevent out of memory errors by employing s/r/r IPC 
