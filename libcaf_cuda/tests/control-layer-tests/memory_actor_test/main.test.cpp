@@ -61,8 +61,7 @@ matrixGenCommand randomMatrix;
 mmulAsyncCommand mmulAsync;
 
 
-caf::behavior memory_hog_actor_fun(caf::stateful_actor<memory_hog_actor_state>* self,caf::actor exit_actor,std::size_t bytes) {
- 
+caf::behavior memory_hog_actor_fun(caf::stateful_actor<memory_hog_actor_state>* self,caf::actor exit_actor,std::size_t bytes,std::vector<int> big_buffer) { 
 	self->state().bytes = bytes; 
 	caf::cuda::manager& mgr = caf::cuda::manager::get();
   	caf::actor memory_actor = mgr.get_memory_actor();
@@ -74,9 +73,9 @@ caf::behavior memory_hog_actor_fun(caf::stateful_actor<memory_hog_actor_state>* 
 
 	  [=] (caf::cuda::ack msg ) {
 		  caf::cuda::command_runner<> mem_transfer_command;
-		  std::vector<int> big_buffer(bytes/sizeof(int),0);
 
-		  caf::cuda::mem_ptr<int> temp = mem_transfer_command.transfer_memory(0,1,in_out{big_buffer});
+
+		  caf::cuda::mem_ptr<int> temp = mem_transfer_command.transfer_memory(0,1,in_out{std::move(big_buffer)});
 
 		  //hold onto memory for a few seconds
 		  std::cout << "Memory hog holding onto memory for 5 seconds\n";
@@ -102,9 +101,10 @@ void run_memory_hog_test(caf::actor_system& sys, std::size_t bytes, int num_acto
   caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors);
   // Spawn num_actors actors running the mmul behavior
   std::vector<caf::actor> actors;
+  std::vector<int> big_buffer(bytes/sizeof(int));
   actors.reserve(num_actors);
   for (int i = 0; i < num_actors; i++){
-    actors.push_back(sys.spawn(memory_hog_actor_fun,exit_actor,bytes));
+    actors.push_back(sys.spawn(memory_hog_actor_fun,exit_actor,bytes,big_buffer));
   }
 
    sys.await_all_actors_done();
