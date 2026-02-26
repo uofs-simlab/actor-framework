@@ -16,6 +16,9 @@
 //#include <caf/atoms.hpp>
 
 
+// outside any function
+std::vector<int> big_buffer;
+
 
 using namespace caf;
 using namespace std::chrono_literals;
@@ -61,7 +64,7 @@ matrixGenCommand randomMatrix;
 mmulAsyncCommand mmulAsync;
 
 
-caf::behavior memory_hog_actor_fun(caf::stateful_actor<memory_hog_actor_state>* self,caf::actor exit_actor,std::size_t bytes,std::vector<int> big_buffer) { 
+caf::behavior memory_hog_actor_fun(caf::stateful_actor<memory_hog_actor_state>* self,caf::actor exit_actor,std::size_t bytes) { 
 	self->state().bytes = bytes; 
 	caf::cuda::manager& mgr = caf::cuda::manager::get();
   	caf::actor memory_actor = mgr.get_memory_actor();
@@ -101,10 +104,10 @@ void run_memory_hog_test(caf::actor_system& sys, std::size_t bytes, int num_acto
   caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors);
   // Spawn num_actors actors running the mmul behavior
   std::vector<caf::actor> actors;
-  std::vector<int> big_buffer(bytes/sizeof(int));
+  big_buffer.resize(bytes / sizeof(int));
   actors.reserve(num_actors);
   for (int i = 0; i < num_actors; i++){
-    actors.push_back(sys.spawn(memory_hog_actor_fun,exit_actor,bytes,big_buffer));
+    actors.push_back(sys.spawn(memory_hog_actor_fun,exit_actor,bytes));
   }
 
    sys.await_all_actors_done();
@@ -118,7 +121,7 @@ void caf_main(caf::actor_system& sys) {
 
 	caf::cuda::manager_config man_config(false,true); //turns the memory actor on
 	caf::cuda::manager::init(sys,man_config);
-       	run_memory_hog_test(sys,3221225472,8);
+       	run_memory_hog_test(sys,6221225472,8);
 }
 
 
