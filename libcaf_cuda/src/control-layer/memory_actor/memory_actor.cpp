@@ -73,7 +73,7 @@ caf::behavior memory_actor(caf::stateful_actor<memory_actor_state>* self,
                 if (self->state().available_memory[device_number] >= need) {
                     // reserve and grant
                     self->state().available_memory[device_number] -= need;
-                    self->mail(ack(CAF_CUDA_ACK_MEMORY)).send(front.getReplyActor());
+                    self->mail(std::move(mem_token(need,device_number,self))).send(front.getReplyActor());
                     q.pop();
                 } else {
                     // still can't satisfy head request
