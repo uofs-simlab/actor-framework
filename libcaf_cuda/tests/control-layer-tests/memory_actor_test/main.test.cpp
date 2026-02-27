@@ -78,7 +78,7 @@ caf::behavior memory_hog_actor_fun(caf::stateful_actor<memory_hog_actor_state>* 
 
     std::cout << "Booting\n";
     return {
-        [=](caf::cuda::ack mem_token) {
+        [=](caf::cuda::mem_token msg) {
             caf::cuda::command_runner<> mem_transfer_command;
 
             try {
