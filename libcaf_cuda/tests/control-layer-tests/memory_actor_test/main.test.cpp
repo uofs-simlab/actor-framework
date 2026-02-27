@@ -64,35 +64,55 @@ matrixGenCommand randomMatrix;
 mmulAsyncCommand mmulAsync;
 
 
-caf::behavior memory_hog_actor_fun(caf::stateful_actor<memory_hog_actor_state>* self,caf::actor exit_actor,std::size_t bytes) { 
-	self->state().bytes = bytes; 
-	caf::cuda::manager& mgr = caf::cuda::manager::get();
-  	caf::actor memory_actor = mgr.get_memory_actor();
-	//send a memory request token
-	caf::cuda::memory_request_token request(bytes,0,self);
-	self ->mail(request).send(memory_actor);
 
-	return {
+caf::behavior memory_hog_actor_fun(caf::stateful_actor<memory_hog_actor_state>* self,
+                                   caf::actor exit_actor,
+                                   std::size_t bytes) { 
+    self->state().bytes = bytes; 
+    caf::cuda::manager& mgr = caf::cuda::manager::get();
+    caf::actor memory_actor = mgr.get_memory_actor();
 
-	  [=] (caf::cuda::ack msg ) {
-		  caf::cuda::command_runner<> mem_transfer_command;
+    // send a memory request token
+    caf::cuda::memory_request_token request(bytes, 0, self);
+    self->mail(request).send(memory_actor);
 
+    std::cout << "Booting\n";
+    return {
+        [=](caf::cuda::ack mem_token) {
+            caf::cuda::command_runner<> mem_transfer_command;
 
-		  caf::cuda::mem_ptr<int> temp = mem_transfer_command.transfer_memory(0,1,in_out{std::move(big_buffer)});
+            try {
+                std::cout << "Grabbing onto memory\n";
 
-		  //hold onto memory for a few seconds
-		  std::cout << "Memory hog holding onto memory for 5 seconds\n";
-		  std::this_thread::sleep_for(std::chrono::seconds(5));
-		  std::cout << "Memory hog releasing memory\n";
-		  
-		  self->mail(1).send(exit_actor);
-		  self->quit();
-	  },
+                // use global big_buffer directly
+                caf::cuda::mem_ptr<int> temp = 
+                    mem_transfer_command.transfer_memory(0, 1, in_out<int>{big_buffer});
 
-  };
+                std::cout << "Memory transfer successful!\n";
+            }
+            catch (const std::runtime_error& e) {
+                std::cerr << "[ERROR] Runtime exception during memory transfer: " << e.what() << "\n";
+            }
+            catch (const std::bad_alloc& e) {
+                std::cerr << "[ERROR] Allocation failed during memory transfer: " << e.what() << "\n";
+            }
+            catch (const std::exception& e) {
+                std::cerr << "[ERROR] Exception during memory transfer: " << e.what() << "\n";
+            }
+            catch (...) {
+                std::cerr << "[ERROR] Unknown exception during memory transfer\n";
+            }
+
+            // hold onto memory for a few seconds
+            std::cout << "Memory hog holding onto memory for 5 seconds\n";
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            std::cout << "Memory hog releasing memory\n";
+
+            self->mail(1).send(exit_actor);
+            self->quit();
+        },
+    };
 }
-
-
 
 void run_memory_hog_test(caf::actor_system& sys, std::size_t bytes, int num_actors) {
   if (num_actors < 1) {
