@@ -28,6 +28,9 @@
 #include "caf/cuda/control-layer/memory_actor/memory_request_token.hpp"
 #include "caf/cuda/control-layer/memory_actor/mem_token.hpp"
 
+//exit actor includes
+#include "caf/cuda/control-layer/exit_actor/exit_actor.hpp"
+
 
 // -----------------------------------------------------------------------------
 // Type IDs (required for typed behaviors)
