@@ -26,11 +26,14 @@ caf::behavior vector_add_supervisor(caf::stateful_actor<supervisor_state> * self
                                     const std::vector<int>& vecB,
                                     size_t vec_size,
                                     caf::cuda::program_ptr program) {
-    return {
-        [&](const unit_t&) mutable {
+   
+            caf::actor worker = self ->spawn(caf::cuda::vector_add_actor_fun<int>, program);
+       
+	return {
+        [&,self,worker](const unit_t&) mutable {
 
             // Spawn the vector add worker actor
-            caf::actor worker = self ->spawn(caf::cuda::vector_add_actor_fun<int>, program);
+            //caf::actor worker = self ->spawn(caf::cuda::vector_add_actor_fun<int>, program);
 
             // Transfer memory to device
             auto dA = caf::cuda::create_in_arg(vecA);
