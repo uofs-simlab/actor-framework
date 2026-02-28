@@ -36,7 +36,7 @@ caf::behavior vector_add_actor_fun(
             int N,
             int device_number,
             int stream_id)
-        -> mem_ptr<T>
+         mutable ->  mem_ptr<T>
         {
             nd_range dims((N + 255) / 256, 1, 1, 256, 1, 1);
 
@@ -56,7 +56,7 @@ caf::behavior vector_add_actor_fun(
             );
 
             // Extract mem_ptr<T> result (2nd index of result tuple)
-            return extract_mem_ptr<T>(result_tuple, 2);
+            return std::get<2>(result_tuple);
         }
     };
 }
