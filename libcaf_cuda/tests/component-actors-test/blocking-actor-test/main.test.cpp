@@ -1,6 +1,7 @@
 #include <caf/all.hpp>
 #include <caf/cuda/all.hpp>
 #include <caf/component-actors/mmul_actor/mmul_actor.hpp>
+#include <caf/component-actors/mem_transfer_actor/mem_transfer_actor.hpp>
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -44,54 +45,63 @@ struct mmul_state {
 };
 
 caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
-  return {
+	return {
 
-    // 1st handler matrices + N, launches a kernel and verifies result
-    [=](const std::vector<int>& matrixA,
-        const std::vector<int>& matrixB,
-        int N) {
+		// 1st handler matrices + N, launches a kernel and verifies result
+		[=](const std::vector<int>& matrixA,
+				const std::vector<int>& matrixB,
+				int N) {
 
-      caf::cuda::manager& mgr = caf::cuda::manager::get();
+			caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-      int device = 0;
-      int stream = 1;
-      
-      // Create program and dims
-      auto program =
-        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+			int device = 0;
+			int stream = 1;
 
-      auto arg1 = mmul_command.transfer_memory(device,
-		      stream,
-		      caf::cuda::create_in_arg(matrixA));
-      auto arg2 = mmul_command.transfer_memory(device,
-		      stream,
-		      caf::cuda::create_in_arg(matrixB));
+			// Create program and dims
+			auto program =
+				mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
-      caf::actor mmul_actor =
-        self->spawn(caf::cuda::mmul_actor_fun<int>, program);
+			auto arg1 = mmul_command.transfer_memory(device,
+					stream,
+					caf::cuda::create_in_arg(matrixA));
+			auto arg2 = mmul_command.transfer_memory(device,
+					stream,
+					caf::cuda::create_in_arg(matrixB));
+
+			caf::actor mmul_actor =
+				self->spawn(caf::cuda::mmul_actor_fun<int>, program);
+
+			caf::actor mem_transfer_actor =
+				self->spawn(caf::cuda::mem_transfer_actor_fun<int>);
 
 
-      self->mail(arg1, arg2, N, device, stream)
-        .request(mmul_actor, std::chrono::seconds(10))
-        .then(
-          [=](caf::cuda::mem_ptr<int> dC) {
 
-            std::vector<int> matrixC = dC->copy_to_host();
-            std::vector<int> result(N * N);
+			self->mail(arg1, arg2, N, device, stream)
+				.request(mmul_actor, std::chrono::seconds(10))
+				.then(
+						[=](caf::cuda::mem_ptr<int> dC) {
 
-            serial_matrix_multiply(matrixA, matrixB, result, N);
+						self ->mail(dC).request(mem_transfer_actor,std::chrono::seconds(10))
+						.then(
+								[=](const std::vector<int>& matrixC) {
 
-            if (result == matrixC)
-              std::cout << "actor matrix references match\n";
-            else
-              std::cout << "actor matrix references did not match\n";
 
-            self->quit();
-          }
-        );
-    }
+								std::vector<int> result(N * N);
 
-  };
+								serial_matrix_multiply(matrixA, matrixB, result, N);
+
+								if (result == matrixC)
+								std::cout << "actor matrix references match\n";
+								else
+								std::cout << "actor matrix references did not match\n";
+
+								self->quit();
+								});
+								}
+						     );
+		}
+
+	};
 }
 
 
