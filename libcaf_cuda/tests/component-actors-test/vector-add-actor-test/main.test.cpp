@@ -18,26 +18,29 @@ void serial_vector_add(const std::vector<T>& a,
     }
 }
 
+
+caf::cuda::command_runner<> runner;
+
 struct supervisor_state {};
 
 // Supervisor actor behavior
 caf::behavior vector_add_supervisor(caf::stateful_actor<supervisor_state> * self,
                                     const std::vector<int>& vecA,
                                     const std::vector<int>& vecB,
-                                    size_t vec_size,
+                                    int vec_size,
                                     caf::cuda::program_ptr program) {
    
             caf::actor worker = self ->spawn(caf::cuda::vector_add_actor_fun<int>, program);
        
 	return {
-        [&,self,worker](const unit_t&) mutable {
+        [&,self,worker,vecA,vecB,vec_size](const unit_t&) mutable {
 
             // Spawn the vector add worker actor
             //caf::actor worker = self ->spawn(caf::cuda::vector_add_actor_fun<int>, program);
 
             // Transfer memory to device
-            auto dA = caf::cuda::create_in_arg(vecA);
-            auto dB = caf::cuda::create_in_arg(vecB);
+            auto dA = runner.transfer_memory(0,1,caf::cuda::create_in_arg(vecA));
+            auto dB = runner.transfer_memory(0,1,caf::cuda::create_in_arg(vecB));
 
             // Send to worker actor and request result
             self->mail(dA, dB, vec_size, 0, 1) // device=0, stream=1
@@ -60,7 +63,7 @@ caf::behavior vector_add_supervisor(caf::stateful_actor<supervisor_state> * self
     };
 }
 
-void run_vector_add_test(actor_system& sys, size_t vec_size) {
+void run_vector_add_test(actor_system& sys, int vec_size) {
     caf::cuda::manager::init(sys);
 
     // Create program pointer for the vector add kernel
