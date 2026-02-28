@@ -35,74 +35,67 @@ void serial_matrix_multiply(const std::vector<int>& a,
   }
 }
 
+using command =
+  caf::cuda::command_runner<>;
 
+command mmul_command;
 
 struct mmul_state {
 };
 
-// Stateful actor behavior
 caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
   return {
 
-	
-	  // 1st handler matrices +  N, launches a kenrel and sends its result to itself for verification
-	  [=](const std::vector<int> matrixA,
-			  const std::vector<int> matrixB, int N) {
+    // 1st handler matrices + N, launches a kernel and verifies result
+    [=](const std::vector<int>& matrixA,
+        const std::vector<int>& matrixB,
+        int N) {
+
+      caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+      int device = 0;
+      int stream = 1;
+      
+      // Create program and dims
+      auto program =
+        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+      auto arg1 = mmul_command.transfer_memory(device,
+		      stream,
+		      caf::cuda::create_in_arg(matrixA));
+      auto arg2 = mmul_command.transfer_memory(device,
+		      stream,
+		      caf::cuda::create_in_arg(matrixB));
+
+      caf::actor mmul_actor =
+        self->spawn(caf::cuda::mmul_actor_fun<int>, program);
 
 
-		  caf::cuda::manager& mgr = caf::cuda::manager::get();
+      self->mail(arg1, arg2, N, device, stream)
+        .request(mmul_actor, std::chrono::seconds(10))
+        .then(
+          [=](caf::cuda::mem_ptr<int> dC) {
 
-		  //create program and dims   
-		  auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
-		  //create args
-		  auto arg1 = caf::cuda::create_in_arg(matrixA);
-		  auto arg2 = caf::cuda::create_in_arg(matrixB);
+            std::vector<int> matrixC = dC->copy_to_host();
+            std::vector<int> result(N * N);
 
-		  caf::actor mmul_actor = self -> spawn(caf::cuda::mmul_actor_fun<int>,program);
+            serial_matrix_multiply(matrixA, matrixB, result, N);
 
-		  int device = 0;
-		  int stream = 1;
+            if (result == matrixC)
+              std::cout << "actor matrix references match\n";
+            else
+              std::cout << "actor matrix references did not match\n";
 
-		  self->request(mmul_actor,
-				  std::chrono::seconds(10),
-				  arg1,
-				  arg2,
-				  N,
-				  device,
-				  stream)
-			  .then(
-					  [&](caf::cuda::mem_ptr<int> dC) {
+            self->quit();
+          }
+        );
+    }
 
-					  std::vector<int> matrixC =
-					  dC->copy_to_host();
-					  std::vector<int> result(N*N);
-
-					  serial_matrix_multiply(matrixA,matrixB,result,N);
-
-					  if (result == matrixC) {
-
-					  std::cout << "actor matrix references match\n";
-
-					  }
-
-					  else {
-					  std::cout << "actor matrix  references did not match\n";
-					  }
-
-					  self-> quit();
-
-					  }
-	  });
-
-
+  };
 }
 
 
-void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
-  if (num_actors < 1) {
-    std::cerr << "[ERROR] Number of actors must be >= 1\n";
-    return;
-  }
+void run_mmul_test(caf::actor_system& sys, int matrix_size) {
 
   // ------------------------------------
   // Start timing
@@ -110,33 +103,20 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
   auto start = std::chrono::steady_clock::now();
 
   // Spawn num_actors actors running the mmul behavior
-  std::vector<caf::actor> actors;
-  actors.reserve(num_actors);
+  std::vector<int> matrixA(matrix_size * matrix_size,2);
+  std::vector<int> matrixB(matrix_size * matrix_size,3);
  
  using clock = std::chrono::steady_clock;
 
 auto t_start = clock::now();
 
-for (int i = 0; i < num_actors; ++i) {
-    actors.push_back(sys.spawn(mmul_actor_fun));
-}
+caf::actor a =sys.spawn(mmul_actor_fun);
+
+anon_mail(matrixA,matrixB,matrix_size).send(a);
 
 auto t_end = clock::now();
 
-auto elapsed_ms =
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-        t_end - t_start).count();
 
-std::cout << "[SPAWN] spawned "
-          << num_actors
-          << " actors in "
-          << elapsed_ms
-          << " ms\n";
- 
- 
- 
-  // Actor 0 generates matrices and broadcasts to others
-  caf::anon_mail(matrix_size, actors).send(actors[0]);
 
   // Wait for all actors to finish
   sys.await_all_actors_done();
@@ -149,24 +129,13 @@ std::cout << "[SPAWN] spawned "
       std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
   std::cout << "[MMUL TEST] matrix_size=" << matrix_size
-            << ", actors=" << num_actors
             << ", time=" << duration_ms << " ms\n";
 }
 
 void caf_main(caf::actor_system& sys) {
   caf::cuda::manager::init(sys);
+  run_mmul_test(sys,10);
 
-  run_mmul_test(sys,512,512);
-  //run_async_mmul_test(sys,100,1);
-  //run_async_mmul_perf_test(sys,1024,200);
-
-  // run the async (no-shared) suite:
-  //benchmark_async_perf_all(sys);
-
-  // run the shared-memory suite:
-  //benchmark_shared_perf_all(sys);
-
-  //run_mmul_scaling_tests(sys);
 }
 
 
