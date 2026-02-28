@@ -24,29 +24,6 @@ using namespace caf;
 using namespace std::chrono_literals;
 
 
-struct exit_actor_state {
-	int completed = 0;
-};
-
-
-caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int limit) {
-
-
-	return {
-		[=](int num_completed) {
-			self->state().completed += num_completed;
-			
-			std::cout << "Actors finished is " << self->state().completed << "\n";
-			if (self->state().completed >= limit) {
-			
-				caf::cuda::manager::shutdown();
-				self->quit();
-			}
-		}
-	};
-
-
-}
 
 
 struct memory_hog_actor_state {
@@ -120,8 +97,9 @@ void run_memory_hog_test(caf::actor_system& sys, std::size_t bytes, int num_acto
     return;
   }
 
+  caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-  caf::actor exit_actor = sys.spawn(exit_actor_fun,num_actors);
+  caf::actor exit_actor = mgr.spawn_exit_actor(num_actors);
   // Spawn num_actors actors running the mmul behavior
   std::vector<caf::actor> actors;
   big_buffer.resize(bytes / sizeof(int));
