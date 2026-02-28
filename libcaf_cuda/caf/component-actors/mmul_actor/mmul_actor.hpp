@@ -31,7 +31,7 @@ using mmul_async_command =
 
 template <class T>
 caf::behavior mmul_actor_fun(
-    caf::stateful_actor<mmul_actor_state>* self,
+    caf::stateful_actor<caf::cuda::mmul_actor_state>* self,
     program_ptr mmul_kernel)
 {
   using mem_t = mem_ptr<T>;
@@ -48,7 +48,7 @@ caf::behavior mmul_actor_fun(
         int N,
         int device_number,
         int stream_id)
-        -> mem_t
+        mutable -> mem_t
     {
       program_ptr kernel = self->state().mmul_kernel;
 
