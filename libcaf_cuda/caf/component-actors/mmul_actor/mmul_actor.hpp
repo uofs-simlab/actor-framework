@@ -30,7 +30,7 @@ using mmul_async_command =
   >;
 
 template <class T>
-caf::behavior mmul_async_actor_fun(
+caf::behavior mmul_actor_fun(
     caf::stateful_actor<mmul_actor_state>* self,
     program_ptr mmul_kernel)
 {
