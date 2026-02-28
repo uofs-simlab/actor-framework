@@ -402,5 +402,11 @@ caf::actor manager::get_memory_actor() {
     return instance_->memory_actor_handle;
 }
 
+caf::actor manager::spawn_exit_actor(int num_actors) {
+
+	return system_.spawn(exit_actor_fun,num_actors);
+
+}
+
 
 } // namespace caf::cuda

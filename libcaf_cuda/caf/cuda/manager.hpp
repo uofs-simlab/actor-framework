@@ -191,6 +191,8 @@ public:
 
   caf::actor get_memory_actor();
 
+  caf::actor spawn_exit_actor(int num_actors);
+
 private:
   explicit manager(caf::actor_system& sys)
     : system_(sys), platform_(platform::create()) {
