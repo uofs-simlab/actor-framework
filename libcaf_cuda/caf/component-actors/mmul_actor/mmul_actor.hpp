@@ -60,7 +60,7 @@ caf::behavior mmul_actor_fun(
         THREADS, THREADS, 1);
 
       out<T> arg3 = create_out_arg<T>(N * N);
-      in<int>  arg4 = create_in_arg<int>(N));
+      in<int>  arg4 = create_in_arg<int>(N);
 
       std::tuple<mem_t, mem_t, mem_t, mem_t> result_tuple =
         mmul.run_async(
