@@ -26,7 +26,7 @@ using mmul_async_command =
     mem_ptr<T>,
     mem_ptr<T>,
     out<T>,
-    in<T>
+    in<int>
   >;
 
 template <class T>
@@ -60,7 +60,7 @@ caf::behavior mmul_actor_fun(
         THREADS, THREADS, 1);
 
       out<T> arg3 = create_out_arg<T>(N * N);
-      in<T>  arg4 = create_in_arg<T>(static_cast<T>(N));
+      in<int>  arg4 = create_in_arg<int>(N));
 
       std::tuple<mem_t, mem_t, mem_t, mem_t> result_tuple =
         mmul.run_async(
