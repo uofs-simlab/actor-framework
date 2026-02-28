@@ -1,6 +1,6 @@
 #include <caf/all.hpp>
 #include <caf/cuda/all.hpp>
-#include <caf/cuda/component-actors/mmul_actor/mmul_actor.hpp>
+#include <caf/component-actors/mmul_actor/mmul_actor.hpp>
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -37,9 +37,11 @@ void serial_matrix_multiply(const std::vector<int>& a,
 
 
 
+struct mmul_state {
+};
 
 // Stateful actor behavior
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
+caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
   return {
 
 	
