@@ -7,7 +7,7 @@ SM_ARCH="sm_${ARCH/./}"
 echo "Using NVCC arch flag: $SM_ARCH"
 
 # Compile mmul.cu to cubin in current directory
-nvcc -arch=$SM_ARCH -cubin mmul.cu -o vector_add.cubin
+nvcc -arch=$SM_ARCH -cubin mmul.cu -o mmul.cubin
 echo "Generated mmul.cubin"
 echo "All kernels compiled successfully!"
 
