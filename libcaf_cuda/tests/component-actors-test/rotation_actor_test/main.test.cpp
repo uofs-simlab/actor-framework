@@ -44,18 +44,18 @@ caf::behavior rotation_supervisor(caf::stateful_actor<supervisor_state> * self,
             //caf::actor worker = self ->spawn(caf::cuda::vector_add_actor_fun<int>, program);
 
             // Transfer memory to device
-            auto rotation_matrix_memory = runner.transfer_memory(0,1,caf::cuda::create_in_arg(vecA));
-            auto  points_memory = runner.transfer_memory(0,1,caf::cuda::create_in_arg(vecB));
+		caf::cuda::mem_ptr<float> rotation_matrix_memory = runner.transfer_memory(0,1,caf::cuda::create_in_arg(rotation_matrix));
+		caf::cuda::mem_ptr<float>  points_memory = runner.transfer_memory(0,1,caf::cuda::create_in_arg(points));
 
 	    int num_points = points.size() / 2;
             // Send to worker actor and request result
             self->mail(rotation_matrix_memory,
                                  points_memory,
                                  num_points,
-                                 device_number,
-                                 stream_id) // device=0, stream=1
+                                 0,
+                                 1) // device=0, stream=1
                 .request(worker, std::chrono::seconds(10))
-                .then([&](caf::cuda::mem_ptr<float> rotated_points) {
+                .then([=](caf::cuda::mem_ptr<float> rotated_points) {
                     std::vector<float> result(points.size());
                     std::vector<float> vecC = rotated_points->copy_to_host();
 
@@ -97,7 +97,7 @@ void run_vector_add_test(actor_system& sys, int vec_size) {
 
     
     // Spawn the supervisor actor
-    caf::actor supervisor = sys.spawn(vector_add_supervisor,program);
+    caf::actor supervisor = sys.spawn(rotation_supervisor,program);
 
     // Trigger the supervisor
     anon_mail(rotation_matrix,points).send(supervisor);
