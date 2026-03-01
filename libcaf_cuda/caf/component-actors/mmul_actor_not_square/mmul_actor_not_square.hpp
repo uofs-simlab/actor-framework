@@ -58,12 +58,12 @@ caf::behavior mmul_actor_NS_fun(
 	    nd_range dims(
 			    BLOCKS_X, BLOCKS_Y, 1,
 			    THREADS_X, THREADS_Y, 1);
-	    out<T> argC = create_out_arg<T>(M * N);
+	    out<T> argC = create_out_arg_with_size<T>(M * N);
 	    in<int>  argN = create_in_arg<int>(N);
 	    in<int> argK = create_in_arg<int>(K);
 	    in<int> argM = create_in_arg<int>(M);
 
-	    std::tuple<mem_t, mem_t, mem_t, mem_t,mem_t,mem_t> result_tuple =
+	    auto result_tuple =
 		    mmul.run_async(
 				    kernel,
 				    dims,

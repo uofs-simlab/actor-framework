@@ -38,7 +38,7 @@ namespace caf::cuda {
 						K,
 						N,
 						device_number,
-						stream_id).delgate(self->state().mmul_actor);
+						stream_id).delegate(self->state().mmul_actor);
 				
 			}
 		
