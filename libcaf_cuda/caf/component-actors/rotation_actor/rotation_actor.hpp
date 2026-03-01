@@ -1,7 +1,7 @@
 #pragma once
 #include <caf/all.hpp>
 #include "caf/cuda/all.hpp"
-#include "caf/component-actors/mmul_actor_no_square/mmul_actor_no_square.hpp"
+#include "caf/component-actors/mmul_actor_not_square/mmul_actor_not_square.hpp"
 
 /*
  * rotates a list of 2d vectors accoridng to a rotation matrix
@@ -16,8 +16,8 @@ namespace caf::cuda {
 	};
 
 	template <class T>
-	caf::behavior rotation_actor_fun(caf::actor_state<rotation_actor_state> * self,
-			caf::cuda:program_ptr mmul_kernel) {	
+	caf::behavior rotation_actor_fun(caf::stateful_actor<rotation_actor_state> * self,
+			caf::cuda::program_ptr mmul_kernel) {	
 		using mem_t = mem_ptr<T>;
 		self ->state().mmul_actor = self -> spawn(mmul_actor_NS_fun<T>,mmul_kernel);
 
@@ -38,7 +38,7 @@ namespace caf::cuda {
 						K,
 						N,
 						device_number,
-						stream_id).request(mmul_actor,std::chrono::seconds(100)).delgate(self->state().mmul_actor);
+						stream_id).delgate(self->state().mmul_actor);
 				
 			}
 		
