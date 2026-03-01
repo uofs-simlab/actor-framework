@@ -1,6 +1,6 @@
 #include <caf/all.hpp>
 #include <caf/cuda/all.hpp>
-#include <caf/component-actors/vector_add_actor/vector_add_actor.hpp>
+#include <caf/component-actors/rotation_actor/rotation_actor.hpp>
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -8,15 +8,22 @@
 using namespace caf;
 using namespace std::chrono_literals;
 
-// Simple serial vector addition for verification
 template <typename T>
-void serial_vector_add(const std::vector<T>& a,
-                       const std::vector<T>& b,
-                       std::vector<T>& c) {
-    for (size_t i = 0; i < a.size(); ++i) {
-        c[i] = a[i] + b[i];
+void rotate_points_cpu(const std::vector<T>& rotation_matrix,
+                       const std::vector<T>& points,
+                       std::vector<T>& result) {
+    // points: [x0, x1, ..., y0, y1, ...] row-major 2xM
+    int M = points.size() / 2;
+    for (int i = 0; i < M; ++i) {
+        T x = points[i];
+        T y = points[M + i];
+
+        // Apply rotation: [x', y'] = R * [x, y]
+        result[i] = rotation_matrix[0] * x + rotation_matrix[1] * y;       // x'
+        result[M + i] = rotation_matrix[2] * x + rotation_matrix[3] * y;   // y'
     }
 }
+
 
 
 caf::cuda::command_runner<> runner;
@@ -24,37 +31,40 @@ caf::cuda::command_runner<> runner;
 struct supervisor_state {};
 
 // Supervisor actor behavior
-caf::behavior vector_add_supervisor(caf::stateful_actor<supervisor_state> * self,
-                                    const std::vector<int>& vecA,
-                                    const std::vector<int>& vecB,
-                                    int vec_size,
+caf::behavior rotation_supervisor(caf::stateful_actor<supervisor_state> * self,
                                     caf::cuda::program_ptr program) {
    
-            caf::actor worker = self ->spawn(caf::cuda::vector_add_actor_fun<int>, program);
+            caf::actor worker = self ->spawn(caf::cuda::rotation_actor_fun<float>, program);
        
 	return {
-        [&,self,worker,vecA,vecB,vec_size](const unit_t&) mutable {
+        [=](std::vector<float> rotation_matrix,
+		std::vector<float> points) mutable {
 
             // Spawn the vector add worker actor
             //caf::actor worker = self ->spawn(caf::cuda::vector_add_actor_fun<int>, program);
 
             // Transfer memory to device
-            auto dA = runner.transfer_memory(0,1,caf::cuda::create_in_arg(vecA));
-            auto dB = runner.transfer_memory(0,1,caf::cuda::create_in_arg(vecB));
+            auto rotation_matrix_memory = runner.transfer_memory(0,1,caf::cuda::create_in_arg(vecA));
+            auto  points_memory = runner.transfer_memory(0,1,caf::cuda::create_in_arg(vecB));
 
+	    int num_points = points.size() / 2;
             // Send to worker actor and request result
-            self->mail(dA, dB, vec_size, 0, 1) // device=0, stream=1
+            self->mail(rotation_matrix_memory,
+                                 points_memory,
+                                 num_points,
+                                 device_number,
+                                 stream_id) // device=0, stream=1
                 .request(worker, std::chrono::seconds(10))
-                .then([&](caf::cuda::mem_ptr<int> dC) {
-                    std::vector<int> result(vec_size);
-                    std::vector<int> vecC = dC->copy_to_host();
+                .then([&](caf::cuda::mem_ptr<float> rotated_points) {
+                    std::vector<float> result(points.size());
+                    std::vector<float> vecC = rotated_points->copy_to_host();
 
-                    serial_vector_add(vecA, vecB, result);
+                    rotate_points_cpu(rotation_matrix, points, result);
 
                     if (result == vecC)
-                        std::cout << "Vector addition result matches!\n";
+                        std::cout << "rotation result matches!\n";
                     else
-                        std::cout << "Vector addition result mismatch!\n";
+                        std::cout << "rotation result mismatch!\n";
 
                     // Quit the supervisor
                     self->quit();
@@ -68,18 +78,29 @@ void run_vector_add_test(actor_system& sys, int vec_size) {
 
     // Create program pointer for the vector add kernel
     auto program = caf::cuda::manager::get()
-                       .create_program_from_cubin("../vector_add.cubin", "vectorAdd");
+                       .create_program_from_cubin("../mmul.cubin", "mmul_non_square");
 
+
+  
     // Generate test data
-    std::vector<int> vecA(vec_size, 2);
-    std::vector<int> vecB(vec_size, 3);
 
+    std::vector<float> rotation_matrix = {
+	    0.0f, -1.0f,  // first row
+	    1.0f,  0.0f   // second row
+    };
+
+
+    std::vector<float> points = {
+    1.0f, 2.0f, 4.0f, 8.0f,   // x-coordinates
+    1.0f, 2.0f, 4.0f, 8.0f    // y-coordinates
+};
+
+    
     // Spawn the supervisor actor
-    caf::actor supervisor = sys.spawn(vector_add_supervisor,
-                                       vecA, vecB, vec_size, program);
+    caf::actor supervisor = sys.spawn(vector_add_supervisor,program);
 
     // Trigger the supervisor
-    anon_mail(unit).send(supervisor);
+    anon_mail(rotation_matrix,points).send(supervisor);
 
     // Wait for all actors to finish
     sys.await_all_actors_done();
