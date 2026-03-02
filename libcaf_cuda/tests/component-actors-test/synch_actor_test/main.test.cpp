@@ -98,11 +98,13 @@ caf::behavior mmul_actor_fun(
 	self -> mail(launch_token).send(scheduler);
 
 	self->state().sync_actor = self -> spawn(caf::cuda::sync_actor_fun<int>);
-	self->state().sync_actor = self -> spawn(caf::cuda::mem_transfer_actor_fun<int>);
+	self->state().mem_transfer_actor = self -> spawn(caf::cuda::mem_transfer_actor_fun<int>);
 
 	return {
 
 		[=] (caf::cuda::response_token_ptr res_token) {
+
+			std::cout << "Got response\n";
 
 			if (res_token -> getType() == LAUNCH_RESPONSE) {
 				std::vector<int> matrix1(N*N);
@@ -125,6 +127,7 @@ caf::behavior mmul_actor_fun(
 
 
 
+				std::cout << "Working\n";
 				caf::cuda::manager& mgr = caf::cuda::manager::get();
 
 				//create program and dims   
@@ -151,38 +154,74 @@ caf::behavior mmul_actor_fun(
 
 
 
-				self->mail(bufferA, res_token)
-					.request(self->state().sync_actor, std::chrono::seconds(10))
-					.then(
-							[=](caf::cuda::mem_ptr<int> syncedA) {
+			using namespace std::chrono_literals;
 
-							self->mail(syncedA)
-							.request(self->state().mem_transfer_actor, std::chrono::seconds(10))
-							.then(
-									[=](std::vector<int> matrixA) {
+self->mail(bufferA, res_token)
+    .request(self->state().sync_actor, 10s)
+    .then(
 
-									auto bufferB = std::get<1>(tempC);
+        // ===== SUCCESS 1 =====
+        [=](caf::cuda::mem_ptr<int> syncedA) {
 
-									self->mail(bufferB)
-									.request(self->state().mem_transfer_actor, std::chrono::seconds(10))
-									.then(
-											[=](std::vector<int> matrixB) {
+            self->mail(syncedA)
+                .request(self->state().mem_transfer_actor, 10s)
+                .then(
 
-											auto bufferC = std::get<2>(tempC);
+                    // ===== SUCCESS 2 =====
+                    [=](std::vector<int> matrixA) {
 
-											self->mail(bufferC)
-											.request(self->state().mem_transfer_actor, std::chrono::seconds(10))
-											.then(
-													[=](std::vector<int> matrixC) {
+                        auto bufferB = std::get<1>(tempC);
 
-													// Now everything is ready
-													self->mail(matrixA, matrixB, matrixC, N)
-													.send(self);
-													});
-											});
-									});
-							});			
-			},
+                        self->mail(bufferB)
+                            .request(self->state().mem_transfer_actor, 10s)
+                            .then(
+
+                                // ===== SUCCESS 3 =====
+                                [=](std::vector<int> matrixB) {
+
+                                    auto bufferC = std::get<2>(tempC);
+
+                                    self->mail(bufferC)
+                                        .request(self->state().mem_transfer_actor, 10s)
+                                        .then(
+
+                                            // ===== SUCCESS 4 =====
+                                            [=](std::vector<int> matrixC) {
+
+                                                self->mail(matrixA, matrixB, matrixC, N)
+                                                    .send(self);
+                                            },
+
+                                            // ===== ERROR 4 =====
+                                            [=](caf::error& err) {
+                                                std::cout << "Transfer C failed: "
+                                                           << to_string(err) << "\n";
+                                                self->quit(err);
+                                            });
+                                },
+
+                                // ===== ERROR 3 =====
+                                [=](caf::error& err) {
+                                    std::cout << "Transfer B failed: "
+                                               << to_string(err) << "\n";
+                                    self->quit(err);
+                                });
+                    },
+
+                    // ===== ERROR 2 =====
+                    [=](caf::error& err) {
+                        std::cout << "Transfer A failed: "
+                                   << to_string(err) << "\n";
+                        self->quit(err);
+                    });
+        },
+
+        // ===== ERROR 1 =====
+        [=](caf::error& err) {
+            std::cout << "Sync failed: "
+                       << to_string(err) << "\n";
+            self->quit(err);
+        });			},
 
 					// 3rd handler: CPU atom + matrices + N
 					[=](const std::vector<int>& matrixA,
@@ -299,7 +338,7 @@ void caf_main(caf::actor_system& sys) {
 	caf::cuda::manager::init(sys,man_config);
 	
 
-	run_sync_actor_test(sys,1024,20);
+	run_sync_actor_test(sys,1024,10);
 
 	//no dependencies
 //	std::vector<int> sizes = {32, 64, 128, 256, 512, 1024,2048,4096};
