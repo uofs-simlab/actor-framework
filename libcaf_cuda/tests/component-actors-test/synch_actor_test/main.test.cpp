@@ -268,7 +268,7 @@ void run_sync_actor_test(
         BLOCKS, BLOCKS, 1,
         THREADS, THREADS, 1);
 
-    caf::actor exit_actor = sys.spawn(caf::cuda::exit_actor_fun, num_actors);
+    caf::actor exit_actor = mgr.spawn_exit_actor(num_actors);
 
     auto t_start = std::chrono::steady_clock::now();
 
