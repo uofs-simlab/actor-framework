@@ -298,7 +298,9 @@ void caf_main(caf::actor_system& sys) {
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
 	
-	
+
+	run_sync_actor_test(sys,1024,20);
+
 	//no dependencies
 //	std::vector<int> sizes = {32, 64, 128, 256, 512, 1024,2048,4096};
 //	const int num_actors = 2000;
