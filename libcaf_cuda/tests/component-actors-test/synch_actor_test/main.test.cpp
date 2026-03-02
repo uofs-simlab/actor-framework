@@ -32,8 +32,8 @@ struct mmul_actor_state {
   int id = rand(); // an actor id
   int times = 0;
   caf::actor sync_actor;
-  caf::actor_mem_transfer_actor;
-  caf::cuda::response_token r; //holding onto a response token is forbidden, as this can cause scheduler actor to never reply to itself
+  caf::actor mem_transfer_actor;
+  caf::cuda::response_token_ptr r; //holding onto a response token is forbidden, as this can cause scheduler actor to never reply to itself
 			       //however we are doing it to see if the sync_actor works DO NOT TRY IN production environment 
 };
 
@@ -44,7 +44,7 @@ struct mmul_actor_state {
 using mmulCommand = caf::cuda::command_runner<in<int>,in<int>,out<int>,in<int>>;
 using matrixGenCommand = caf::cuda::command_runner<out<int>,in<int>,in<int>,in<int>>;
 
-using mmulAsyncCommand = caf::cuda::command_runner<caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int>,out<int>,in<int>>;
+using mmulAsyncCommand = caf::cuda::command_runner<caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int>>;
 
 mmulCommand mmul;
 matrixGenCommand randomMatrix;
@@ -138,10 +138,11 @@ caf::behavior mmul_actor_fun(
 				auto arg3 = mmul.transfer_memory(res_token,caf::cuda::create_out_arg(N*N));
 				auto arg4 = mmul.transfer_memory(res_token,caf::cuda::create_in_arg(N));
 
-				auto tempC = mmul.run_async(program,dims,res_token,arg1,arg2,arg3,arg4);
+				auto tempC = mmulAsync.run_async(program,dims,res_token,arg1,arg2,arg3,arg4);
 				//std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
 
-				mem_ptr<int> bufferA = std::get<0>(tempC);
+				caf::cuda::mem_ptr<int> bufferA = std::get<0>(tempC);
+				
 
 
 				//hold onto the res_token to try and 
@@ -153,7 +154,7 @@ caf::behavior mmul_actor_fun(
 				self->mail(bufferA, res_token)
 					.request(self->state().sync_actor, std::chrono::seconds(10))
 					.then(
-							[=](mem_ptr<int> syncedA) {
+							[=](caf::cuda::mem_ptr<int> syncedA) {
 
 							self->mail(syncedA)
 							.request(self->state().mem_transfer_actor, std::chrono::seconds(10))
@@ -246,7 +247,7 @@ double time_run(Fn&& fn) {
 //maybe a performance analysis in the future 
 void run_sync_actor_test(
     caf::actor_system& sys,
-    const std::vector<int>& sizes,
+    int N,
     int num_actors,
     bool randomize = false)
 {
@@ -259,6 +260,13 @@ void run_sync_actor_test(
     }
 
     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+     const int THREADS = 32;
+      const int BLOCKS = (N + THREADS - 1) / THREADS;
+
+      caf::cuda::nd_range dims(
+        BLOCKS, BLOCKS, 1,
+        THREADS, THREADS, 1);
 
     caf::actor exit_actor = sys.spawn(caf::cuda::exit_actor_fun, num_actors);
 
