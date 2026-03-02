@@ -25,7 +25,7 @@ void synch_actor_fun(caf::blocking_actor* self) {
       d_mem -> synchronize();  
     return d_mem;
     },
-    [&](mem_ptr<T> d_mem, response_token res) -> mem_ptr<T> {
+    [&](mem_ptr<T> d_mem, response_token_ptr res) -> mem_ptr<T> {
       d_mem->synchronize();
 
       res ->release();
