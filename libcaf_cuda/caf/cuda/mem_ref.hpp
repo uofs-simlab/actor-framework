@@ -11,6 +11,7 @@
 //#include "caf/cuda/utility.hpp"
 #include <cuda.h>
 #include <atomic>
+#include "caf/cuda/control-layer/memory_actor/mem_token.hpp"
 
 namespace caf::cuda {
 
@@ -138,6 +139,12 @@ public:
     }
 
 
+    // manual binding of the resource object that denotes memory
+    // to the pointer that contains it 
+    void bind_token(caf::cuda::mem_token m_token) {
+        token = std::move(m_token);
+    }
+
 
 private:
   size_t      num_elements_{0};
@@ -148,6 +155,8 @@ private:
   CUstream    stream_{nullptr};
   CUcontext ctx;
   mutable std::atomic<size_t> ref_count_{0};
+
+  mem_token token;
 
   bool is_scalar_{false};
   T    host_scalar_{};
