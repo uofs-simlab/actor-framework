@@ -100,168 +100,89 @@ caf::behavior mmul_actor_fun(
 	self->state().sync_actor = self -> spawn(caf::cuda::sync_actor_fun<int>);
 	self->state().mem_transfer_actor = self -> spawn(caf::cuda::mem_transfer_actor_fun<int>);
 
-	return {
+       return {
 
-		[=] (caf::cuda::response_token_ptr res_token) {
+    // 1. Handle response token
+    [=](caf::cuda::response_token_ptr res_token) {
+        std::cout << "Got response\n";
 
-			std::cout << "Got response\n";
+        if (res_token->getType() == LAUNCH_RESPONSE) {
+            std::vector<int> matrix1(N*N);
+            std::vector<int> matrix2(N*N);
 
-			if (res_token -> getType() == LAUNCH_RESPONSE) {
-				std::vector<int> matrix1(N*N);
-				matrix1.reserve(N);
-				std::vector<int> matrix2(N*N);
-				matrix2.reserve(N);
+            self->mail(matrix1, matrix2, res_token, N).send(self);
 
-				self -> mail(matrix1,matrix2,res_token,N).send(self);
+        } else {
+            std::cout << "Got a memory response token\n";
+        }
+    },
 
-			}
-			else {
-				std::cout << "Got a memory response token\n";
-			}
-		},
+    // 2. Handle memory buffers -> GPU
+    [=](const std::vector<int>& matrixA,
+        const std::vector<int>& matrixB,
+        const caf::cuda::response_token_ptr& res_token,
+        int N) {
 
-			[=](const std::vector<int>& matrixA,
-					const std::vector<int>& matrixB,
-					const caf::cuda::response_token_ptr& res_token, int N) {
+        std::cout << "Working\n";
+        caf::cuda::manager& mgr = caf::cuda::manager::get();
 
+        auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+        const int THREADS = 32;
+        const int BLOCKS = (N + THREADS - 1) / THREADS;
+        caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
+        auto arg1 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(matrixA));
+        auto arg2 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(matrixB));
+        auto arg3 = mmul.transfer_memory(res_token, caf::cuda::create_out_arg(N*N));
+        auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
 
+        auto tempC = mmulAsync.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
+        caf::cuda::mem_ptr<int> bufferA = std::get<0>(tempC);
 
-				std::cout << "Working\n";
-				caf::cuda::manager& mgr = caf::cuda::manager::get();
+        self->state().r = res_token; // hold token
 
-				//create program and dims   
-				auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
-				const int THREADS = 32;
-				const int BLOCKS = (N + THREADS - 1) / THREADS;
-				caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+        using namespace std::chrono_literals;
+        self->mail(bufferA, res_token)
+            .request(self->state().sync_actor, 10s)
+            .then(
+                [=](caf::cuda::mem_ptr<int> /*syncedA*/) {
+                    auto bufferC = std::get<2>(tempC);
+                    self->mail(bufferC)
+                        .request(self->state().mem_transfer_actor, 10s)
+                        .then(
+                            [=](std::vector<int> matrixC) {
+                                self->mail(matrixA,matrixB,matrixC, N).send(self);
+                            },
+                            [=](caf::error& err) {
+                                std::cout << "Transfer C failed: " << to_string(err) << "\n";
+                                self->quit(err);
+                            });
+                },
+                [=](caf::error& err) {
+                    std::cout << "Sync failed: " << to_string(err) << "\n";
+                    self->quit(err);
+                });
+    },
 
-				auto arg1 = mmul.transfer_memory(res_token,caf::cuda::create_in_arg(matrixA));
-				auto arg2 = mmul.transfer_memory(res_token,caf::cuda::create_in_arg(matrixB));
-				auto arg3 = mmul.transfer_memory(res_token,caf::cuda::create_out_arg(N*N));
-				auto arg4 = mmul.transfer_memory(res_token,caf::cuda::create_in_arg(N));
+    // 3. Final CPU verification
+    [=](const std::vector<int>& matrixA,
+        const std::vector<int>& matrixB,
+        const std::vector<int>& matrixC,
+        int N) {
 
-				auto tempC = mmulAsync.run_async(program,dims,res_token,arg1,arg2,arg3,arg4);
-				//std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
+        std::vector<int> result(N * N);
+        serial_matrix_multiply(matrixA, matrixB, result, N);
 
-				caf::cuda::mem_ptr<int> bufferA = std::get<0>(tempC);
-				
+        if (result == matrixC) {
+            std::cout << "actor with id " << self->state().id << " references match\n";
+        } else {
+            std::cout << "actor with id " << self->state().id << " references did not match\n";
+        }
 
-
-				//hold onto the res_token to try and 
-				//trigger a deadlock
-				self->state().r = res_token;
-
-
-
-			using namespace std::chrono_literals;
-
-self->mail(bufferA, res_token)
-    .request(self->state().sync_actor, 10s)
-    .then(
-
-        // ===== SUCCESS 1 =====
-        [=](caf::cuda::mem_ptr<int> syncedA) {
-
-            self->mail(syncedA)
-                .request(self->state().mem_transfer_actor, 10s)
-                .then(
-
-                    // ===== SUCCESS 2 =====
-                    [=](std::vector<int> matrixA) {
-
-                        auto bufferB = std::get<1>(tempC);
-
-                        self->mail(bufferB)
-                            .request(self->state().mem_transfer_actor, 10s)
-                            .then(
-
-                                // ===== SUCCESS 3 =====
-                                [=](std::vector<int> matrixB) {
-
-                                    auto bufferC = std::get<2>(tempC);
-
-                                    self->mail(bufferC)
-                                        .request(self->state().mem_transfer_actor, 10s)
-                                        .then(
-
-                                            // ===== SUCCESS 4 =====
-                                            [=](std::vector<int> matrixC) {
-
-                                                self->mail(matrixA, matrixB, matrixC, N)
-                                                    .send(self);
-                                            },
-
-                                            // ===== ERROR 4 =====
-                                            [=](caf::error& err) {
-                                                std::cout << "Transfer C failed: "
-                                                           << to_string(err) << "\n";
-                                                self->quit(err);
-                                            });
-                                },
-
-                                // ===== ERROR 3 =====
-                                [=](caf::error& err) {
-                                    std::cout << "Transfer B failed: "
-                                               << to_string(err) << "\n";
-                                    self->quit(err);
-                                });
-                    },
-
-                    // ===== ERROR 2 =====
-                    [=](caf::error& err) {
-                        std::cout << "Transfer A failed: "
-                                   << to_string(err) << "\n";
-                        self->quit(err);
-                    });
-        },
-
-        // ===== ERROR 1 =====
-        [=](caf::error& err) {
-            std::cout << "Sync failed: "
-                       << to_string(err) << "\n";
-            self->quit(err);
-        });			},
-
-					// 3rd handler: CPU atom + matrices + N
-					[=](const std::vector<int>& matrixA,
-							const std::vector<int>& matrixB,
-							const std::vector<int>& matrixC,
-							int N) {
-
-						using clock = std::chrono::high_resolution_clock;
-
-						auto start = clock::now();
-
-						//std::cout << "GPU ACTOR verifying\n";
-
-						std::vector<int> result(N * N);
-
-						serial_matrix_multiply(matrixA, matrixB, result, N);
-
-						if (result == matrixC) {
-							std::cout << "actor with id " << self->state().id
-								<< " references match\n";
-						} else {
-							std::cout << "actor with id " << self->state().id
-								<< " references did not match\n";
-						}
-
-						auto end = clock::now();
-
-						auto ms =
-							std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-						std::cout << "[TIMING] verification took "
-							<< ms << " ms (actor id "
-							<< self->state().id << ")\n";
-
-						// signal exit actor and quit
-						self->mail(1).send(exit_actor);
-						self->quit();
-
-					}
-	};
+        self->mail(1).send(exit_actor);
+        self->quit();
+    }
+};
 }
 
 
