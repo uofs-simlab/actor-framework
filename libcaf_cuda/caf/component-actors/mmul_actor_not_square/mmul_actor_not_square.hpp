@@ -15,7 +15,7 @@ struct mmul_actor_not_square_state {
 };
 
 template <class T>
-using mmul_async_command =
+using mmul_async_not_square_command =
   command_runner<
     mem_ptr<T>,
     mem_ptr<T>,
@@ -31,7 +31,7 @@ caf::behavior mmul_actor_NS_fun(
     program_ptr mmul_kernel)
 {
   using mem_t = mem_ptr<T>;
-  using runner_t = mmul_async_command<T>;
+  using runner_t = mmul_async_not_square_command<T>;
 
   self->state().mmul_kernel = mmul_kernel;
 
