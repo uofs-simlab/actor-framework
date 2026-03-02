@@ -16,7 +16,7 @@
 namespace caf::cuda {
 
 template <class T>
-void synch_actor_fun(caf::blocking_actor* self) {
+void sync_actor_fun(caf::blocking_actor* self) {
 
   self->receive(
     [&](mem_ptr<T> d_mem) -> mem_ptr<T> {
