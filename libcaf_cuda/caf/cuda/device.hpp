@@ -112,17 +112,17 @@ public:
 
   // Overloads for make_arg using actor_id
   template <typename T>
-  mem_ptr<T> make_arg(in<T> arg, int actor_id) {
+  mem_ptr<T> make_arg(const in<T>& arg, int actor_id) {
     return global_argument(arg, actor_id, IN);
   }
 
   template <typename T>
-  mem_ptr<T> make_arg(in_out<T> arg, int actor_id) {
+  mem_ptr<T> make_arg(const in_out<T>& arg, int actor_id) {
     return global_argument(arg, actor_id, IN_OUT);
   }
 
   template <typename T>
-  mem_ptr<T> make_arg(out<T> arg, int actor_id) {
+  mem_ptr<T> make_arg(const out<T>& arg, int actor_id) {
     return scratch_argument(arg, actor_id, OUT);
   }
 
@@ -130,18 +130,18 @@ public:
   // Overloads for make_arg using CUstream directly
 
   template <typename T>
-  mem_ptr<T> make_arg(in<T> arg, CUstream stream) {
+  mem_ptr<T> make_arg(const in<T>& arg, CUstream stream) {
      return global_argument(arg, stream, IN);
    }
 
 
   template <typename T>
-  mem_ptr<T> make_arg(in_out<T> arg, CUstream stream) {
+  mem_ptr<T> make_arg(const in_out<T>& arg, CUstream stream) {
     return global_argument(arg, stream, IN_OUT);
    }
 
   template <typename T>
-  mem_ptr<T> make_arg(out<T> arg, CUstream stream) {
+  mem_ptr<T> make_arg(const out<T>& arg, CUstream stream) {
   return scratch_argument(arg, stream, OUT);
   }
 
