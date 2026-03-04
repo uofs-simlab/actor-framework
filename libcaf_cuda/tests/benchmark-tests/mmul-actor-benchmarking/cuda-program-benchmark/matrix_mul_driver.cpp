@@ -101,8 +101,12 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     checkCU(cuMemcpyDtoH(h_c.data(), d_c, bytes), "cuMemcpyDtoH d_c");
 
     auto t1 = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = t1 - t0;
-    std::cout << "N=" << N << " time (alloc+H2D+kernel+DtoH): " << dur.count() << " s\n";
+   auto dur = std::chrono::duration<double, std::milli>(t1 - t0);
+
+std::cout << "N=" << N
+          << " time (alloc+H2D+kernel+DtoH): "
+          << dur.count() << " ms\n"; 
+
 
     // Quick spot-check for correctness on a few entries (since we used all-ones, result should be N)
     bool ok = true;
