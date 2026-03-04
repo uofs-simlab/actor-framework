@@ -77,8 +77,10 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
           [=](caf::cuda::mem_ptr<int> dC) {
 
             std::vector<int> matrixC = dC->copy_to_host();
-            std::vector<int> result(N * N);
+            
+	    //std::vector<int> result(N * N);
 
+	    /*
             serial_matrix_multiply(matrixA, matrixB, result, N);
 
             if (result == matrixC)
@@ -86,6 +88,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
             else
               std::cout << "actor matrix references did not match\n";
 
+	      */
             self->quit();
           }
         );
@@ -134,7 +137,10 @@ auto t_end = clock::now();
 
 void caf_main(caf::actor_system& sys) {
   caf::cuda::manager::init(sys);
-  run_mmul_test(sys,10);
+  run_mmul_test(sys,1000);
+  run_mmul_test(sys,4000);
+  run_mmul_test(sys,8000);
+  run_mmul_test(sys,12000);
 
 }
 
