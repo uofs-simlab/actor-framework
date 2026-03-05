@@ -132,39 +132,43 @@ public:
 template <typename T>
 class out_impl {
 private:
-  std::variant<T, std::vector<T>> data_;
+  T scalar_;
+  int size_ = 1;
+  bool is_scalar_ = true;
   bool moved_from_ = false;
-  int size_ = 0; // Always store as int
 
   void check_valid() const {
     if (moved_from_)
-      throw std::runtime_error(std::string("Use-after-move detected in ") + typeid(*this).name());
+      throw std::runtime_error("Use-after-move detected in out_impl");
   }
 
 public:
   using value_type = T;
 
-  out_impl() : data_(T{}), size_(1) {}
-  
-  // Replaces old scalar constructor: just set size
-  explicit out_impl(int size) 
-    : data_(std::vector<T>(size)), size_(size) {}
-  
-  explicit out_impl(const std::vector<T>& buf) 
-    : data_(buf), size_(static_cast<int>(buf.size())) {}
+  out_impl() : scalar_{}, size_(1), is_scalar_(true) {}
+
+  // allocate GPU buffer of given size
+  explicit out_impl(int size)
+    : scalar_{}, size_(size), is_scalar_(false) {}
+
+  explicit out_impl(const std::vector<T>& buf)
+    : scalar_{}, size_(static_cast<int>(buf.size())), is_scalar_(false) {}
 
   out_impl(const out_impl&) = default;
   out_impl& operator=(const out_impl&) = default;
 
-  out_impl(out_impl&& other) noexcept
-    : data_(std::move(other.data_)), size_(other.size_) {
+  out_impl(out_impl&& other) noexcept {
+    scalar_ = other.scalar_;
+    size_ = other.size_;
+    is_scalar_ = other.is_scalar_;
     other.moved_from_ = true;
   }
 
   out_impl& operator=(out_impl&& other) noexcept {
     if (this != &other) {
-      data_ = std::move(other.data_);
+      scalar_ = other.scalar_;
       size_ = other.size_;
+      is_scalar_ = other.is_scalar_;
       other.moved_from_ = true;
     }
     return *this;
@@ -172,20 +176,12 @@ public:
 
   bool is_scalar() const {
     check_valid();
-    return std::holds_alternative<T>(data_);
-  }
-
-   const std::vector<T>& get_buffer() const {
-    check_valid();
-    if (is_scalar())
-      throw std::runtime_error("out_impl does not hold buffer");
-    return std::get<std::vector<T>>(data_);
+    return is_scalar_;
   }
 
   const T* data() const {
     check_valid();
-    return is_scalar() ? reinterpret_cast<const T*>(&size_)
-                       : std::get<std::vector<T>>(data_).data();
+    return &scalar_;
   }
 
   size_t size() const {
@@ -193,73 +189,69 @@ public:
     return static_cast<size_t>(size_);
   }
 
+  // compatibility with CAF serialization
+  std::vector<T> get_buffer() const {
+    check_valid();
+    return std::vector<T>(size_);
+  }
 };
 
 
-//creates a read-write buffer on the gpu
 template <typename T>
 class in_out_impl {
 private:
-  std::variant<T, std::vector<T>> data_;
+  T scalar_;
+  const T* ptr_;
+  size_t size_;
+  bool is_scalar_;
   bool moved_from_ = false;
 
   void check_valid() const {
     if (moved_from_)
-      throw std::runtime_error(std::string("Use-after-move detected in ") + typeid(*this).name());
+      throw std::runtime_error("Use-after-move detected in in_out_impl");
   }
 
 public:
   using value_type = T;
 
-  in_out_impl() : data_(T{}) {}
-  explicit in_out_impl(const T& val) : data_(val) {}
-  explicit in_out_impl(const std::vector<T>& buf) : data_(buf) {}
- explicit in_out_impl(std::vector<T>&& buf)
-  : data_(std::move(buf)) {}
+  in_out_impl()
+    : scalar_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
-  in_out_impl(const in_out_impl&) = default;
-  in_out_impl& operator=(const in_out_impl&) = default;
+  explicit in_out_impl(const T& val)
+    : scalar_{val}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
-  in_out_impl(in_out_impl&& other) noexcept
-    : data_(std::move(other.data_)) {
-    other.moved_from_ = true;
-  }
+  explicit in_out_impl(const std::vector<T>& buf)
+    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
 
-  in_out_impl& operator=(in_out_impl&& other) noexcept {
-    if (this != &other) {
-      data_ = std::move(other.data_);
-      other.moved_from_ = true;
-    }
-    return *this;
-  }
+  explicit in_out_impl(std::vector<T>&& buf)
+    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
 
   bool is_scalar() const {
     check_valid();
-    return std::holds_alternative<T>(data_);
+    return is_scalar_;
   }
 
   const T& getscalar() const {
     check_valid();
-    if (!is_scalar())
+    if (!is_scalar_)
       throw std::runtime_error("in_out_impl does not hold scalar");
-    return std::get<T>(data_);
-  }
-
-  const std::vector<T>& get_buffer() const {
-    check_valid();
-    if (is_scalar())
-      throw std::runtime_error("in_out_impl does not hold buffer");
-    return std::get<std::vector<T>>(data_);
+    return scalar_;
   }
 
   const T* data() const {
     check_valid();
-    return is_scalar() ? &std::get<T>(data_) : std::get<std::vector<T>>(data_).data();
+    return ptr_;
   }
 
   std::size_t size() const {
     check_valid();
-    return is_scalar() ? 1 : std::get<std::vector<T>>(data_).size();
+    return size_;
+  }
+
+  // required for CAF serialization
+  std::vector<T> get_buffer() const {
+    check_valid();
+    return std::vector<T>(ptr_, ptr_ + size_);
   }
 };
 
