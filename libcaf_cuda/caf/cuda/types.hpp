@@ -91,6 +91,9 @@ public:
   in_impl(const in_impl&) = default;
   in_impl& operator=(const in_impl&) = default;
 
+  explicit in_impl(std::vector<T>&& buf)
+  : data_(std::move(buf)) {}
+
   // Move constructor
   in_impl(in_impl&& other) noexcept
     : data_(std::move(other.data_)) {
@@ -223,6 +226,8 @@ public:
   in_out_impl() : data_(T{}) {}
   explicit in_out_impl(const T& val) : data_(val) {}
   explicit in_out_impl(const std::vector<T>& buf) : data_(buf) {}
+ explicit in_out_impl(std::vector<T>&& buf)
+  : data_(std::move(buf)) {}
 
   in_out_impl(const in_out_impl&) = default;
   in_out_impl& operator=(const in_out_impl&) = default;
