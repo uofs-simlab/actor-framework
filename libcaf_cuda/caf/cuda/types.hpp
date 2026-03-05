@@ -71,74 +71,62 @@ struct output_buffer {
 template <typename T>
 class in_impl {
 private:
-  std::variant<T, std::vector<T>> data_;
+  T scalar_;
+  const T* ptr_;
+  size_t size_;
+  bool is_scalar_;
   bool moved_from_ = false;
 
   void check_valid() const {
     if (moved_from_)
-      throw std::runtime_error(std::string("Use-after-move detected in ") + typeid(*this).name());
+      throw std::runtime_error("Use-after-move detected in in_impl");
   }
 
 public:
   using value_type = T;
 
-  // Constructors
-  in_impl() : data_(T{}) {}
-  explicit in_impl(const T& val) : data_(val) {}
-  explicit in_impl(const std::vector<T>& buf) : data_(buf) {}
+  // scalar ctor
+  in_impl()
+    : scalar_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
-  // Copy constructor/assignment
-  in_impl(const in_impl&) = default;
-  in_impl& operator=(const in_impl&) = default;
+  explicit in_impl(const T& val)
+    : scalar_{val}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
+
+  // zero-copy vector view
+  explicit in_impl(const std::vector<T>& buf)
+    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
 
   explicit in_impl(std::vector<T>&& buf)
-  : data_(std::move(buf)) {}
-
-  // Move constructor
-  in_impl(in_impl&& other) noexcept
-    : data_(std::move(other.data_)) {
-    other.moved_from_ = true;
-  }
-
-  // Move assignment
-  in_impl& operator=(in_impl&& other) noexcept {
-    if (this != &other) {
-      data_ = std::move(other.data_);
-      other.moved_from_ = true;
-    }
-    return *this;
-  }
+    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
 
   bool is_scalar() const {
     check_valid();
-    return std::holds_alternative<T>(data_);
+    return is_scalar_;
   }
 
   const T& getscalar() const {
     check_valid();
-    if (!is_scalar())
+    if (!is_scalar_)
       throw std::runtime_error("in_impl does not hold scalar");
-    return std::get<T>(data_);
-  }
-
-  const std::vector<T>& get_buffer() const {
-    check_valid();
-    if (is_scalar())
-      throw std::runtime_error("in_impl does not hold buffer");
-    return std::get<std::vector<T>>(data_);
+    return scalar_;
   }
 
   const T* data() const {
     check_valid();
-    return is_scalar() ? &std::get<T>(data_) : std::get<std::vector<T>>(data_).data();
+    return ptr_;
   }
 
-  std::size_t size() const {
+  size_t size() const {
     check_valid();
-    return is_scalar() ? 1 : std::get<std::vector<T>>(data_).size();
+    return size_;
+  }
+
+  // Required for CAF serialization compatibility
+  std::vector<T> get_buffer() const {
+    check_valid();
+    return std::vector<T>(ptr_, ptr_ + size_);
   }
 };
-
 
 //represents a write only buffer on the gpu
 template <typename T>
