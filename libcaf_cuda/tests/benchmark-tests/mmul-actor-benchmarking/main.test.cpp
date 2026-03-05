@@ -43,6 +43,12 @@ command mmul_command;
 struct mmul_state {
 };
 
+//global output buffer meant to disclude it from timing
+//the other benchmark test do not include its memory allocations in it 
+//so its only fair that we do not either 
+std::vector<int> matrixC;
+
+
 caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
   return {
 
@@ -63,31 +69,49 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
         mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
       // -------------------------
+      // create_in_arg A
+      // -------------------------
+      auto t_a_inarg_start = clock::now();
+
+      auto inA = caf::cuda::create_in_arg(std::move(matrixA));
+
+      auto t_a_inarg_end = clock::now();
+
+      // -------------------------
       // transfer A
       // -------------------------
-      auto t_a_start = clock::now();
+      auto t_a_transfer_start = clock::now();
 
       auto arg1 = mmul_command.transfer_memory(
           device,
           stream,
-          caf::cuda::create_in_arg(std::move(matrixA)));
+          std::move(inA));
 
-      auto t_a_end = clock::now();
+      auto t_a_transfer_end = clock::now();
+
+      // -------------------------
+      // create_in_arg B
+      // -------------------------
+      auto t_b_inarg_start = clock::now();
+
+      auto inB = caf::cuda::create_in_arg(std::move(matrixB));
+
+      auto t_b_inarg_end = clock::now();
 
       // -------------------------
       // transfer B
       // -------------------------
-      auto t_b_start = clock::now();
+      auto t_b_transfer_start = clock::now();
 
       auto arg2 = mmul_command.transfer_memory(
           device,
           stream,
-          caf::cuda::create_in_arg(std::move(matrixB)));
+          std::move(inB));
 
-      auto t_b_end = clock::now();
+      auto t_b_transfer_end = clock::now();
 
       // -------------------------
-      // spawn
+      // spawn actor
       // -------------------------
       auto t_spawn_start = clock::now();
 
@@ -108,12 +132,15 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
 
             auto t_response_received = clock::now();
 
+            //std::vector<int> matrixC(N*N);
             // -------------------------
             // copy to host
             // -------------------------
             auto t_copy_start = clock::now();
 
-            std::vector<int> matrixC = dC->copy_to_host();
+            //std::vector<int> matrixC = dC->copy_to_host();
+
+	    dC->copy_to_host(matrixC.data(),N*N);
 
             auto t_copy_end = clock::now();
             auto t_total_end = clock::now();
@@ -124,12 +151,20 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
 
             std::cout << "\n===== BENCHMARK RESULTS (N=" << N << ") =====\n";
 
+            std::cout << "create_in_arg A: "
+                      << ms(t_a_inarg_end - t_a_inarg_start).count()
+                      << " ms\n";
+
             std::cout << "transfer A: "
-                      << ms(t_a_end - t_a_start).count()
+                      << ms(t_a_transfer_end - t_a_transfer_start).count()
+                      << " ms\n";
+
+            std::cout << "create_in_arg B: "
+                      << ms(t_b_inarg_end - t_b_inarg_start).count()
                       << " ms\n";
 
             std::cout << "transfer B: "
-                      << ms(t_b_end - t_b_start).count()
+                      << ms(t_b_transfer_end - t_b_transfer_start).count()
                       << " ms\n";
 
             std::cout << "spawn actor: "
@@ -158,7 +193,6 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
   };
 }
 
-
 void run_mmul_test(caf::actor_system& sys, int matrix_size) {
 
   // ------------------------------------
@@ -169,7 +203,9 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size) {
   // Spawn num_actors actors running the mmul behavior
   std::vector<int> matrixA(matrix_size * matrix_size,2);
   std::vector<int> matrixB(matrix_size * matrix_size,3);
- 
+
+  matrixC.resize(matrix_size*matrix_size);
+
  using clock = std::chrono::steady_clock;
 
 auto t_start = clock::now();
