@@ -108,22 +108,49 @@ public:
 
   //copies gpu memory back to cpu memory in the form of an std::vector
   std::vector<T> copy_to_host() const {
-    if (access_ == IN)
-    {
-	    throw std::runtime_error("Cannt copy a read only buffer back to device\n");
-    } 
-    if (is_scalar_) {
-      return std::vector<T>{host_scalar_};
-    }
-    std::vector<T> host_data(num_elements_);
-    size_t bytes = num_elements_ * sizeof(T);
-    CHECK_CUDA(cuCtxPushCurrent(ctx));
-    CUstream s = stream_ ? stream_ : nullptr;
-    CHECK_CUDA(cuMemcpyDtoHAsync(host_data.data(), memory_, bytes, s));
-    if (s) CHECK_CUDA(cuStreamSynchronize(s));
-    else  CHECK_CUDA(cuCtxSynchronize());
-    CHECK_CUDA(cuCtxPopCurrent(nullptr));
-    return host_data;
+	  if (access_ == IN)
+	  {
+		  throw std::runtime_error("Cannt copy a read only buffer back to device\n");
+	  } 
+	  if (is_scalar_) {
+		  return std::vector<T>{host_scalar_};
+	  }
+	  std::vector<T> host_data(num_elements_);
+	  size_t bytes = num_elements_ * sizeof(T);
+	  CHECK_CUDA(cuCtxPushCurrent(ctx));
+	  CUstream s = stream_ ? stream_ : nullptr;
+	  CHECK_CUDA(cuMemcpyDtoHAsync(host_data.data(), memory_, bytes, s));
+	  if (s) CHECK_CUDA(cuStreamSynchronize(s));
+	  else  CHECK_CUDA(cuCtxSynchronize());
+	  CHECK_CUDA(cuCtxPopCurrent(nullptr));
+	  return host_data;
+  }
+
+
+  //copies buffer back to dst buffer supplied by the user
+  //count is number of elements the buffer has
+  void copy_to_host(T* dst, size_t count) const {
+	  if (access_ == IN)
+		  throw std::runtime_error("Cannot copy a read only buffer back to host");
+
+	  if (is_scalar_) {
+		  dst[0] = host_scalar_;
+		  return;
+	  }
+
+	  size_t bytes = count * sizeof(T);
+
+	  CHECK_CUDA(cuCtxPushCurrent(ctx));
+	  CUstream s = stream_ ? stream_ : nullptr;
+
+	  CHECK_CUDA(cuMemcpyDtoHAsync(dst, memory_, bytes, s));
+
+	  if (s)
+		  CHECK_CUDA(cuStreamSynchronize(s));
+	  else
+		  CHECK_CUDA(cuCtxSynchronize());
+
+	  CHECK_CUDA(cuCtxPopCurrent(nullptr));
   }
 
 
