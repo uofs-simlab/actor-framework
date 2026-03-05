@@ -235,9 +235,9 @@ auto t_end = clock::now();
 void caf_main(caf::actor_system& sys) {
   caf::cuda::manager::init(sys);
   run_mmul_test(sys,1000);
-  //run_mmul_test(sys,4000);
-  //run_mmul_test(sys,8000);
-  //run_mmul_test(sys,12000);
+  run_mmul_test(sys,4000);
+  run_mmul_test(sys,8000);
+  run_mmul_test(sys,12000);
 
 }
 
