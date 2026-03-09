@@ -46,10 +46,6 @@ struct mmul_state {
 
 };
 
-//global output buffer meant to disclude it from timing
-//the other benchmark test do not include its memory allocations in it 
-//so its only fair that we do not either 
-std::vector<int> matrixC;
 
 
 caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel) {
@@ -60,11 +56,6 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
     [=](const std::vector<int>& matrixA,
         const std::vector<int>& matrixB,
         int N) {
-
-      using clock = std::chrono::steady_clock;
-      using ms = std::chrono::duration<double, std::milli>;
-
-      auto t_total_start = clock::now();
 
       caf::cuda::manager& mgr = caf::cuda::manager::get();
       int device = 0;
@@ -94,20 +85,16 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
           stream,
           std::move(inA));
 
-      auto t_a_transfer_end = clock::now();
-
-      // -------------------------
-      // create_in_arg B
-      // -------------------------
+     
       auto t_b_inarg_start = clock::now();
+
+
 
       auto inB = caf::cuda::create_in_arg(std::move(matrixB));
 
       auto t_b_inarg_end = clock::now();
 
-      // -------------------------
-      // transfer B
-      // -------------------------
+     
       auto t_b_transfer_start = clock::now();
 
       auto arg2 = mmul_command.transfer_memory(
@@ -115,36 +102,22 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
           stream,
           std::move(inB));
 
-      auto t_b_transfer_end = clock::now();
 
-      // -------------------------
-      // spawn actor
-      // -------------------------
-      auto t_spawn_start = clock::now();
 
       caf::actor mmul_actor =
         self->spawn(caf::cuda::mmul_actor_fun<int>, program);
 
-      auto t_spawn_end = clock::now();
 
-      // -------------------------
-      // request
-      // -------------------------
 
       self->mail(arg1, arg2, N, device, stream)
         .request(mmul_actor, std::chrono::seconds(30))
         .then(
           [=](caf::cuda::mem_ptr<int> dC) {
 
-
-           auto t_copy_start = clock::now();
-
             //std::vector<int> matrixC = dC->copy_to_host();
 	    dC->copy_to_host(matrixC.data(),N*N);
+            self->quit();
 
-	    caf::actor 
-
-                        self->quit();
           }
         );
     }
@@ -159,6 +132,7 @@ struct mmul_actor_with_scheduler_state {
   static inline const char* name = "my_actor";
   caf::actor sync_actor;
   caf::actor mem_transfer_actor;
+  caf::actor mmul_actor;
 };
 
 
@@ -188,6 +162,7 @@ caf::behavior mmul_actor_fun_scheduler(
 
         self->state().sync_actor = self -> spawn(caf::cuda::sync_actor_fun<int>);
         self->state().mem_transfer_actor = self -> spawn(caf::cuda::mem_transfer_actor_fun<int>);
+	self->state().mmul_actor = self -> spawn(caf::cuda::mmul_actor_fun<int>,program);
 
        return {
 
@@ -215,8 +190,9 @@ caf::behavior mmul_actor_fun_scheduler(
         std::cout << "Working\n";
         caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-        auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-        const int THREADS = 32;
+       
+	/*
+	const int THREADS = 32;
         const int BLOCKS = (N + THREADS - 1) / THREADS;
         caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
@@ -225,19 +201,26 @@ caf::behavior mmul_actor_fun_scheduler(
         auto arg3 = mmul.transfer_memory(res_token, caf::cuda::create_out_arg(N*N));
         auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
 
+
         auto tempC = mmulAsync.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
         caf::cuda::mem_ptr<int> bufferA = std::get<0>(tempC);
+	*/
 
-        self->state().r = res_token; // hold token
+	caf::cuda::mem_ptr<int> arg1 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(matrixA));
+	caf::cuda::mem_ptr<int> arg2 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(matrixB));
 
-        using namespace std::chrono_literals;
-        self->mail(bufferA, res_token)
-            .request(self->state().sync_actor, 10s)
+	self->mail(arg1,arg2,N,res_token -> getDeviceNumber(), res_token -> getStreamId())
+		.request(self->state().mmul_actor,1000s)
+		.then(
+		 [=](caf::cuda::mem_ptr<int> dC) {
+
+
+        self->mail(dC, res_token)
+            .request(self->state().sync_actor, 1000s)
             .then(
-                [=](caf::cuda::mem_ptr<int> /*syncedA*/) {
-                    auto bufferC = std::get<2>(tempC);
-                    self->mail(bufferC)
-                        .request(self->state().mem_transfer_actor, 10s)
+                [=](caf::cuda::mem_ptr<int> /*syncedC*/) {
+                    self->mail(dC)
+                        .request(self->state().mem_transfer_actor, 1000s)
                         .then(
                             [=](std::vector<int> matrixC) {
                                 //self->mail(matrixA,matrixB,matrixC, N).send(self);
@@ -255,6 +238,7 @@ caf::behavior mmul_actor_fun_scheduler(
                     std::cout << "Sync failed: " << to_string(err) << "\n";
                     self->quit(err);
                 });
+		 });
     },
        };
 
@@ -364,6 +348,7 @@ void run_mmul_test_no_scheduler_actor(caf::actor_system& sys, int matrix_size, i
         return;
     }
 
+    
     caf::cuda::manager& mgr = caf::cuda::manager::get();
 
     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
