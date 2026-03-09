@@ -62,7 +62,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 
 			caf::cuda::manager& mgr = caf::cuda::manager::get();
 			int device = 0;
-			int stream = 1;
+			int stream = rand();
 
 			//auto program =
 			//mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
@@ -101,8 +101,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 
 			self->mail(arg1, arg2, N, device, stream)
 				.request(mmul_actor, std::chrono::seconds(30))
-				.then(
-						[=](caf::cuda::mem_ptr<int> dC) {
+				.then([=](caf::cuda::mem_ptr<int> dC) {
 
 						self->mail(dC).request(mem_transfer_actor,std::chrono::seconds(4000))
 						.then([=] (std::vector<int>& matrixC) {
@@ -159,7 +158,7 @@ caf::behavior mmul_actor_fun_scheduler(
 
     // 1. Handle response token
     [=](caf::cuda::response_token_ptr res_token) {
-        std::cout << "Got response\n";
+//        std::cout << "Got response\n";
 
         if (res_token->getType() == LAUNCH_RESPONSE) {
             std::vector<int> matrix1(N*N);
@@ -168,7 +167,7 @@ caf::behavior mmul_actor_fun_scheduler(
             self->mail(matrix1, matrix2, res_token, N).send(self);
 
         } else {
-            std::cout << "Got a memory response token\n";
+  //          std::cout << "Got a memory response token\n";
         }
     },
 
@@ -178,7 +177,7 @@ caf::behavior mmul_actor_fun_scheduler(
         const caf::cuda::response_token_ptr& res_token,
         int N) {
 
-        std::cout << "Working\n";
+    //    std::cout << "Working\n";
         caf::cuda::manager& mgr = caf::cuda::manager::get();
 
        
@@ -347,7 +346,6 @@ void run_mmul_test_no_scheduler_actor(caf::actor_system& sys, int matrix_size, i
     const int BLOCKS = (matrix_size + THREADS - 1) / THREADS;
     caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
-  caf::actor exit_actor = mgr.spawn_exit_actor(num_actors);
 
     for (int i = 0; i < num_actors; ++i) {
         sys.spawn(
@@ -460,7 +458,7 @@ void caf_main(caf::actor_system& sys) {
   
 
   caf::cuda::manager_config man_config(true);
-  caf::cuda::manager::init(sys,man_config);
+  //caf::cuda::manager::init(sys,man_config);
   run_mmul_scaling_tests(sys,man_config);
 
 }
