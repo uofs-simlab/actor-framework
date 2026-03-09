@@ -32,7 +32,7 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
 
     std::cout << "\n===== DRIVER BENCHMARK (N=" << N << ") =====\n";
 
-    size_t elements = static_cast<size_t>(N) * N;
+    size_t elements = (size_t)N * (size_t)N;
     size_t bytes = elements * sizeof(int);
 
     std::vector<int> h_a(elements, 1);
@@ -40,8 +40,14 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     std::vector<int> h_c(elements);
 
     CUdeviceptr d_a, d_b, d_c;
+    CUstream stream;
 
     auto t_total_start = clock::now();
+
+    // ----------------------------------
+    // Create Stream
+    // ----------------------------------
+    checkCU(cuStreamCreate(&stream, CU_STREAM_DEFAULT), "cuStreamCreate");
 
     // ----------------------------------
     // Device Allocation
@@ -58,14 +64,20 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     // H2D copy A
     // ----------------------------------
     auto t_h2d_a_start = clock::now();
-    checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), bytes), "cuMemcpyHtoD A");
+
+    checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), bytes, stream), "cuMemcpyHtoDAsync A");
+    checkCU(cuStreamSynchronize(stream), "sync A");
+
     auto t_h2d_a_end = clock::now();
 
     // ----------------------------------
     // H2D copy B
     // ----------------------------------
     auto t_h2d_b_start = clock::now();
-    checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), bytes), "cuMemcpyHtoD B");
+
+    checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), bytes, stream), "cuMemcpyHtoDAsync B");
+    checkCU(cuStreamSynchronize(stream), "sync B");
+
     auto t_h2d_b_end = clock::now();
 
     // ----------------------------------
@@ -84,12 +96,12 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
                            gridX, gridY, 1,
                            blockX, blockY, 1,
                            0,
-                           nullptr,
+                           stream,
                            kernelParams,
                            nullptr),
             "cuLaunchKernel");
 
-    checkCU(cuCtxSynchronize(), "cuCtxSynchronize");
+    checkCU(cuStreamSynchronize(stream), "kernel sync");
 
     auto t_kernel_end = clock::now();
 
@@ -97,17 +109,26 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     // D2H copy
     // ----------------------------------
     auto t_d2h_start = clock::now();
+
     checkCU(cuMemcpyDtoH(h_c.data(), d_c, bytes), "cuMemcpyDtoH");
+
     auto t_d2h_end = clock::now();
 
     // ----------------------------------
     // Free device memory
     // ----------------------------------
     auto t_free_start = clock::now();
+
     checkCU(cuMemFree(d_a), "cuMemFree A");
     checkCU(cuMemFree(d_b), "cuMemFree B");
     checkCU(cuMemFree(d_c), "cuMemFree C");
+
     auto t_free_end = clock::now();
+
+    // ----------------------------------
+    // Destroy stream
+    // ----------------------------------
+    checkCU(cuStreamDestroy(stream), "cuStreamDestroy");
 
     auto t_total_end = clock::now();
 
@@ -147,25 +168,23 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
 }
 
 int main(int argc, char** argv) {
-    // optional: accept single N from command line
     std::vector<int> sizes = {1000, 4000, 8000, 12000};
     if (argc > 1) {
         sizes.clear();
         for (int i = 1; i < argc; ++i) sizes.push_back(std::stoi(argv[i]));
     }
 
-    // Initialize driver
     checkCU(cuInit(0), "cuInit");
 
-    // pick device 0
     CUdevice dev;
     checkCU(cuDeviceGet(&dev, 0), "cuDeviceGet(0)");
+
     CUcontext ctx;
     checkCU(cuCtxCreate(&ctx, 0, dev), "cuCtxCreate");
 
-    // find the PTX file next to the executable or in current dir - we assume "mmul.ptx" is present
     const std::string ptxPath = "mmul.ptx";
     std::string ptx;
+
     try {
         ptx = readFile(ptxPath);
     } catch (const std::exception &e) {
@@ -173,15 +192,12 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    // load module
     CUmodule module;
     checkCU(cuModuleLoadDataEx(&module, ptx.c_str(), 0, nullptr, nullptr), "cuModuleLoadDataEx");
 
-    // get function handle
     CUfunction kernel;
     checkCU(cuModuleGetFunction(&kernel, module, "matrixMul"), "cuModuleGetFunction matrixMul");
 
-    // Run for each size
     for (int N : sizes) {
         try {
             runMatrixMul(module, kernel, N);
@@ -191,8 +207,8 @@ int main(int argc, char** argv) {
         std::cout << "----------------------------------------\n";
     }
 
-    // cleanup
     checkCU(cuModuleUnload(module), "cuModuleUnload");
     checkCU(cuCtxDestroy(ctx), "cuCtxDestroy");
+
     return 0;
 }
