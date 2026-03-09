@@ -1,6 +1,6 @@
 #include <caf/all.hpp>
 #include <caf/cuda/all.hpp>
-#include <caf/component-actors/mmul_actor/mmul_actor.hpp>
+#include <caf/component-actors/all-component-actors>
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -41,6 +41,9 @@ using command =
 command mmul_command;
 
 struct mmul_state {
+
+	caf::cuda::program_ptr mmul_kernel;
+
 };
 
 //global output buffer meant to disclude it from timing
@@ -49,8 +52,10 @@ struct mmul_state {
 std::vector<int> matrixC;
 
 
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
+caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel) {
   return {
+
+	  self->state().mmul_kernel = mmul_kernel;
 
     [=](const std::vector<int>& matrixA,
         const std::vector<int>& matrixB,
@@ -65,8 +70,10 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
       int device = 0;
       int stream = 1;
 
-      auto program =
-        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+      //auto program =
+        //mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+      auto program = self->state().mmul_kernel
 
       // -------------------------
       // create_in_arg A
@@ -123,75 +130,139 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
       // -------------------------
       // request
       // -------------------------
-      auto t_request_start = clock::now();
 
       self->mail(arg1, arg2, N, device, stream)
         .request(mmul_actor, std::chrono::seconds(30))
         .then(
           [=](caf::cuda::mem_ptr<int> dC) {
 
-            auto t_response_received = clock::now();
 
-            //std::vector<int> matrixC(N*N);
-            // -------------------------
-            // copy to host
-            // -------------------------
-            auto t_copy_start = clock::now();
+           auto t_copy_start = clock::now();
 
             //std::vector<int> matrixC = dC->copy_to_host();
-
 	    dC->copy_to_host(matrixC.data(),N*N);
 
-            auto t_copy_end = clock::now();
-            auto t_total_end = clock::now();
+	    caf::actor 
 
-            // -------------------------
-            // Print timings
-            // -------------------------
-
-            std::cout << "\n===== BENCHMARK RESULTS (N=" << N << ") =====\n";
-
-            std::cout << "create_in_arg A: "
-                      << ms(t_a_inarg_end - t_a_inarg_start).count()
-                      << " ms\n";
-
-            std::cout << "transfer A: "
-                      << ms(t_a_transfer_end - t_a_transfer_start).count()
-                      << " ms\n";
-
-            std::cout << "create_in_arg B: "
-                      << ms(t_b_inarg_end - t_b_inarg_start).count()
-                      << " ms\n";
-
-            std::cout << "transfer B: "
-                      << ms(t_b_transfer_end - t_b_transfer_start).count()
-                      << " ms\n";
-
-            std::cout << "spawn actor: "
-                      << ms(t_spawn_end - t_spawn_start).count()
-                      << " ms\n";
-
-            std::cout << "request → response latency: "
-                      << ms(t_response_received - t_request_start).count()
-                      << " ms\n";
-
-            std::cout << "copy_to_host: "
-                      << ms(t_copy_end - t_copy_start).count()
-                      << " ms\n";
-
-            std::cout << "TOTAL end-to-end: "
-                      << ms(t_total_end - t_total_start).count()
-                      << " ms\n";
-
-            std::cout << "=============================================\n";
-
-            self->quit();
+                        self->quit();
           }
         );
     }
 
   };
 }
+
+
+
+
+struct mmul_actor_with_scheduler_state {
+  static inline const char* name = "my_actor";
+  caf::actor sync_actor;
+  caf::actor mem_transfer_actor;
+};
+
+
+// Stateful actor behavior
+caf::behavior mmul_actor_fun_scheduler(
+    caf::stateful_actor<mmul_actor_with_scheduler_state>* self,
+    caf::actor exit_actor,
+    int N,
+    caf::cuda::program_ptr program,
+    caf::cuda::nd_range dims)
+{
+
+
+        caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+        caf::actor scheduler = mgr.get_scheduler_actor();
+
+        //send a launch token
+        caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
+                        program,
+                        dims,
+                        0,
+                        "hello",
+                        self
+                        );
+        self -> mail(launch_token).send(scheduler);
+
+        self->state().sync_actor = self -> spawn(caf::cuda::sync_actor_fun<int>);
+        self->state().mem_transfer_actor = self -> spawn(caf::cuda::mem_transfer_actor_fun<int>);
+
+       return {
+
+    // 1. Handle response token
+    [=](caf::cuda::response_token_ptr res_token) {
+        std::cout << "Got response\n";
+
+        if (res_token->getType() == LAUNCH_RESPONSE) {
+            std::vector<int> matrix1(N*N);
+            std::vector<int> matrix2(N*N);
+
+            self->mail(matrix1, matrix2, res_token, N).send(self);
+
+        } else {
+            std::cout << "Got a memory response token\n";
+        }
+    },
+
+    // 2. Handle memory buffers -> GPU
+    [=](const std::vector<int>& matrixA,
+        const std::vector<int>& matrixB,
+        const caf::cuda::response_token_ptr& res_token,
+        int N) {
+
+        std::cout << "Working\n";
+        caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+        auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+        const int THREADS = 32;
+        const int BLOCKS = (N + THREADS - 1) / THREADS;
+        caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+
+        auto arg1 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(matrixA));
+        auto arg2 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(matrixB));
+        auto arg3 = mmul.transfer_memory(res_token, caf::cuda::create_out_arg(N*N));
+        auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
+
+        auto tempC = mmulAsync.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
+        caf::cuda::mem_ptr<int> bufferA = std::get<0>(tempC);
+
+        self->state().r = res_token; // hold token
+
+        using namespace std::chrono_literals;
+        self->mail(bufferA, res_token)
+            .request(self->state().sync_actor, 10s)
+            .then(
+                [=](caf::cuda::mem_ptr<int> /*syncedA*/) {
+                    auto bufferC = std::get<2>(tempC);
+                    self->mail(bufferC)
+                        .request(self->state().mem_transfer_actor, 10s)
+                        .then(
+                            [=](std::vector<int> matrixC) {
+                                //self->mail(matrixA,matrixB,matrixC, N).send(self);
+                            
+			     self->mail(1).send(exit_actor);
+        		     self->quit();
+			    
+			    },
+                            [=](caf::error& err) {
+                                std::cout << "Transfer C failed: " << to_string(err) << "\n";
+                                self->quit(err);
+                            });
+                },
+                [=](caf::error& err) {
+                    std::cout << "Sync failed: " << to_string(err) << "\n";
+                    self->quit(err);
+                });
+    },
+       };
+
+}
+
+
+
+
 
 void run_mmul_test(caf::actor_system& sys, int matrix_size) {
 
