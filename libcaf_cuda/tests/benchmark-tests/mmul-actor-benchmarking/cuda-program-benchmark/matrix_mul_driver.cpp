@@ -27,102 +27,123 @@ std::string readFile(const std::string &path) {
 }
 
 void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
-    std::cout << "Running N = " << N << " ...\n";
-    size_t elements = static_cast<size_t>(N) * static_cast<size_t>(N);
+    using clock = std::chrono::steady_clock;
+    using ms = std::chrono::duration<double, std::milli>;
+
+    std::cout << "\n===== DRIVER BENCHMARK (N=" << N << ") =====\n";
+
+    size_t elements = static_cast<size_t>(N) * N;
     size_t bytes = elements * sizeof(int);
 
-    // Check for overflow (extremely large N)
-    if (elements / N != static_cast<size_t>(N)) {
-        std::cerr << "Integer overflow for N = " << N << "\n";
-        return;
-    }
+    std::vector<int> h_a(elements, 1);
+    std::vector<int> h_b(elements, 1);
+    std::vector<int> h_c(elements);
 
-    // Host buffers
-    std::vector<int> h_a, h_b, h_c;
-    try {
-        h_a.resize(elements);
-        h_b.resize(elements);
-        h_c.resize(elements);
-    } catch (const std::bad_alloc&) {
-        std::cerr << "Host allocation failed for N = " << N << " (need "
-                  << bytes << " bytes per matrix)\n";
-        return;
-    }
+    CUdeviceptr d_a, d_b, d_c;
 
-    // Fill test data (simple pattern)
-    for (size_t i = 0; i < elements; ++i) {
-        h_a[i] = 1; // simple values to make it predictable
-        h_b[i] = 1;
-    }
+    auto t_total_start = clock::now();
 
-    CUdeviceptr d_a = 0, d_b = 0, d_c = 0;
-    CUresult r;
+    // ----------------------------------
+    // Device Allocation
+    // ----------------------------------
+    auto t_alloc_start = clock::now();
 
-    // Try allocating device memory (may fail on small GPUs for large N).
-    r = cuMemAlloc(&d_a, bytes);
-    if (r != CUDA_SUCCESS) {
-        std::cerr << "cuMemAlloc d_a failed for N=" << N << " ("
-                  << bytes << " bytes). Skipping.\n";
-        return;
-    }
+    checkCU(cuMemAlloc(&d_a, bytes), "cuMemAlloc d_a");
     checkCU(cuMemAlloc(&d_b, bytes), "cuMemAlloc d_b");
     checkCU(cuMemAlloc(&d_c, bytes), "cuMemAlloc d_c");
 
-    // Grid / block
+    auto t_alloc_end = clock::now();
+
+    // ----------------------------------
+    // H2D copy A
+    // ----------------------------------
+    auto t_h2d_a_start = clock::now();
+    checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), bytes), "cuMemcpyHtoD A");
+    auto t_h2d_a_end = clock::now();
+
+    // ----------------------------------
+    // H2D copy B
+    // ----------------------------------
+    auto t_h2d_b_start = clock::now();
+    checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), bytes), "cuMemcpyHtoD B");
+    auto t_h2d_b_end = clock::now();
+
+    // ----------------------------------
+    // Kernel launch + execution
+    // ----------------------------------
     const unsigned int blockX = 16;
     const unsigned int blockY = 16;
-    unsigned int gridX = static_cast<unsigned int>((N + blockX - 1) / blockX);
-    unsigned int gridY = static_cast<unsigned int>((N + blockY - 1) / blockY);
+    unsigned int gridX = (N + blockX - 1) / blockX;
+    unsigned int gridY = (N + blockY - 1) / blockY;
 
-    // Prepare kernel parameter values as described by Driver API:
-    // pointers to the argument values
-    // Note: pass address-of CUdeviceptr, and address-of N (int).
     void* kernelParams[] = { &d_a, &d_b, &d_c, &N };
 
-    // Time everything from H->D copy to D->H copy and sync
-    auto t0 = std::chrono::steady_clock::now();
+    auto t_kernel_start = clock::now();
 
-    checkCU(cuMemcpyHtoD(d_a, h_a.data(), bytes), "cuMemcpyHtoD d_a");
-    checkCU(cuMemcpyHtoD(d_b, h_b.data(), bytes), "cuMemcpyHtoD d_b");
-
-    // Launch kernel
     checkCU(cuLaunchKernel(kernel,
-                           gridX, gridY, 1,         // grid
-                           blockX, blockY, 1,       // block
-                           0,                       // shared mem
-                           nullptr,                 // stream
-                           kernelParams,            // kernel params
-                           nullptr), "cuLaunchKernel");
+                           gridX, gridY, 1,
+                           blockX, blockY, 1,
+                           0,
+                           nullptr,
+                           kernelParams,
+                           nullptr),
+            "cuLaunchKernel");
 
-    // Wait for completion
     checkCU(cuCtxSynchronize(), "cuCtxSynchronize");
 
-    // Copy result back
-    checkCU(cuMemcpyDtoH(h_c.data(), d_c, bytes), "cuMemcpyDtoH d_c");
+    auto t_kernel_end = clock::now();
 
-    auto t1 = std::chrono::steady_clock::now();
-   auto dur = std::chrono::duration<double, std::milli>(t1 - t0);
+    // ----------------------------------
+    // D2H copy
+    // ----------------------------------
+    auto t_d2h_start = clock::now();
+    checkCU(cuMemcpyDtoH(h_c.data(), d_c, bytes), "cuMemcpyDtoH");
+    auto t_d2h_end = clock::now();
 
-std::cout << "N=" << N
-          << " time (alloc+H2D+kernel+DtoH): "
-          << dur.count() << " ms\n"; 
-
-
-    // Quick spot-check for correctness on a few entries (since we used all-ones, result should be N)
-    bool ok = true;
-    if (elements > 0) {
-        // sample first, middle, last
-        std::vector<size_t> samples = {0, elements / 2, elements - 1};
-        for (size_t s : samples) {
-            if (h_c[s] != N) { ok = false; break; }
-        }
-    }
-    std::cout << "Spot-check: " << (ok ? "PASS" : "FAIL (sample mismatch)") << "\n";
-
+    // ----------------------------------
     // Free device memory
-    checkCU(cuMemFree(d_a), "cuMemFree d_a");
-    checkCU(cuMemFree(d_b), "cuMemFree d_b");
-    checkCU(cuMemFree(d_c), "cuMemFree d_c");
+    // ----------------------------------
+    auto t_free_start = clock::now();
+    checkCU(cuMemFree(d_a), "cuMemFree A");
+    checkCU(cuMemFree(d_b), "cuMemFree B");
+    checkCU(cuMemFree(d_c), "cuMemFree C");
+    auto t_free_end = clock::now();
+
+    auto t_total_end = clock::now();
+
+    // ----------------------------------
+    // Print Results
+    // ----------------------------------
+
+    std::cout << "Device allocation: "
+              << ms(t_alloc_end - t_alloc_start).count()
+              << " ms\n";
+
+    std::cout << "H2D copy A: "
+              << ms(t_h2d_a_end - t_h2d_a_start).count()
+              << " ms\n";
+
+    std::cout << "H2D copy B: "
+              << ms(t_h2d_b_end - t_h2d_b_start).count()
+              << " ms\n";
+
+    std::cout << "Kernel execution: "
+              << ms(t_kernel_end - t_kernel_start).count()
+              << " ms\n";
+
+    std::cout << "D2H copy: "
+              << ms(t_d2h_end - t_d2h_start).count()
+              << " ms\n";
+
+    std::cout << "Device free: "
+              << ms(t_free_end - t_free_start).count()
+              << " ms\n";
+
+    std::cout << "TOTAL: "
+              << ms(t_total_end - t_total_start).count()
+              << " ms\n";
+
+    std::cout << "=============================================\n";
 }
 
 int main(int argc, char** argv) {
