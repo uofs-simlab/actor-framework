@@ -48,11 +48,14 @@ struct mmul_state {
 
 
 
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel) {
+caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel,int N) {
   return {
 
 	  self->state().mmul_kernel = mmul_kernel;
-
+	    std::vector<int> matrix1(N*N);
+            std::vector<int> matrix2(N*N);
+            self->mail(matrix1, matrix2, N).send(self);
+	    
     [=](const std::vector<int>& matrixA,
         const std::vector<int>& matrixB,
         int N) {
@@ -107,6 +110,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
       caf::actor mmul_actor =
         self->spawn(caf::cuda::mmul_actor_fun<int>, program);
 
+      caf::actor mem_transfer_actor = self->spawn(caf::cuda::mem_transfer_actor_fun<int>);
 
 
       self->mail(arg1, arg2, N, device, stream)
@@ -114,12 +118,13 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
         .then(
           [=](caf::cuda::mem_ptr<int> dC) {
 
+	  self->mail(dC).request(mem_transfer_actor,std::chrono::seconds(4000))
+	 .then([=] (std::vector<int>& matrixC) {
             //std::vector<int> matrixC = dC->copy_to_host();
-	    dC->copy_to_host(matrixC.data(),N*N);
             self->quit();
 
-          }
-        );
+          });
+  	});
     }
 
   };
