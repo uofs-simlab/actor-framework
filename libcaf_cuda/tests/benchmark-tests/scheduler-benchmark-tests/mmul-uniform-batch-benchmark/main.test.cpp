@@ -89,7 +89,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 					stream,
 					std::move(inB));
 
-			out<T> arg3 = caf::cuda::create_out_arg<int>(N * N);
+			out<int> arg3 = caf::cuda::create_out_arg<int>(N * N);
 			in<int>  arg4 = caf::cuda::create_in_arg<int>(N);
 
 			auto result = 
@@ -98,7 +98,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 						dims,
 						stream,
 						0,
-						device_number,
+						device,
 						arg1,
 						arg2,
 						arg3,
@@ -184,7 +184,7 @@ caf::behavior mmul_actor_fun_scheduler(
 		    auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
 
 
-		    auto tempC = mmulAsync.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
+		    auto tempC = mmul.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
 		    caf::cuda::mem_ptr<int> bufferC = std::get<2>(tempC);
 
 		    bufferC -> synchronize();
