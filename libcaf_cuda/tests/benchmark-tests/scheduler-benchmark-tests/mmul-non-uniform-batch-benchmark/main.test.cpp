@@ -153,7 +153,7 @@ caf::behavior mmul_actor_fun_scheduler(
     caf::actor exit_actor,
     int N,
     caf::cuda::program_ptr program,
-    caf::cuda::nd_range dims
+    caf::cuda::nd_range dims,
     const std::vector<int>& matrix1,
     const std::vector<int> & matrix2)
 {
@@ -172,7 +172,7 @@ caf::behavior mmul_actor_fun_scheduler(
                         self,
 			rand() //dependency number, can declare indepedent but want to see what happens when you do not 
                         );
-        mgr.send_scheduler_message(launch_token);
+        mgr.send_scheduler_actor_message(launch_token);
 
 	return {
 
@@ -357,15 +357,32 @@ void run_mmul_mixed_batch_comparison(
             caf::cuda::manager::init(sys, cfg);
 
             double t = time_run([&] {
-                run_mmul_mixed_batch_one_mode_bulk(sys, sizes, actors, true);
+                run_mmul_mixed_batch_caf_cuda_scheduler(sys, sizes, actors,pool,false);
             });
 
-            std::cout << "RESULT core_usage "
+            std::cout << "RESULT CAF CUDA DEFAULT SCHEDULER "
                       << actors << " "
                       << t << "\n";
 
             caf::cuda::manager::shutdown();
         }
+        /* ========= green light BULK  ========= */
+
+        {
+            caf::cuda::manager_config cfg(true);
+            caf::cuda::manager::init(sys, cfg);
+
+            double t = time_run([&] {
+                run_mmul_mixed_batch_caf_cuda_scheduler(sys, sizes, actors,pool,true);
+            });
+
+            std::cout << "RESULT CAF CUDA FCFS SCHEDULER "
+                      << actors << " "
+                      << t << "\n";
+
+            caf::cuda::manager::shutdown();
+        }
+
 
         /* ========= no scheduler ========= */
 
@@ -374,10 +391,10 @@ void run_mmul_mixed_batch_comparison(
             caf::cuda::manager::init(sys, cfg);
 
             double t = time_run([&] {
-                run_mmul_mixed_batch_one_mode(sys, sizes, actors, true);
+                run_mmul_mixed_batch_cuda_scheduler(sys, sizes, actors,pool);
             });
 
-            std::cout << "RESULT none "
+            std::cout << "RESULT CUDA SCHEDULER "
                       << actors << " "
                       << t << "\n";
 
@@ -395,7 +412,8 @@ void caf_main(caf::actor_system& sys) {
 
   caf::cuda::manager_config man_config(true);
   //caf::cuda::manager::init(sys,man_config);
-  run_mmul_scaling_tests(sys,man_config);
+
+  run_mmul_mixed_batch_comparison(sys);
 
 }
 
