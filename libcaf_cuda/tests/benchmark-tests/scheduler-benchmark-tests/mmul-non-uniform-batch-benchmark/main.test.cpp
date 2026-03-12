@@ -10,6 +10,7 @@
 #include <numeric>
 #include <random>
 #include <map>
+#include <unordered_map>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -23,8 +24,11 @@ using command = caf::cuda::command_runner<>;
 command mmul_command;
 using async_command = caf::cuda::mmul_async_command<int>;
 async_command async_mmul;
-caf::cuda::command_runner<caf::cuda::mem_ptr<int>, caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int >> mmul;
-
+// specialized command runner used for scheduler-mode memory operations:
+caf::cuda::command_runner<caf::cuda::mem_ptr<int>,
+                         caf::cuda::mem_ptr<int>,
+                         caf::cuda::mem_ptr<int>,
+                         caf::cuda::mem_ptr<int>> mmul;
 
 struct mmul_state {
   caf::cuda::program_ptr mmul_kernel;
@@ -34,7 +38,13 @@ struct mmul_actor_with_scheduler_state {
   static inline const char* name = "my_actor";
 };
 
-// --------------------------- Deterministic matrix generation & pools (shared pool, pass indices) ---------------------------
+// --------------------------- Global matrix pools (indexed access) ---------------------------
+// Key: matrix size N -> pool of shared_ptr<vector<int>> for that N.
+// Actors will look up matrices via g_pools[N] and receive only small integer indices in messages.
+static std::unordered_map<int, std::shared_ptr<std::vector<std::shared_ptr<std::vector<int>>>>> g_pools;
+static std::mutex g_pools_mutex;
+
+// --------------------------- Deterministic matrix generation & pools ---------------------------
 static std::vector<int> generate_matrix(int N, uint64_t seed) {
   std::mt19937_64 rng(seed);
   std::uniform_int_distribution<int> dist(0, 9);
@@ -148,21 +158,20 @@ static void spawn_actors_with_schedule(caf::actor_system& sys,
   }
 }
 
-// --------------------------- Actor implementations (indexed pool) ---------------------------
+// --------------------------- Actor implementations (indexed pool, pool looked up from global) ---------------------------
 
 caf::behavior mmul_actor_indexed(caf::stateful_actor<mmul_state>* self,
                                  caf::cuda::program_ptr mmul_kernel,
                                  int indexA,
                                  int indexB,
-                                 int N,
-                                 std::shared_ptr<std::vector<std::shared_ptr<std::vector<int>>>> pool_ptr) {
+                                 int N) {
   // store program ptr
   self->state().mmul_kernel = mmul_kernel;
-  // enqueue work to self to keep consistency with message-driven design
-  self->mail(indexA, indexB, N, pool_ptr).send(self);
+  // enqueue work to self (do not send pool pointer — actors will look up global pool by N)
+  self->mail(indexA, indexB, N).send(self);
 
   return {
-    [=](int idxA, int idxB, int N, std::shared_ptr<std::vector<std::shared_ptr<std::vector<int>>>> pool) {
+    [=](int idxA, int idxB, int N) {
       caf::cuda::manager& mgr = caf::cuda::manager::get();
       int device = 0;
       int stream = 0;
@@ -172,6 +181,19 @@ caf::behavior mmul_actor_indexed(caf::stateful_actor<mmul_state>* self,
       caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
       auto program = self->state().mmul_kernel;
+
+      // lookup pool globally
+      std::shared_ptr<std::vector<std::shared_ptr<std::vector<int>>>> pool;
+      {
+        std::lock_guard<std::mutex> lk(g_pools_mutex);
+        auto it = g_pools.find(N);
+        if (it == g_pools.end()) {
+          std::cout  << "ERROR: no pool for N=" << N << "\n";
+          self->quit();
+          return;
+        }
+        pool = it->second;
+      }
 
       auto matA_ptr = (*pool)[idxA];
       auto matB_ptr = (*pool)[idxB];
@@ -199,8 +221,7 @@ caf::behavior mmul_actor_scheduler_indexed(
     caf::cuda::program_ptr program,
     caf::cuda::nd_range dims,
     int indexA,
-    int indexB,
-    std::shared_ptr<std::vector<std::shared_ptr<std::vector<int>>>> pool_ptr) {
+    int indexB) {
 
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 
@@ -218,16 +239,28 @@ caf::behavior mmul_actor_scheduler_indexed(
   return {
     [=](caf::cuda::response_token_ptr res_token) {
       if (res_token->getType() == LAUNCH_RESPONSE) {
-        // send the actual work to self
-        self->mail(indexA, indexB, res_token, N, pool_ptr).send(self);
+        // send the actual work to self (only indices and token, no pool pointer)
+        self->mail(indexA, indexB, res_token, N).send(self);
       }
     },
 
     [=](int idxA,
         int idxB,
         const caf::cuda::response_token_ptr& res_token,
-        int N,
-        std::shared_ptr<std::vector<std::shared_ptr<std::vector<int>>>> pool) {
+        int N) {
+
+      // lookup pool globally
+      std::shared_ptr<std::vector<std::shared_ptr<std::vector<int>>>> pool;
+      {
+        std::lock_guard<std::mutex> lk(g_pools_mutex);
+        auto it = g_pools.find(N);
+        if (it == g_pools.end()) {
+	  std::cout << "ERROR: no pool for N=" << N << "\n";
+          self->quit();
+          return;
+        }
+        pool = it->second;
+      }
 
       auto matA_ptr = (*pool)[idxA];
       auto matB_ptr = (*pool)[idxB];
@@ -250,7 +283,7 @@ caf::behavior mmul_actor_scheduler_indexed(
   };
 }
 
-// --------------------------- Spawn helpers (take spawn_times and shared pool_ptr) ---------------------------
+// --------------------------- Spawn helpers (take spawn_times) ---------------------------
 
 void spawn_mmul_actors_with_schedule_scheduler(
     caf::actor_system& sys,
@@ -259,25 +292,25 @@ void spawn_mmul_actors_with_schedule_scheduler(
     int N,
     caf::cuda::program_ptr program,
     caf::cuda::nd_range dims,
-    std::shared_ptr<std::vector<std::shared_ptr<std::vector<int>>>> pool_ptr,
     uint64_t master_seed) {
 
-  int pool_sz = (int)pool_ptr->size();
+  // pool must already exist in g_pools[N]
+  int pool_sz = 0;
+  {
+    std::lock_guard<std::mutex> lk(g_pools_mutex);
+    auto it = g_pools.find(N);
+    if (it == g_pools.end()) return;
+    pool_sz = (int)it->second->size();
+  }
+
   auto spawn_cb = [&](int actor_idx) {
     auto inds = choose_matrix_indices_for_actor(actor_idx, pool_sz, master_seed, N);
     int idxA = inds.first;
     int idxB = inds.second;
-
-    sys.spawn(
-      mmul_actor_scheduler_indexed,
-      exit_actor,
-      N,
-      program,
-      dims,
-      idxA,
-      idxB,
-      pool_ptr
-    );
+    // To avoid ambiguity with CAF spawn overloads we call the spawn via a lambda:
+    sys.spawn([=](caf::stateful_actor<mmul_actor_with_scheduler_state>* s) -> caf::behavior {
+        return mmul_actor_scheduler_indexed(s, exit_actor, N, program, dims, idxA, idxB);
+    });
   };
 
   spawn_actors_with_schedule(sys, spawn_times, spawn_cb);
@@ -288,23 +321,25 @@ void spawn_mmul_actors_with_schedule_no_scheduler_actor(
     const std::vector<double>& spawn_times,
     int N,
     caf::cuda::program_ptr program,
-    std::shared_ptr<std::vector<std::shared_ptr<std::vector<int>>>> pool_ptr,
     uint64_t master_seed) {
 
-  int pool_sz = (int)pool_ptr->size();
+  int pool_sz = 0;
+  {
+    std::lock_guard<std::mutex> lk(g_pools_mutex);
+    auto it = g_pools.find(N);
+    if (it == g_pools.end()) return;
+    pool_sz = (int)it->second->size();
+  }
+
   auto spawn_cb = [&](int actor_idx) {
     auto inds = choose_matrix_indices_for_actor(actor_idx, pool_sz, master_seed, N);
     int idxA = inds.first;
     int idxB = inds.second;
 
-    sys.spawn(
-      mmul_actor_indexed,
-      program,
-      idxA,
-      idxB,
-      N,
-      pool_ptr
-    );
+    // spawn mmul_actor_indexed using a lambda to bind arguments (avoids CAF type registration issues)
+    sys.spawn([=](caf::stateful_actor<mmul_state>* s) -> caf::behavior {
+      return mmul_actor_indexed(s, program, idxA, idxB, N);
+    });
   };
 
   spawn_actors_with_schedule(sys, spawn_times, spawn_cb);
@@ -334,12 +369,22 @@ void run_mmul_scaling_tests(caf::actor_system& sys, caf::cuda::manager_config ma
   for (int a = min_actors; a <= max_actors; a *= 2)
     actor_counts.push_back(a);
 
-  std::cout << "=== MMUL Scaling Tests ===";
-  std::cout << "Format:";
-  std::cout << "scheduler matrix_size actors time_seconds";
+  std::cout << "=== MMUL Scaling Tests ===\n";
+  std::cout << "Format:\n";
+  std::cout << "scheduler matrix_size actors time_seconds\n";
 
   uint64_t master_seed = 0xDEADBEEF1234ULL;
   auto pools_map = prepare_matrix_pools(matrix_sizes, /*pool_size_per_size=*/32, master_seed);
+
+  // move pools into global map so actors can read them by N without sending them in messages
+  {
+    std::lock_guard<std::mutex> lk(g_pools_mutex);
+    for (auto& kv : pools_map) {
+      int N = kv.first;
+      auto vec = std::move(kv.second);
+      g_pools[N] = std::make_shared<std::vector<std::shared_ptr<std::vector<int>>>>(std::move(vec));
+    }
+  }
 
   for (int size : matrix_sizes) {
     for (int actors : actor_counts) {
@@ -349,10 +394,6 @@ void run_mmul_scaling_tests(caf::actor_system& sys, caf::cuda::manager_config ma
       int max_waves = 6;
       auto spawn_times = generate_spawn_schedule(actors, total_duration, max_waves, master_seed, size);
 
-      // make a shared_ptr to the pool for this size so we can cheaply pass it to actors
-      auto pool_vec = pools_map[size];
-      auto pool_shared = std::make_shared<std::vector<std::shared_ptr<std::vector<int>>>>(std::move(pool_vec));
-
       // ================= Scheduler-enabled (core_usage) =================
       caf::cuda::manager::init(sys, man_config);
       {
@@ -361,9 +402,9 @@ void run_mmul_scaling_tests(caf::actor_system& sys, caf::cuda::manager_config ma
         for (int i = 0; i < mgr.get_num_devices(); i++)
           mgr.send_scheduler_actor_message("multilevel", i);
 
-        std::cout << "[RUN] scheduler=multilevel_usage \n"
-                  << "matrix_size=" << size
-                  << " actors=" << actors << "";
+        std::cout << "[RUN] scheduler=multilevel_usage "
+                  << "matrix_size=" << size << " "
+                  << "actors=" << actors << "\n";
 
         auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
         const int THREADS = 32;
@@ -373,14 +414,14 @@ void run_mmul_scaling_tests(caf::actor_system& sys, caf::cuda::manager_config ma
         caf::actor exit_actor = mgr.spawn_exit_actor(actors);
 
         double core_usage_time = time_run([&] {
-          spawn_mmul_actors_with_schedule_scheduler(sys, spawn_times, exit_actor, size, program, dims, pool_shared, master_seed);
+          spawn_mmul_actors_with_schedule_scheduler(sys, spawn_times, exit_actor, size, program, dims, master_seed);
           sys.await_all_actors_done();
         });
 
         std::cout << std::fixed << std::setprecision(6)
-                  << "RESULT core_usage \n"
-                  << size << " \n"
-                  << actors << " \n"
+                  << "RESULT core_usage "
+                  << size << " "
+                  << actors << " "
                   << core_usage_time << "\n";
       }
       caf::cuda::manager::shutdown();
@@ -392,9 +433,9 @@ void run_mmul_scaling_tests(caf::actor_system& sys, caf::cuda::manager_config ma
         for (int i = 0; i < mgr.get_num_devices(); i++)
           mgr.send_scheduler_actor_message("green", i);
 
-        std::cout << "[RUN] scheduler=green_light_only \n"
-                  << "matrix_size=" << size
-                  << " actors=" << actors << "\n";
+        std::cout << "[RUN] scheduler=green_light_only "
+                  << "matrix_size=" << size << " "
+                  << "actors=" << actors << "\n";
 
         auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
         const int THREADS = 32;
@@ -404,15 +445,15 @@ void run_mmul_scaling_tests(caf::actor_system& sys, caf::cuda::manager_config ma
         caf::actor exit_actor = mgr.spawn_exit_actor(actors);
 
         double green_light_time = time_run([&] {
-          // reuse the same spawn_times and pool_shared
-          spawn_mmul_actors_with_schedule_scheduler(sys, spawn_times, exit_actor, size, program, dims, pool_shared, master_seed);
+          // reuse the same spawn_times and global pools
+          spawn_mmul_actors_with_schedule_scheduler(sys, spawn_times, exit_actor, size, program, dims, master_seed);
           sys.await_all_actors_done();
         });
 
         std::cout << std::fixed << std::setprecision(6)
-                  << "RESULT green_light_only \n"
-                  << size << " \n"
-                  << actors << " \n"
+                  << "RESULT green_light_only "
+                  << size << " "
+                  << actors << " "
                   << green_light_time << "\n";
       }
       caf::cuda::manager::shutdown();
@@ -423,9 +464,9 @@ void run_mmul_scaling_tests(caf::actor_system& sys, caf::cuda::manager_config ma
       {
         caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-        std::cout <<"[RUN] scheduler=none \n"
-                  << "matrix_size=" << size
-                  << " actors=" << actors << "\n";
+        std::cout << "[RUN] scheduler=none "
+                  << "matrix_size=" << size << " "
+                  << "actors=" << actors << "\n";
 
         auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
         const int THREADS = 32;
@@ -433,21 +474,21 @@ void run_mmul_scaling_tests(caf::actor_system& sys, caf::cuda::manager_config ma
         caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
         double no_scheduler_time = time_run([&] {
-          spawn_mmul_actors_with_schedule_no_scheduler_actor(sys, spawn_times, size, program, pool_shared, master_seed);
+          spawn_mmul_actors_with_schedule_no_scheduler_actor(sys, spawn_times, size, program, master_seed);
           sys.await_all_actors_done();
         });
 
         std::cout << std::fixed << std::setprecision(6)
-                  << "RESULT none \n"
-                  << size << " \n"
-                  << actors << " \n"
-                  << no_scheduler_time << "";
+                  << "RESULT none "
+                  << size << " "
+                  << actors << " "
+                  << no_scheduler_time << "\n";
       }
       caf::cuda::manager::shutdown();
     }
   }
 
-  std::cout << "=== MMUL Scaling Tests Complete ===";
+  std::cout << "=== MMUL Scaling Tests Complete ===\n";
 }
 
 void caf_main(caf::actor_system& sys) {
@@ -456,4 +497,3 @@ void caf_main(caf::actor_system& sys) {
 }
 
 CAF_MAIN()
-
