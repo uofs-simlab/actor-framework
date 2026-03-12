@@ -52,11 +52,12 @@ struct mmul_state {
 
 
 
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel,int N) {
+caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel,
+		const std::vector<int>& matrix1,
+		const std::vector<int>& matrix2,
+		int N) {
 
 	self->state().mmul_kernel = mmul_kernel;
-	std::vector<int> matrix1(N*N);
-	std::vector<int> matrix2(N*N);
 	self->mail(matrix1, matrix2, N).send(self);
 	return {
 		[=](const std::vector<int>& matrixA,
@@ -116,9 +117,6 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 
 struct mmul_actor_with_scheduler_state {
   static inline const char* name = "my_actor";
-  caf::actor sync_actor;
-  caf::actor mem_transfer_actor;
-  caf::actor mmul_actor;
 };
 
 
@@ -128,13 +126,15 @@ caf::behavior mmul_actor_fun_scheduler(
     caf::actor exit_actor,
     int N,
     caf::cuda::program_ptr program,
-    caf::cuda::nd_range dims)
+    caf::cuda::nd_range dims
+    const std::vector<int>& matrix1,
+    const std::vector<int> & matrix2)
 {
 
 
         caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-        caf::actor scheduler = mgr.get_scheduler_actor();
+        //caf::actor scheduler = mgr.get_scheduler_actor();
 
         //send a launch token
         caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
@@ -145,7 +145,7 @@ caf::behavior mmul_actor_fun_scheduler(
                         self,
 			rand() //dependency number, can declare indepedent but want to see what happens when you do not 
                         );
-        self -> mail(launch_token).send(scheduler);
+        mgr.send_scheduler_message(launch_token);
 
 	return {
 
@@ -154,9 +154,6 @@ caf::behavior mmul_actor_fun_scheduler(
 			//        std::cout << "Got response\n";
 
 			if (res_token->getType() == LAUNCH_RESPONSE) {
-				std::vector<int> matrix1(N*N);
-				std::vector<int> matrix2(N*N);
-
 				self->mail(matrix1, matrix2, res_token, N).send(self);
 
 			} else {
@@ -219,10 +216,11 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
 
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-  //change the scheduler to mulitlevle_usage
-  anon_mail(
-        caf::cuda::make_behavior_token("multilevel")
-        ).send(mgr.get_scheduler_actor());
+  //set the behaviors of each scheduler actor
+    for (int i = 0; i < mgr.get_num_devices();i++) {
+            mgr.send_scheduler_actor_message("multilevel",i);
+    }
+
 
   // CREATE ONCE
   auto program =
@@ -259,17 +257,13 @@ void run_mmul_test_no_scheduler(caf::actor_system& sys, int matrix_size, int num
 
   caf::cuda::manager& mgr = caf::cuda::manager::get();
 
-  /*
-  //change the scheduler to core_usage
-  anon_mail(
-        caf::cuda::make_behavior_token("core_usage")
-        ).send(mgr.get_scheduler_actor());
-
-  */
-
-    mgr.send_scheduler_actor_message("green",0);
-
-  // CREATE ONCE
+ 
+  //set the behaviors of each scheduler actor
+    for (int i = 0; i < mgr.get_num_devices();i++) {
+            mgr.send_scheduler_actor_message("green",i);
+    }  
+ 
+   // CREATE ONCE
   auto program =
       mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
