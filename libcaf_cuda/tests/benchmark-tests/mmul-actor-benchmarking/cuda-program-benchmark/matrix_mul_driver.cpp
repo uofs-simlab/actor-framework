@@ -38,16 +38,17 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     std::vector<int> h_a(elements, 1);
     std::vector<int> h_b(elements, 1);
     std::vector<int> h_c(elements);
+    //int h_c[elements];
 
     CUdeviceptr d_a, d_b, d_c;
     CUstream stream;
-
-    auto t_total_start = clock::now();
 
     // ----------------------------------
     // Create Stream
     // ----------------------------------
     checkCU(cuStreamCreate(&stream, CU_STREAM_DEFAULT), "cuStreamCreate");
+
+    auto t_total_start = clock::now();
 
     // ----------------------------------
     // Device Allocation
@@ -66,7 +67,7 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     auto t_h2d_a_start = clock::now();
 
     checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), bytes, stream), "cuMemcpyHtoDAsync A");
-    checkCU(cuStreamSynchronize(stream), "sync A");
+    //checkCU(cuStreamSynchronize(stream), "sync A");
 
     auto t_h2d_a_end = clock::now();
 
@@ -76,15 +77,15 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     auto t_h2d_b_start = clock::now();
 
     checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), bytes, stream), "cuMemcpyHtoDAsync B");
-    checkCU(cuStreamSynchronize(stream), "sync B");
+    //checkCU(cuStreamSynchronize(stream), "sync B");
 
     auto t_h2d_b_end = clock::now();
 
     // ----------------------------------
     // Kernel launch + execution
     // ----------------------------------
-    const unsigned int blockX = 16;
-    const unsigned int blockY = 16;
+    const unsigned int blockX = 32;
+    const unsigned int blockY = 32;
     unsigned int gridX = (N + blockX - 1) / blockX;
     unsigned int gridY = (N + blockY - 1) / blockY;
 
@@ -101,7 +102,7 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
                            nullptr),
             "cuLaunchKernel");
 
-    checkCU(cuStreamSynchronize(stream), "kernel sync");
+   // checkCU(cuStreamSynchronize(stream), "kernel sync");
 
     auto t_kernel_end = clock::now();
 
@@ -110,10 +111,14 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     // ----------------------------------
     auto t_d2h_start = clock::now();
 
-    checkCU(cuMemcpyDtoH(h_c.data(), d_c, bytes), "cuMemcpyDtoH");
-
+    cuMemcpyDtoHAsync(h_c.data(), d_c, bytes, stream);
+   // cuMemcpyDtoHAsync(h_c, d_c, bytes, stream);
+    cuStreamSynchronize(stream);
     auto t_d2h_end = clock::now();
 
+    auto t_total_end = clock::now();
+    
+    
     // ----------------------------------
     // Free device memory
     // ----------------------------------
@@ -125,12 +130,14 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
 
     auto t_free_end = clock::now();
 
+
+
+
     // ----------------------------------
     // Destroy stream
     // ----------------------------------
     checkCU(cuStreamDestroy(stream), "cuStreamDestroy");
 
-    auto t_total_end = clock::now();
 
     // ----------------------------------
     // Print Results
@@ -168,8 +175,10 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
 }
 
 int main(int argc, char** argv) {
-    std::vector<int> sizes = {1000, 4000, 8000, 12000};
-    if (argc > 1) {
+   // std::vector<int> sizes = {1000, 4000, 8000, 12000};
+    
+   std::vector<int> sizes = {8000};	
+   if (argc > 1) {
         sizes.clear();
         for (int i = 1; i < argc; ++i) sizes.push_back(std::stoi(argv[i]));
     }
