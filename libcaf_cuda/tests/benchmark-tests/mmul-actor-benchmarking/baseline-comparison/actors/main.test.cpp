@@ -124,7 +124,8 @@ return {
 
       caf::cuda::mmul_async_command<int> command;
       auto output = command.run_async(
-		      program,dims,
+		      self->state().program,
+		      dims,
 		      1,
 		      arg1,arg2,out<int>{N*N},in<int>{N});
 
@@ -156,7 +157,7 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size,int iterations) {
 
   matrixC.resize(matrix_size*matrix_size);
  
-  auto mgr = caf::cuda::manager::get();
+  auto& mgr = caf::cuda::manager::get();
   
   auto program =
         mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
@@ -166,12 +167,12 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size,int iterations) {
 
   auto start = std::chrono::steady_clock::now();
 
-  caf::actor a =sys.spawn(mmul_actor_fun_2,program);
+  caf::actor a =sys.spawn(mmul_actor_fun,program);
 
   for (int i = 0; i < iterations; i++) 
 	  anon_mail(matrixA,matrixB,matrix_size).send(a);
 
-  anon_send_exit(a);
+  anon_send_exit(a,caf::exit_reason::kill);
   // Wait for all actors to finish
   sys.await_all_actors_done();
 
