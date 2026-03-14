@@ -31,7 +31,7 @@ void green_light_behavior::receive(const token_ptr& tok) {
      if (tok->getType() == LAUNCH) {
         //use 0 as stream id for now, eventually will have to figure out
         //stream load balancing
-        process_launch_token(tok, 0);
+        process_launch_token(tok, rand()% state_.num_streams);
     }
     else if (tok->getType() == MEMORY) {
         //use 0 as stream id for now, eventually will have to figure out
@@ -41,6 +41,7 @@ void green_light_behavior::receive(const token_ptr& tok) {
     //this may cause an issue if a message is never received then
     //we may never end up dequeueing certain requests
     //may lead to a deadlock scenario?
+   /*
     while (!state_.queue.empty()) {
         token_ptr queued = state_.queue.front();
         state_.queue.pop();
@@ -52,6 +53,7 @@ void green_light_behavior::receive(const token_ptr& tok) {
             process_memory_transfer_token(queued, 0);
         }
     }
+    */
 }
 
 

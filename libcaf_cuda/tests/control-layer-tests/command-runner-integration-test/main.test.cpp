@@ -405,7 +405,7 @@ void caf_main(caf::actor_system& sys) {
 
 	caf::cuda::manager_config man_config(true); //turns the scheduler on
 	caf::cuda::manager::init(sys,man_config);
-       	run_async_mmul_test(sys,10,1000);
+       	run_async_mmul_test(sys,10,500);
 	
 	//tests will delete the old manager so will have to reinit if you do this 
 	//in conjunction with each other	

@@ -304,28 +304,43 @@ void run_mmul_mixed_batch_caf_cuda_scheduler(
     std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
 
     const int THREADS = 32;
+// timestamp before actor creation
+auto start_time = std::chrono::high_resolution_clock::now();
 
-    for (int i = 0; i < num_actors; ++i) {
+for (int i = 0; i < num_actors; ++i) {
 
-        int N = randomize ? sizes[dist(rng)] : sizes[i % sizes.size()];
-        int BLOCKS = (N + THREADS - 1) / THREADS;
+    int N = randomize ? sizes[dist(rng)] : sizes[i % sizes.size()];
+    int BLOCKS = (N + THREADS - 1) / THREADS;
 
-        caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
-	const auto& A = pool.A[N];
-	const auto& B = pool.B[N];
+    const auto& A = pool.A[N];
+    const auto& B = pool.B[N];
+  // time the single actor creation
+    //auto start = std::chrono::high_resolution_clock::now();
 
+    caf::actor a = sys.spawn(
+        mmul_actor_fun_scheduler,
+        exit_actor,
+        N,
+        program,
+        dims,
+        A,
+        B
+    );
 
-        caf::actor a = sys.spawn(
-            mmul_actor_fun_scheduler,
-            exit_actor,
-            N,
-            program,
-            dims,
-	    A,
-	    B
-        );
-    }
+    //auto end = std::chrono::high_resolution_clock::now();
+    //auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+    //std::cout << "[INFO] Actor " << i << " creation time: " << ms << " ms\n";
+}
+
+// timestamp after actor creation
+auto end_time = std::chrono::high_resolution_clock::now();
+auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+
+std::cout << "[INFO] Actor creation time for " << num_actors
+          << " actors: " << ms << " ms\n";
     sys.await_all_actors_done();
 }
 
@@ -339,8 +354,8 @@ void run_mmul_mixed_batch_caf_cuda_scheduler(
 void run_mmul_mixed_batch_comparison(
     caf::actor_system& sys)
 {
-    std::vector<int> sizes = {32,64,128,256,512,1024,2048,4096};
-    std::vector<int> actor_counts = {10000};
+    std::vector<int> sizes = {32,64,128,256,512,1024,2048};
+    std::vector<int> actor_counts = {5000};
     MatrixPool pool = create_matrix_pool(sizes);
 
 
@@ -362,7 +377,7 @@ void run_mmul_mixed_batch_comparison(
 
             std::cout << "RESULT CAF CUDA DEFAULT SCHEDULER "
                       << actors << " "
-                      << t << "\n";
+                      << t << "seconds\n";
 
             caf::cuda::manager::shutdown();
         }
@@ -378,7 +393,7 @@ void run_mmul_mixed_batch_comparison(
 
             std::cout << "RESULT CAF CUDA FCFS SCHEDULER "
                       << actors << " "
-                      << t << "\n";
+                      << t << "seconds\n";
 
             caf::cuda::manager::shutdown();
         }
@@ -396,7 +411,7 @@ void run_mmul_mixed_batch_comparison(
 
             std::cout << "RESULT CUDA SCHEDULER "
                       << actors << " "
-                      << t << "\n";
+                      << t << "seconds\n";
 
             caf::cuda::manager::shutdown();
         }

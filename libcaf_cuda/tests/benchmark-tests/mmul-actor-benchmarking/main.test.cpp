@@ -254,7 +254,8 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
           std::move(inB));
 
       auto t_b_transfer_end = clock::now();
-  const int THREADS = 32;
+  
+      const int THREADS = 32;
       const int BLOCKS = (N + THREADS - 1) / THREADS;
 
       caf::cuda::nd_range dims(
@@ -325,7 +326,7 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
 
             std::cout << "=============================================\n";
 
-            self->quit();
+           self->quit();
     }
 
   };
@@ -378,7 +379,7 @@ auto t_end = clock::now();
 
 
 void caf_main(caf::actor_system& sys) {
-  run_mmul_test(sys,1000);
+ run_mmul_test(sys,1000);
   run_mmul_test(sys,4000);
   run_mmul_test(sys,8000);
   run_mmul_test(sys,12000);
