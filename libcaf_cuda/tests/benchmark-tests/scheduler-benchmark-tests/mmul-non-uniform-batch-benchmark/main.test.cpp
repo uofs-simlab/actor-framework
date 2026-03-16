@@ -528,7 +528,7 @@ void caf_main(caf::actor_system& sys) {
 
  // run_mmul_mixed_batch_comparison(sys);
 
-  run_actor_spawn_order_comparison(sys)
+  run_actor_spawn_order_comparison(sys);
 
 }
 
