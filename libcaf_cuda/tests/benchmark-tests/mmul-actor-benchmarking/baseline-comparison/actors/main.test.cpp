@@ -184,7 +184,7 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size,int iterations) {
       std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
   std::cout << "[MMUL TEST] matrix_size=" << matrix_size
-            << "iterations = " << iterations << 
+            << " iterations = " << iterations << 
 	    ", time=" << duration_ms << " ms\n";
 
   caf::cuda::manager::shutdown();

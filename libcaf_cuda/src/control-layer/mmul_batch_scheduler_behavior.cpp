@@ -34,7 +34,7 @@ mmul_batch_scheduler_behavior::~mmul_batch_scheduler_behavior() {}
 
 void mmul_batch_scheduler_behavior::init_state() {
     device_ = manager::get().find_device(state_.device_number);
-    num_streams = state_.num_streams;
+    num_streams = 128;
 
     // default partitioning: LOW:50% of streams, MED:25%, HIGH:25%
     low_stream_begin = 0;
@@ -52,12 +52,12 @@ void mmul_batch_scheduler_behavior::init_state() {
     if (high_stream_end > num_streams) high_stream_end = num_streams;
 
     // thresholds and max concurrents can be tuned by editing these members
-    small_block_threshold = 64;
-    medium_block_threshold = 1024;
+    small_block_threshold = 128;
+    medium_block_threshold = 512;
 
-    max_concurrent_low = 8;
-    max_concurrent_med = 4;
-    max_concurrent_high = 1;
+    max_concurrent_low = 20000;
+    max_concurrent_med = 16000;
+    max_concurrent_high = 60000;
 }
 
 void mmul_batch_scheduler_behavior::on_enter() {

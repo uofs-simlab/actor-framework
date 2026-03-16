@@ -458,10 +458,10 @@ void run_mmul_spawn_counter(
             const auto& B = pool.B.at(N);
             caf::cuda::nd_range dims((N+THREADS-1)/THREADS, (N+THREADS-1)/THREADS, 1, THREADS, THREADS, 1);
 
-sys.spawn(mmul_actor_fun, program, A, B, N);
-            spawned_count[N]++;
-            total_spawned++;
-        }
+	    sys.spawn(mmul_actor_fun, program, A, B, N);
+	    spawned_count[N]++;
+	    total_spawned++;
+	}
     }
 
     sys.await_all_actors_done();
@@ -469,7 +469,7 @@ sys.spawn(mmul_actor_fun, program, A, B, N);
 
 
 void run_actor_spawn_order_comparison(actor_system& sys) {
-    std::vector<int> sizes = {32,64,128,256,512,1024,2048};
+    std::vector<int> sizes = {10,32,64,128,256,512,1024,2048};
     int num_actors = 5000;
     MatrixPool pool = create_matrix_pool(sizes);
 

@@ -9,6 +9,7 @@
 #include "caf/cuda/control-layer/core_usage_behavior.hpp"
 #include "caf/cuda/control-layer/single_usage_behavior.hpp"
 #include "caf/cuda/control-layer/multilevel_usage_behavior.hpp"
+#include "caf/cuda/control-layer/mmul_batch_scheduler_behavior.hpp"
 #include "caf/cuda/control-layer/pressure_scheduler.hpp"
 #include "caf/cuda/control-layer/all-control-layer.hpp"
 
@@ -23,6 +24,7 @@ namespace caf::cuda {
         add("single_usage", new single_usage_behavior(state));
         add("multilevel",   new multilevel_usage_behavior(state));
         add("pressure",     new pressure_scheduler(state));
+        add("mmul",     new mmul_batch_scheduler_behavior(state));
     }
 
 
