@@ -421,6 +421,104 @@ void run_mmul_mixed_batch_comparison(
 }
 
 
+// Spawn actors memory-efficiently using counters
+void run_mmul_spawn_counter(
+    actor_system& sys,
+    const std::vector<int>& sizes,
+    int num_actors,
+    const MatrixPool& pool,
+    bool largest_first = false,
+    bool smallest_first = false)
+{
+    caf::cuda::manager& mgr = caf::cuda::manager::get();
+    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+    const int THREADS = 32;
+
+    // Determine spawn order
+    std::vector<int> spawn_order = sizes;
+    if (largest_first) std::sort(spawn_order.rbegin(), spawn_order.rend());
+    if (smallest_first) std::sort(spawn_order.begin(), spawn_order.end());
+
+    // Initialize counters
+    std::unordered_map<int,int> spawned_count;
+    for (auto N : spawn_order) spawned_count[N] = 0;
+
+    int total_spawned = 0;
+    int num_sizes = spawn_order.size();
+    int base_quota = num_actors / num_sizes;
+    int remainder = num_actors % num_sizes;
+
+    for (size_t idx = 0; idx < spawn_order.size(); ++idx) {
+        int N = spawn_order[idx];
+        int limit = base_quota + (idx == spawn_order.size() - 1 ? remainder : 0);
+
+        while (spawned_count[N] < limit && total_spawned < num_actors) {
+            const auto& A = pool.A.at(N);
+            const auto& B = pool.B.at(N);
+            caf::cuda::nd_range dims((N+THREADS-1)/THREADS, (N+THREADS-1)/THREADS, 1, THREADS, THREADS, 1);
+
+sys.spawn(mmul_actor_fun, program, A, B, N);
+            spawned_count[N]++;
+            total_spawned++;
+        }
+    }
+
+    sys.await_all_actors_done();
+}
+
+
+void run_actor_spawn_order_comparison(actor_system& sys) {
+    std::vector<int> sizes = {32,64,128,256,512,1024,2048};
+    int num_actors = 5000;
+    MatrixPool pool = create_matrix_pool(sizes);
+
+    std::cout << "\n=== Actor Spawn Order Comparison ===\n";
+    std::cout << "order num_actors time_seconds\n";
+
+    // Round-robin
+    {
+        caf::cuda::manager_config cfg(false);
+        caf::cuda::manager::init(sys, cfg);
+         double t = time_run([&] {
+                run_mmul_mixed_batch_cuda_scheduler(sys, sizes, num_actors , pool);
+            });
+        std::cout << "round_robin " << num_actors << " " << t << "\n";
+        caf::cuda::manager::shutdown();
+    }
+
+    // Largest-first
+    {
+        caf::cuda::manager_config cfg(false);
+        caf::cuda::manager::init(sys, cfg);
+        double t = time_run([&] {
+            run_mmul_spawn_counter(sys, sizes, num_actors, pool, true, false);
+        });
+        std::cout << "largest_first " << num_actors << " " << t << "\n";
+        caf::cuda::manager::shutdown();
+    }
+
+    // Smallest-first
+    {
+        caf::cuda::manager_config cfg(false);
+        caf::cuda::manager::init(sys, cfg);
+        double t = time_run([&] {
+            run_mmul_spawn_counter(sys, sizes, num_actors, pool, false, true);
+        });
+        std::cout << "smallest_first " << num_actors << " " << t << "\n";
+        caf::cuda::manager::shutdown();
+    }
+
+    std::cout << "=== Spawn Order Comparison Complete ===\n";
+}
+
+
+
+
+
+
+
+
 
 void caf_main(caf::actor_system& sys) {
   
@@ -428,7 +526,9 @@ void caf_main(caf::actor_system& sys) {
   caf::cuda::manager_config man_config(true);
   //caf::cuda::manager::init(sys,man_config);
 
-  run_mmul_mixed_batch_comparison(sys);
+ // run_mmul_mixed_batch_comparison(sys);
+
+  run_actor_spawn_order_comparison(sys)
 
 }
 
