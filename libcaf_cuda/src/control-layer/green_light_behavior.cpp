@@ -24,36 +24,35 @@ void green_light_behavior::schedule() {
 }
 
 void green_light_behavior::receive(const token_ptr& tok) {
-   
 
-//	std::cout << "Green light receive\n";
+//  std::cout << "Green light receive\n";
 
-     if (tok->getType() == LAUNCH) {
-        //use 0 as stream id for now, eventually will have to figure out
-        //stream load balancing
-        process_launch_token(tok, rand()% state_.num_streams);
+    if (tok->getType() == LAUNCH) {
+
+        const auto& launch = static_cast<const launch_token&>(*tok);
+
+        int stream_id = rand() % state_.num_streams;
+
+        // Manually construct launch_response_token with anon_mail disabled
+        response_token_ptr response(
+            new launch_response_token(
+                state_.self,
+                launch,
+                state_.device_number,
+                stream_id,
+                0,      // reclaim_value
+                0,      // reclaim_runtime
+                false   // send_mail disabled
+            )
+        );
+
+        anon_mail(response).send(launch.getReplyActor());
+
+        //(void)response; // suppress unused warning
     }
     else if (tok->getType() == MEMORY) {
-        //use 0 as stream id for now, eventually will have to figure out
-        //stream load balancing
         process_memory_transfer_token(tok, 0);
     }
-    //this may cause an issue if a message is never received then
-    //we may never end up dequeueing certain requests
-    //may lead to a deadlock scenario?
-   /*
-    while (!state_.queue.empty()) {
-        token_ptr queued = state_.queue.front();
-        state_.queue.pop();
-        if (queued->getType() == LAUNCH) {
-            // safe: we've checked the runtime type
-            process_launch_token(queued, 0);
-        }
-        else if (queued->getType() == MEMORY) {
-            process_memory_transfer_token(queued, 0);
-        }
-    }
-    */
 }
 
 
