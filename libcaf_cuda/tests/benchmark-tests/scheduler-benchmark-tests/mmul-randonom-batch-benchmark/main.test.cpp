@@ -82,23 +82,6 @@ MatrixPool create_matrix_pool_random(
 
 
 
-struct supervisor_actor_state {
-    int num_actors;
-    int num_waves;
-    int completed;
-    int max_waves;
-
-    MatrixPool pool;
-
-    std::vector<int> sizes;
-    std::mt19937 rng;
-
-    // 🔥 Timing
-    std::chrono::steady_clock::time_point start_time;
-    std::chrono::steady_clock::time_point wave_start_time;
-};
-
-
 
 
 
@@ -110,10 +93,14 @@ struct mmul_state {
 
 
 
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel,
+caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
+		caf::actor exit_actor,
+		int N,
+		caf::cuda::nd_range dims,
+		caf::cuda::program_ptr mmul_kernel,
 		const in<int> matrixA,
-		const in<int> matrixB,
-		int N) {
+		const in<int> matrixB
+		) {
 
 	self->state().mmul_kernel = mmul_kernel;
 	self->mail(N).send(self);
@@ -128,11 +115,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 			//auto program =
 			//mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
-		    const int THREADS = 32;
-		    const int BLOCKS = (N + THREADS - 1) / THREADS;
-		    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-
+		    
 			auto program = self->state().mmul_kernel;
 
 			auto inA = std::move(matrixA);
@@ -163,6 +146,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 						arg4);
 
 			std::get<2>(result) -> copy_to_host();
+			self->mail(1).send(exit_actor);
 			self -> quit();
 
 		}
@@ -254,56 +238,64 @@ caf::behavior mmul_actor_fun_scheduler(
 
 
 
-//runs for FCFS behavior
+// ---------------------------- SUPERVISOR ACTOR ----------------------------
+struct supervisor_actor_state {
+    int num_actors;
+    int num_waves;
+    int completed;
+    int max_waves;
+
+    MatrixPool pool;
+
+    // Precomputed sequence of N values
+    std::vector<int> Ns;
+    int next_task;
+
+    // Timing
+    std::chrono::steady_clock::time_point start_time;
+    std::chrono::steady_clock::time_point wave_start_time;
+};
+
 caf::behavior supervisor_actor_fun(
     caf::stateful_actor<supervisor_actor_state>* self,
     int num_actors,
     int max_waves,
-    MatrixPool pool
+    MatrixPool pool,
+    const std::vector<int>& Ns,      // deterministic task sizes
+    auto actor_fun                   // pass in mmul_actor_fun or mmul_actor_fun_scheduler
 ) {
-    // --- Initialize state ---
+    // Initialize state
     self->state().num_actors = num_actors;
     self->state().completed = 0;
     self->state().max_waves = max_waves;
     self->state().num_waves = 0;
     self->state().pool = std::move(pool);
 
-    self->state().rng = std::mt19937(42);
+    self->state().Ns = Ns;
+    self->state().next_task = 0;
 
-    // Extract sizes
-    for (const auto& [N, _] : self->state().pool.A) {
-        self->state().sizes.push_back(N);
-    }
+    // Start timing
+    self->state().start_time = std::chrono::steady_clock::now();
 
     caf::cuda::manager& mgr = caf::cuda::manager::get();
     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    // 🔥 Start total timer
-    self->state().start_time = std::chrono::steady_clock::now();
 
     // Kick off first wave
     self->mail("spawn").send(self);
 
     return {
-
-        // =========================
-        // SPAWN WAVE
-        // =========================
+        // -------------------- SPAWN WAVE --------------------
         [=](std::string cmd) {
-            if (cmd != "spawn")
-                return;
+            if (cmd != "spawn") return;
 
             self->state().completed = 0;
-
-            // 🔥 Start wave timer
             self->state().wave_start_time = std::chrono::steady_clock::now();
 
-            std::uniform_int_distribution<size_t> dist(
-                0, self->state().sizes.size() - 1);
-
             for (int i = 0; i < self->state().num_actors; ++i) {
+                if (self->state().next_task >= self->state().Ns.size())
+                    break;
 
-                int N = self->state().sizes[dist(self->state().rng)];
+                int N = self->state().Ns[self->state().next_task++];
 
                 const auto& A = self->state().pool.A[N];
                 const auto& B = self->state().pool.B[N];
@@ -311,46 +303,30 @@ caf::behavior supervisor_actor_fun(
                 const int THREADS = 32;
                 const int BLOCKS = (N + THREADS - 1) / THREADS;
 
-                caf::cuda::nd_range dims(
-                    BLOCKS, BLOCKS, 1,
-                    THREADS, THREADS, 1
-                );
+                caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
-                self->spawn(
-                    mmul_actor_fun_scheduler,
-                    self,
-                    N,
-                    program,
-                    dims,
-                    caf::cuda::create_in_arg(A),
-                    caf::cuda::create_in_arg(B)
-                );
+                self->spawn(actor_fun, self, N, program, dims,
+                            caf::cuda::create_in_arg(A),
+                            caf::cuda::create_in_arg(B));
             }
         },
 
-        // =========================
-        // COMPLETION TRACKING
-        // =========================
+        // -------------------- COMPLETION TRACKING --------------------
         [=](int done) {
             self->state().completed += done;
 
             if (self->state().completed >= self->state().num_actors) {
-
-                // 🔥 End wave timing
                 auto wave_end = std::chrono::steady_clock::now();
                 std::chrono::duration<double> wave_time =
                     wave_end - self->state().wave_start_time;
 
                 self->state().num_waves++;
-
                 std::cout << "Wave "
                           << self->state().num_waves
                           << " completed in "
                           << wave_time.count() << " s\n";
 
                 if (self->state().num_waves >= self->state().max_waves) {
-
-                    // 🔥 End total timing
                     auto end_time = std::chrono::steady_clock::now();
                     std::chrono::duration<double> total_time =
                         end_time - self->state().start_time;
