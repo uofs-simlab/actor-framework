@@ -95,14 +95,13 @@ struct mmul_state {
 
 caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
 		caf::actor exit_actor,
-		int N,
+		caf::cuda::program_ptr program,
 		caf::cuda::nd_range dims,
-		caf::cuda::program_ptr mmul_kernel,
+		int N,
 		const in<int> matrixA,
 		const in<int> matrixB
 		) {
 
-	self->state().mmul_kernel = mmul_kernel;
 	self->mail(N).send(self);
 	return {
 		
@@ -116,7 +115,6 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
 			//mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
 		    
-			auto program = self->state().mmul_kernel;
 
 			auto inA = std::move(matrixA);
 			auto arg1 = mmul_command.transfer_memory(
@@ -261,9 +259,9 @@ caf::behavior supervisor_actor_fun(
     int num_actors,
     int max_waves,
     MatrixPool pool,
-    const std::vector<int>& Ns,      // deterministic task sizes
-    auto actor_fun                   // pass in mmul_actor_fun or mmul_actor_fun_scheduler
-) {
+    const std::vector<int>& Ns,      // deterministic task sizes 
+    bool use_scheduler
+    ) {
     // Initialize state
     self->state().num_actors = num_actors;
     self->state().completed = 0;
@@ -305,9 +303,16 @@ caf::behavior supervisor_actor_fun(
 
                 caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
-                self->spawn(actor_fun, self, N, program, dims,
+		if (use_scheduler) {
+			self->spawn(mmul_actor_fun_scheduler, self, N, program, dims,
                             caf::cuda::create_in_arg(A),
                             caf::cuda::create_in_arg(B));
+		}
+		else {
+			self->spawn(mmul_actor_fun, self, program, dims,N,
+                            caf::cuda::create_in_arg(A),
+                            caf::cuda::create_in_arg(B));
+		}
             }
         },
 
@@ -372,10 +377,35 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_waves = 5000;
 
     const std::vector<int> actor_counts = {
-        10000
+	    10000
     };
 
 
+    int num_actors = actor_counts[0];
+
+        // Generate deterministic random pool
+        MatrixPool pool = create_matrix_pool_random(
+            num_sizes,
+            min_N,
+            max_N,
+            42  // fixed seed
+        );
+
+    // Precompute all task Ns (total_tasks = num_actors * max_waves)
+    std::vector<int> sizes;
+    for (const auto& [N, _] : pool.A) sizes.push_back(N);
+
+    int total_tasks = num_actors * max_waves;
+    std::vector<int> Ns;
+    Ns.reserve(total_tasks);
+
+    std::mt19937 rng(42);
+    std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
+    for (int i = 0; i < total_tasks; ++i)
+	    Ns.push_back(sizes[dist(rng)]);
+
+
+    //scheduler
     for (int num_actors : actor_counts) {
 
     
@@ -390,13 +420,6 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 	    }
 
 
-        // Generate deterministic random pool
-        MatrixPool pool = create_matrix_pool_random(
-            num_sizes,
-            min_N,
-            max_N,
-            42  // fixed seed
-        );
 
         double elapsed = time_run([&]() {
 
@@ -404,7 +427,9 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
                 supervisor_actor_fun,
                 num_actors,
                 max_waves,
-                pool
+                pool,
+		Ns,
+		true
             );
 
             // Block until supervisor finishes
@@ -418,7 +443,39 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     
 	caf::cuda::manager::shutdown();
     }
+    
+    //no scheduler
+    for (int num_actors : actor_counts) {
 
+    
+	    // Initialize CUDA manager
+	    caf::cuda::manager::init(sys);
+	    std::cout << "=====================================\n";
+	    std::cout << "Running no scheduler with " << num_actors << " actors\n";
+
+      
+	    double elapsed = time_run([&]() {
+
+            auto sup = sys.spawn(
+                supervisor_actor_fun,
+                num_actors,
+                max_waves,
+                pool,
+		Ns,
+		false
+            );
+
+            // Block until supervisor finishes
+            scoped_actor self{sys};
+            self->wait_for(sup);
+        });
+
+        std::cout << "Total time: "
+                  << std::fixed << std::setprecision(6)
+                  << elapsed << " seconds\n";
+    
+	caf::cuda::manager::shutdown();
+    }
     caf::cuda::manager::shutdown();
 }
 
