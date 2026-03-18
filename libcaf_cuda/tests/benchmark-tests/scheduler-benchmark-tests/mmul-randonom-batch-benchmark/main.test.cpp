@@ -83,6 +83,73 @@ MatrixPool create_matrix_pool_random(
 
 
 
+struct supervisor_actor_state {
+	int num_actors;
+	int num_waves;
+	int completed;
+	int max_waves;
+	MatrixPool pool;
+};
+
+
+
+//runs for FCFS behavior
+caf::behavior supervisor_actor_fun(caf::stateful_actor<supervisor_actor_state>* self, int num_actors,
+		int max_waves,
+		MatrixPool pool) {
+
+	self -> state().num_actors = num_actors;
+	self -> state().completed = 0;
+	self->state().max_waves = max_waves;
+	self->state().num_waves = 0;
+	self -> state().pool = pool;
+
+	self->mail("spawn").send(self);
+
+	return {
+
+		[=](std::string command) {
+		
+			if (command == "spawn") {
+		
+
+
+
+
+			
+			}
+		
+		
+		},
+		[=](int completed) {
+		
+			self->state().completed+=completed;
+
+			if (self->state().completed >= self->state().limit) {
+			
+				self->state().num_waves +=1;
+
+				if (self->state().num_waves >= self->state().max_waves) {
+				
+					caf::cuda::manager::shutdown();
+					self -> quit();
+				
+				}
+				else {
+				
+					self->mail("spawn").send(self);
+				
+				}
+			
+			}
+		
+		}
+
+
+	};
+
+
+}
 
 
 
@@ -102,7 +169,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 		int N) {
 
 	self->state().mmul_kernel = mmul_kernel;
-	self->mail(matrix1, matrix2, N).send(self);
+	self->mail(N).send(self);
 	return {
 		
 		[=](int N) {
