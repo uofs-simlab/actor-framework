@@ -11,6 +11,7 @@
 #include <random>
 #include "caf/actor_registry.hpp"
 #include <random>
+#include <unordered_set>
 //#include <caf/atoms.hpp>
 
 
@@ -54,7 +55,6 @@ struct MatrixPool {
 };
 
 
-#include <unordered_set>
 
 MatrixPool create_matrix_pool_random(
     int num_sizes,
@@ -97,16 +97,15 @@ struct mmul_state {
 
 
 caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel,
-		const std::vector<int>& matrix1,
-		const std::vector<int>& matrix2,
+		const in<int> matrixA,
+		const in<int> matrixB,
 		int N) {
 
 	self->state().mmul_kernel = mmul_kernel;
 	self->mail(matrix1, matrix2, N).send(self);
 	return {
-		[=](const std::vector<int>& matrixA,
-				const std::vector<int>& matrixB,
-				int N) {
+		
+		[=](int N) {
 
 			caf::cuda::manager& mgr = caf::cuda::manager::get();
 			int device = 0;
@@ -122,13 +121,13 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 
 			auto program = self->state().mmul_kernel;
 
-			auto inA = caf::cuda::create_in_arg(std::move(matrixA));
+			auto inA = std::move(matrixA);
 			auto arg1 = mmul_command.transfer_memory(
 					device,
 					stream,
 					std::move(inA));
 
-			auto inB = caf::cuda::create_in_arg(std::move(matrixB));
+			auto inB = std::move(matrixB);
 			auto arg2 = mmul_command.transfer_memory(
 					device,
 					stream,
@@ -171,8 +170,8 @@ caf::behavior mmul_actor_fun_scheduler(
     int N,
     caf::cuda::program_ptr program,
     caf::cuda::nd_range dims,
-    const std::vector<int>& matrix1,
-    const std::vector<int> & matrix2)
+    const in<int> matrixA,
+    const in<int> matrixB)
 {
 
 
@@ -198,7 +197,7 @@ caf::behavior mmul_actor_fun_scheduler(
 			//        std::cout << "Got response\n";
 
 			if (res_token->getType() == LAUNCH_RESPONSE) {
-				self->mail(matrix1, matrix2, res_token, N).send(self);
+				self->mail(res_token, N).send(self);
 
 			} else {
 				//          std::cout << "Got a memory response token\n";
@@ -206,9 +205,7 @@ caf::behavior mmul_actor_fun_scheduler(
 		},
 
 	    // 2. Handle memory buffers -> GPU
-	    [=](const std::vector<int>& matrixA,
-			    const std::vector<int>& matrixB,
-			    const caf::cuda::response_token_ptr& res_token,
+	    [=] (const caf::cuda::response_token_ptr& res_token,
 			    int N) {
 
 		    //    std::cout << "Working\n";
@@ -219,8 +216,8 @@ caf::behavior mmul_actor_fun_scheduler(
 		    const int BLOCKS = (N + THREADS - 1) / THREADS;
 		    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
-		    auto arg1 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(matrixA));
-		    auto arg2 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(matrixB));
+		    auto arg1 = mmul.transfer_memory(res_token, matrixA);
+		    auto arg2 = mmul.transfer_memory(res_token, matrixB);
 		    auto arg3 = mmul.transfer_memory(res_token, caf::cuda::create_out_arg(N*N));
 		    auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
 
