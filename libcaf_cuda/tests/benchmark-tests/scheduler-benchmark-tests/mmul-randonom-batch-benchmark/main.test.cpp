@@ -295,6 +295,7 @@ caf::behavior supervisor_actor_fun(
 
                 int N = self->state().Ns[self->state().next_task++];
 
+
                 const auto& A = self->state().pool.A[N];
                 const auto& B = self->state().pool.B[N];
 
@@ -374,10 +375,10 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_N = 2048;
     const int num_sizes = 200;
 
-    const int max_waves = 5000;
+    const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	    10000
+	    1000
     };
 
 
@@ -412,7 +413,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 	    // Initialize CUDA manager
 	    caf::cuda::manager::init(sys, man_config);
 	    std::cout << "=====================================\n";
-	    std::cout << "Running with " << num_actors << " actors\n";
+	    std::cout << "Running with Scheduler with " << num_actors << " actors\n";
 
 	    auto& mgr = caf::cuda::manager::get();
 	    for (int i = 0; i < mgr.get_num_devices(); i++) {
@@ -432,10 +433,10 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 		true
             );
 
-            // Block until supervisor finishes
-            scoped_actor self{sys};
-            self->wait_for(sup);
-        });
+        
+	      sys.await_all_actors_done();
+	    
+	    });
 
         std::cout << "Total time: "
                   << std::fixed << std::setprecision(6)
@@ -465,10 +466,9 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 		false
             );
 
-            // Block until supervisor finishes
-            scoped_actor self{sys};
-            self->wait_for(sup);
-        });
+	      sys.await_all_actors_done();
+	    
+	    });
 
         std::cout << "Total time: "
                   << std::fixed << std::setprecision(6)
