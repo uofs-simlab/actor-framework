@@ -10,6 +10,7 @@
 #include <numeric>
 #include <random>
 #include "caf/actor_registry.hpp"
+#include <random>
 //#include <caf/atoms.hpp>
 
 
@@ -52,12 +53,23 @@ struct MatrixPool {
     std::unordered_map<int, std::vector<int>> B;
 };
 
-MatrixPool create_matrix_pool(const std::vector<int>& sizes) {
+
+MatrixPool create_matrix_pool_random(
+    int num_sizes,
+    int min_N,
+    int max_N,
+    unsigned int seed
+) {
     MatrixPool pool;
 
-    for (int N : sizes) {
-        pool.A[N] = std::vector<int>(N*N, 1);
-        pool.B[N] = std::vector<int>(N*N, 1);
+    std::mt19937 rng(seed);  // deterministic RNG
+    std::uniform_int_distribution<int> dist(min_N, max_N);
+
+    for (int i = 0; i < num_sizes; ++i) {
+        int N = dist(rng);
+
+        pool.A[N] = std::vector<int>(N * N, 1);
+        pool.B[N] = std::vector<int>(N * N, 1);
     }
 
     return pool;
