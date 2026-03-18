@@ -96,13 +96,166 @@ struct supervisor_actor_state {
 
 
 
+
+
+struct mmul_state {
+
+	caf::cuda::program_ptr mmul_kernel;
+
+};
+
+
+
+caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel,
+		const in<int> matrixA,
+		const in<int> matrixB,
+		int N) {
+
+	self->state().mmul_kernel = mmul_kernel;
+	self->mail(N).send(self);
+	return {
+		
+		[=](int N) {
+
+			caf::cuda::manager& mgr = caf::cuda::manager::get();
+			int device = 0;
+			int stream = rand();
+
+			//auto program =
+			//mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+		    const int THREADS = 32;
+		    const int BLOCKS = (N + THREADS - 1) / THREADS;
+		    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+
+
+			auto program = self->state().mmul_kernel;
+
+			auto inA = std::move(matrixA);
+			auto arg1 = mmul_command.transfer_memory(
+					device,
+					stream,
+					std::move(inA));
+
+			auto inB = std::move(matrixB);
+			auto arg2 = mmul_command.transfer_memory(
+					device,
+					stream,
+					std::move(inB));
+
+			out<int> arg3 = caf::cuda::create_out_arg<int>(N * N);
+			in<int>  arg4 = caf::cuda::create_in_arg<int>(N);
+
+			auto result = 
+				async_mmul.run_async(
+						program,
+						dims,
+						stream,
+						0,
+						device,
+						arg1,
+						arg2,
+						arg3,
+						arg4);
+
+			std::get<2>(result) -> copy_to_host();
+			self -> quit();
+
+		}
+	};
+}
+
+
+
+struct mmul_actor_with_scheduler_state {
+  static inline const char* name = "my_actor";
+};
+
+
+// Stateful actor behavior
+caf::behavior mmul_actor_fun_scheduler(
+    caf::stateful_actor<mmul_actor_with_scheduler_state>* self,
+    caf::actor exit_actor,
+    int N,
+    caf::cuda::program_ptr program,
+    caf::cuda::nd_range dims,
+    const in<int> matrixA,
+    const in<int> matrixB)
+{
+
+
+        caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+        //caf::actor scheduler = mgr.get_scheduler_actor();
+
+        //send a launch token
+        caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
+                        program,
+                        dims,
+                        0,
+                        "hello",
+                        self,
+			rand() //dependency number, can declare indepedent but want to see what happens when you do not 
+                        );
+        mgr.send_scheduler_actor_message(launch_token);
+
+	return {
+
+		// 1. Handle response token
+		[=](caf::cuda::response_token_ptr res_token) {
+			//        std::cout << "Got response\n";
+
+			if (res_token->getType() == LAUNCH_RESPONSE) {
+				self->mail(res_token, N).send(self);
+
+			} else {
+				//          std::cout << "Got a memory response token\n";
+			}
+		},
+
+	    // 2. Handle memory buffers -> GPU
+	    [=] (const caf::cuda::response_token_ptr& res_token,
+			    int N) {
+
+		    //    std::cout << "Working\n";
+		    caf::cuda::manager& mgr = caf::cuda::manager::get();
+
+
+		    const int THREADS = 32;
+		    const int BLOCKS = (N + THREADS - 1) / THREADS;
+		    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+
+		    auto arg1 = mmul.transfer_memory(res_token, matrixA);
+		    auto arg2 = mmul.transfer_memory(res_token, matrixB);
+		    auto arg3 = mmul.transfer_memory(res_token, caf::cuda::create_out_arg(N*N));
+		    auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
+
+
+		    auto tempC = mmul.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
+		    caf::cuda::mem_ptr<int> bufferC = std::get<2>(tempC);
+
+		    bufferC -> synchronize();
+		    res_token->release();
+		    bufferC->copy_to_host();
+
+		    self->mail(1).send(exit_actor);
+		    self->quit();
+         }
+
+
+       };
+
+}
+
+
+
+
 //runs for FCFS behavior
 caf::behavior supervisor_actor_fun(
     caf::stateful_actor<supervisor_actor_state>* self,
     int num_actors,
     int max_waves,
-    MatrixPool pool,
-    caf::cuda::program_ptr program
+    MatrixPool pool
 ) {
     // --- Initialize state ---
     self->state().num_actors = num_actors;
@@ -195,155 +348,6 @@ caf::behavior supervisor_actor_fun(
 
 
 
-struct mmul_state {
-
-	caf::cuda::program_ptr mmul_kernel;
-
-};
-
-
-
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::program_ptr mmul_kernel,
-		const in<int> matrixA,
-		const in<int> matrixB,
-		int N) {
-
-	self->state().mmul_kernel = mmul_kernel;
-	self->mail(N).send(self);
-	return {
-		
-		[=](int N) {
-
-			caf::cuda::manager& mgr = caf::cuda::manager::get();
-			int device = 0;
-			int stream = rand();
-
-			//auto program =
-			//mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-		    const int THREADS = 32;
-		    const int BLOCKS = (N + THREADS - 1) / THREADS;
-		    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-
-			auto program = self->state().mmul_kernel;
-
-			auto inA = std::move(matrixA);
-			auto arg1 = mmul_command.transfer_memory(
-					device,
-					stream,
-					std::move(inA));
-
-			auto inB = std::move(matrixB);
-			auto arg2 = mmul_command.transfer_memory(
-					device,
-					stream,
-					std::move(inB));
-
-			out<int> arg3 = caf::cuda::create_out_arg<int>(N * N);
-			in<int>  arg4 = caf::cuda::create_in_arg<int>(N);
-
-			auto result = 
-				async_mmul.run_async(
-						program,
-						dims,
-						stream,
-						0,
-						device,
-						arg1,
-						arg2,
-						arg3,
-						arg4);
-
-			std::get<2>(result) -> copy_to_host();
-			self -> quit();
-
-		}
-	};
-}
-
-
-
-
-struct mmul_actor_with_scheduler_state {
-  static inline const char* name = "my_actor";
-};
-
-
-// Stateful actor behavior
-caf::behavior mmul_actor_fun_scheduler(
-    caf::stateful_actor<mmul_actor_with_scheduler_state>* self,
-    caf::actor exit_actor,
-    int N,
-    caf::cuda::program_ptr program,
-    caf::cuda::nd_range dims,
-    const in<int> matrixA,
-    const in<int> matrixB)
-{
-
-
-        caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-        //caf::actor scheduler = mgr.get_scheduler_actor();
-
-        //send a launch token
-        caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
-                        program,
-                        dims,
-                        0,
-                        "hello",
-                        self,
-			rand() //dependency number, can declare indepedent but want to see what happens when you do not 
-                        );
-        mgr.send_scheduler_actor_message(launch_token);
-
-	return {
-
-		// 1. Handle response token
-		[=](caf::cuda::response_token_ptr res_token) {
-			//        std::cout << "Got response\n";
-
-			if (res_token->getType() == LAUNCH_RESPONSE) {
-				self->mail(res_token, N).send(self);
-
-			} else {
-				//          std::cout << "Got a memory response token\n";
-			}
-		},
-
-	    // 2. Handle memory buffers -> GPU
-	    [=] (const caf::cuda::response_token_ptr& res_token,
-			    int N) {
-
-		    //    std::cout << "Working\n";
-		    caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-
-		    const int THREADS = 32;
-		    const int BLOCKS = (N + THREADS - 1) / THREADS;
-		    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-		    auto arg1 = mmul.transfer_memory(res_token, matrixA);
-		    auto arg2 = mmul.transfer_memory(res_token, matrixB);
-		    auto arg3 = mmul.transfer_memory(res_token, caf::cuda::create_out_arg(N*N));
-		    auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
-
-
-		    auto tempC = mmul.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
-		    caf::cuda::mem_ptr<int> bufferC = std::get<2>(tempC);
-
-		    bufferC -> synchronize();
-		    res_token->release();
-		    bufferC->copy_to_host();
-
-		    self->mail(1).send(exit_actor);
-		    self->quit();
-         }
-
-
-       };
-
-}
 
 
 template <class Fn>
