@@ -90,8 +90,12 @@ struct supervisor_actor_state {
 
     MatrixPool pool;
 
-    std::vector<int> sizes;   // cached keys
-    std::mt19937 rng;         // RNG
+    std::vector<int> sizes;
+    std::mt19937 rng;
+
+    // 🔥 Timing
+    std::chrono::steady_clock::time_point start_time;
+    std::chrono::steady_clock::time_point wave_start_time;
 };
 
 
@@ -264,15 +268,18 @@ caf::behavior supervisor_actor_fun(
     self->state().num_waves = 0;
     self->state().pool = std::move(pool);
 
-    self->state().rng = std::mt19937(42); // reproducible
+    self->state().rng = std::mt19937(42);
 
-    // Extract sizes once
+    // Extract sizes
     for (const auto& [N, _] : self->state().pool.A) {
         self->state().sizes.push_back(N);
     }
 
-     caf::cuda::manager& mgr = caf::cuda::manager::get();
-     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+    caf::cuda::manager& mgr = caf::cuda::manager::get();
+    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+    // 🔥 Start total timer
+    self->state().start_time = std::chrono::steady_clock::now();
 
     // Kick off first wave
     self->mail("spawn").send(self);
@@ -287,6 +294,9 @@ caf::behavior supervisor_actor_fun(
                 return;
 
             self->state().completed = 0;
+
+            // 🔥 Start wave timer
+            self->state().wave_start_time = std::chrono::steady_clock::now();
 
             std::uniform_int_distribution<size_t> dist(
                 0, self->state().sizes.size() - 1);
@@ -308,7 +318,7 @@ caf::behavior supervisor_actor_fun(
 
                 self->spawn(
                     mmul_actor_fun_scheduler,
-                    self, // exit actor
+                    self,
                     N,
                     program,
                     dims,
@@ -326,14 +336,29 @@ caf::behavior supervisor_actor_fun(
 
             if (self->state().completed >= self->state().num_actors) {
 
+                // 🔥 End wave timing
+                auto wave_end = std::chrono::steady_clock::now();
+                std::chrono::duration<double> wave_time =
+                    wave_end - self->state().wave_start_time;
+
                 self->state().num_waves++;
 
-                std::cout << "Completed wave "
+                std::cout << "Wave "
                           << self->state().num_waves
-                          << "/" << self->state().max_waves
-                          << std::endl;
+                          << " completed in "
+                          << wave_time.count() << " s\n";
 
                 if (self->state().num_waves >= self->state().max_waves) {
+
+                    // 🔥 End total timing
+                    auto end_time = std::chrono::steady_clock::now();
+                    std::chrono::duration<double> total_time =
+                        end_time - self->state().start_time;
+
+                    std::cout << "\n===== SUPERVISOR TOTAL TIME =====\n";
+                    std::cout << "Total runtime: "
+                              << total_time.count() << " s\n";
+
                     caf::cuda::manager::shutdown();
                     self->quit();
                 } else {
