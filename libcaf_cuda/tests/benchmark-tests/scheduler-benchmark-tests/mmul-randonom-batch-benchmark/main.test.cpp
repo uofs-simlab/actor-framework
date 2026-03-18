@@ -54,6 +54,8 @@ struct MatrixPool {
 };
 
 
+#include <unordered_set>
+
 MatrixPool create_matrix_pool_random(
     int num_sizes,
     int min_N,
@@ -62,14 +64,17 @@ MatrixPool create_matrix_pool_random(
 ) {
     MatrixPool pool;
 
-    std::mt19937 rng(seed);  // deterministic RNG
+    std::mt19937 rng(seed);
     std::uniform_int_distribution<int> dist(min_N, max_N);
 
-    for (int i = 0; i < num_sizes; ++i) {
-        int N = dist(rng);
+    std::unordered_set<int> used;
 
-        pool.A[N] = std::vector<int>(N * N, 1);
-        pool.B[N] = std::vector<int>(N * N, 1);
+    while (used.size() < static_cast<size_t>(num_sizes)) {
+        int N = dist(rng);
+        if (used.insert(N).second) {
+            pool.A[N] = std::vector<int>(N * N, 1);
+            pool.B[N] = std::vector<int>(N * N, 1);
+        }
     }
 
     return pool;
