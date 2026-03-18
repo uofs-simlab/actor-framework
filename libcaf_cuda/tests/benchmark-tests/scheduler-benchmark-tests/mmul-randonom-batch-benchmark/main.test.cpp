@@ -361,7 +361,65 @@ double time_run(Fn&& fn) {
 
 
 
+void run_mmul_random_scaling_tests(caf::actor_system& sys,
+                                  caf::cuda::manager_config man_config) {
 
+    const int min_N = 256;
+    const int max_N = 2048;
+    const int num_sizes = 10;
+
+    const int max_waves = 5;
+
+    const std::vector<int> actor_counts = {
+        1, 2, 4, 8, 16, 32, 64
+    };
+
+
+    for (int num_actors : actor_counts) {
+
+    
+	    // Initialize CUDA manager
+	    caf::cuda::manager::init(sys, man_config);
+	    std::cout << "=====================================\n";
+	    std::cout << "Running with " << num_actors << " actors\n";
+
+	    auto& mgr = caf::cuda::manager::get();
+	    for (int i = 0; i < mgr.get_num_devices(); i++) {
+		    mgr.send_scheduler_actor_message("green",i); 
+	    }
+
+
+        // Generate deterministic random pool
+        MatrixPool pool = create_matrix_pool_random(
+            num_sizes,
+            min_N,
+            max_N,
+            42  // fixed seed
+        );
+
+        double elapsed = time_run([&]() {
+
+            auto sup = sys.spawn(
+                supervisor_actor_fun,
+                num_actors,
+                max_waves,
+                pool
+            );
+
+            // Block until supervisor finishes
+            scoped_actor self{sys};
+            self->wait_for(sup);
+        });
+
+        std::cout << "Total time: "
+                  << std::fixed << std::setprecision(6)
+                  << elapsed << " seconds\n";
+    
+	caf::cuda::manager::shutdown();
+    }
+
+    caf::cuda::manager::shutdown();
+}
 
 
 
@@ -373,6 +431,9 @@ void caf_main(caf::actor_system& sys) {
 
   caf::cuda::manager_config man_config(true);
   //caf::cuda::manager::init(sys,man_config);
+
+
+  run_mmul_random_scaling_tests(sys,man_config);
 
 
 
