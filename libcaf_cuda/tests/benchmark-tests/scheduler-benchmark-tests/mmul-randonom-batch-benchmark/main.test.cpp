@@ -82,73 +82,113 @@ MatrixPool create_matrix_pool_random(
 
 
 
-
 struct supervisor_actor_state {
-	int num_actors;
-	int num_waves;
-	int completed;
-	int max_waves;
-	MatrixPool pool;
+    int num_actors;
+    int num_waves;
+    int completed;
+    int max_waves;
+
+    MatrixPool pool;
+
+    std::vector<int> sizes;   // cached keys
+    std::mt19937 rng;         // RNG
 };
 
 
 
 //runs for FCFS behavior
-caf::behavior supervisor_actor_fun(caf::stateful_actor<supervisor_actor_state>* self, int num_actors,
-		int max_waves,
-		MatrixPool pool) {
+caf::behavior supervisor_actor_fun(
+    caf::stateful_actor<supervisor_actor_state>* self,
+    int num_actors,
+    int max_waves,
+    MatrixPool pool,
+    caf::cuda::program_ptr program
+) {
+    // --- Initialize state ---
+    self->state().num_actors = num_actors;
+    self->state().completed = 0;
+    self->state().max_waves = max_waves;
+    self->state().num_waves = 0;
+    self->state().pool = std::move(pool);
 
-	self -> state().num_actors = num_actors;
-	self -> state().completed = 0;
-	self->state().max_waves = max_waves;
-	self->state().num_waves = 0;
-	self -> state().pool = pool;
+    self->state().rng = std::mt19937(42); // reproducible
 
-	self->mail("spawn").send(self);
+    // Extract sizes once
+    for (const auto& [N, _] : self->state().pool.A) {
+        self->state().sizes.push_back(N);
+    }
 
-	return {
+     caf::cuda::manager& mgr = caf::cuda::manager::get();
+     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
-		[=](std::string command) {
-		
-			if (command == "spawn") {
-		
+    // Kick off first wave
+    self->mail("spawn").send(self);
 
+    return {
 
+        // =========================
+        // SPAWN WAVE
+        // =========================
+        [=](std::string cmd) {
+            if (cmd != "spawn")
+                return;
 
+            self->state().completed = 0;
 
-			
-			}
-		
-		
-		},
-		[=](int completed) {
-		
-			self->state().completed+=completed;
+            std::uniform_int_distribution<size_t> dist(
+                0, self->state().sizes.size() - 1);
 
-			if (self->state().completed >= self->state().limit) {
-			
-				self->state().num_waves +=1;
+            for (int i = 0; i < self->state().num_actors; ++i) {
 
-				if (self->state().num_waves >= self->state().max_waves) {
-				
-					caf::cuda::manager::shutdown();
-					self -> quit();
-				
-				}
-				else {
-				
-					self->mail("spawn").send(self);
-				
-				}
-			
-			}
-		
-		}
+                int N = self->state().sizes[dist(self->state().rng)];
 
+                const auto& A = self->state().pool.A[N];
+                const auto& B = self->state().pool.B[N];
 
-	};
+                const int THREADS = 32;
+                const int BLOCKS = (N + THREADS - 1) / THREADS;
 
+                caf::cuda::nd_range dims(
+                    BLOCKS, BLOCKS, 1,
+                    THREADS, THREADS, 1
+                );
 
+                self->spawn(
+                    mmul_actor_fun_scheduler,
+                    self, // exit actor
+                    N,
+                    program,
+                    dims,
+                    caf::cuda::create_in_arg(A),
+                    caf::cuda::create_in_arg(B)
+                );
+            }
+        },
+
+        // =========================
+        // COMPLETION TRACKING
+        // =========================
+        [=](int done) {
+            self->state().completed += done;
+
+            if (self->state().completed >= self->state().num_actors) {
+
+                self->state().num_waves++;
+
+                std::cout << "Completed wave "
+                          << self->state().num_waves
+                          << "/" << self->state().max_waves
+                          << std::endl;
+
+                if (self->state().num_waves >= self->state().max_waves) {
+                    caf::cuda::manager::shutdown();
+                    self->quit();
+                } else {
+                    self->mail("spawn").send(self);
+                }
+            }
+        }
+    };
 }
 
 
@@ -317,283 +357,6 @@ double time_run(Fn&& fn) {
 
 
 
-void run_mmul_mixed_batch_cuda_scheduler(
-    caf::actor_system& sys,
-    const std::vector<int>& sizes,
-    int num_actors,
-    MatrixPool pool,
-    bool randomize = false)
-{
-    caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    std::mt19937 rng(123456);
-    std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
-
-    for (int i = 0; i < num_actors; ++i) {
-
-        int N = randomize ? sizes[dist(rng)] : sizes[i % sizes.size()];
-
-	const auto& A = pool.A[N];
-	const auto& B = pool.B[N];
-
-        sys.spawn(
-            mmul_actor_fun,
-            program,
-            A,
-	    B,
-	    N);
-    }
-
-    sys.await_all_actors_done();
-}
-
-
-void run_mmul_mixed_batch_caf_cuda_scheduler(
-    caf::actor_system& sys,
-    const std::vector<int>& sizes,
-    int num_actors,
-    MatrixPool pool,
-    bool FCFS,
-    bool randomize = false)
-{
-    caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-    //set the scheduler actor behavior
-    if (FCFS) {
-	    for (int i = 0; i < mgr.get_num_devices(); i++) {
-
-		    mgr.send_scheduler_actor_message("green",i);
-
-	    }
-
-    }
-    else { 
-	    for (int i = 0; i < mgr.get_num_devices(); i++) {
-
-		    mgr.send_scheduler_actor_message("multilevel",i);
-
-	    }
-    }
-
-    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    caf::actor exit_actor = mgr.spawn_exit_actor(num_actors);
-
-    std::mt19937 rng(123456);
-    std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
-
-    const int THREADS = 32;
-// timestamp before actor creation
-auto start_time = std::chrono::high_resolution_clock::now();
-
-for (int i = 0; i < num_actors; ++i) {
-
-    int N = randomize ? sizes[dist(rng)] : sizes[i % sizes.size()];
-    int BLOCKS = (N + THREADS - 1) / THREADS;
-
-    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-    const auto& A = pool.A[N];
-    const auto& B = pool.B[N];
-  //time the single actor creation
-   //auto start = std::chrono::high_resolution_clock::now();
-
-    caf::actor a = sys.spawn(
-        mmul_actor_fun_scheduler,
-        exit_actor,
-        N,
-        program,
-        dims,
-        A,
-        B
-    );
-
-    //auto end = std::chrono::high_resolution_clock::now();
-    //auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-   ///std::cout << "[INFO] Actor " << i << " creation time: " << ms << " ms\n";
-}
-
-// timestamp after actor creation
-auto end_time = std::chrono::high_resolution_clock::now();
-auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-
-std::cout << "[INFO] Actor creation time for " << num_actors
-          << " actors: " << ms << " ms\n";
-    sys.await_all_actors_done();
-}
-
-
-
-
-
-
-
-
-void run_mmul_mixed_batch_comparison(
-    caf::actor_system& sys)
-{
-    std::vector<int> sizes = {32,64,128,256,512,1024};
-    std::vector<int> actor_counts = {5000};
-    MatrixPool pool = create_matrix_pool(sizes);
-
-
-
-    std::cout << "\n=== MMUL Mixed Batch Comparison ===\n";
-    std::cout << "scheduler actors time_seconds\n";
-
-    for (auto actors : actor_counts) {
-
-        /* ========= core_usage BULK ========= */
-
-        {
-            caf::cuda::manager_config cfg(true);
-            caf::cuda::manager::init(sys, cfg);
-
-            double t = time_run([&] {
-                run_mmul_mixed_batch_caf_cuda_scheduler(sys, sizes, actors,pool,false);
-            });
-
-            std::cout << "RESULT CAF CUDA DEFAULT SCHEDULER "
-                      << actors << " "
-                      << t << "seconds\n";
-
-            caf::cuda::manager::shutdown();
-        }
-        /* ========= green light BULK  ========= */
-
-        {
-            caf::cuda::manager_config cfg(true);
-            caf::cuda::manager::init(sys, cfg);
-
-            double t = time_run([&] {
-                run_mmul_mixed_batch_caf_cuda_scheduler(sys, sizes, actors,pool,true);
-            });
-
-            std::cout << "RESULT CAF CUDA FCFS SCHEDULER "
-                      << actors << " "
-                      << t << "seconds\n";
-
-            caf::cuda::manager::shutdown();
-        }
-
-
-        /* ========= no scheduler ========= */
-
-        {
-            caf::cuda::manager_config cfg(false);
-            caf::cuda::manager::init(sys, cfg);
-
-            double t = time_run([&] {
-                run_mmul_mixed_batch_cuda_scheduler(sys, sizes, actors,pool);
-            });
-
-            std::cout << "RESULT CUDA SCHEDULER "
-                      << actors << " "
-                      << t << "seconds\n";
-
-            caf::cuda::manager::shutdown();
-        }
-    }
-
-    std::cout << "\n=== Mixed Batch Comparison Complete ===\n";
-}
-
-
-// Spawn actors memory-efficiently using counters
-void run_mmul_spawn_counter(
-    actor_system& sys,
-    const std::vector<int>& sizes,
-    int num_actors,
-    const MatrixPool& pool,
-    bool largest_first = false,
-    bool smallest_first = false)
-{
-    caf::cuda::manager& mgr = caf::cuda::manager::get();
-    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    const int THREADS = 32;
-
-    // Determine spawn order
-    std::vector<int> spawn_order = sizes;
-    if (largest_first) std::sort(spawn_order.rbegin(), spawn_order.rend());
-    if (smallest_first) std::sort(spawn_order.begin(), spawn_order.end());
-
-    // Initialize counters
-    std::unordered_map<int,int> spawned_count;
-    for (auto N : spawn_order) spawned_count[N] = 0;
-
-    int total_spawned = 0;
-    int num_sizes = spawn_order.size();
-    int base_quota = num_actors / num_sizes;
-    int remainder = num_actors % num_sizes;
-
-    for (size_t idx = 0; idx < spawn_order.size(); ++idx) {
-        int N = spawn_order[idx];
-        int limit = base_quota + (idx == spawn_order.size() - 1 ? remainder : 0);
-
-        while (spawned_count[N] < limit && total_spawned < num_actors) {
-            const auto& A = pool.A.at(N);
-            const auto& B = pool.B.at(N);
-            caf::cuda::nd_range dims((N+THREADS-1)/THREADS, (N+THREADS-1)/THREADS, 1, THREADS, THREADS, 1);
-
-	    sys.spawn(mmul_actor_fun, program, A, B, N);
-	    spawned_count[N]++;
-	    total_spawned++;
-	}
-    }
-
-    sys.await_all_actors_done();
-}
-
-
-void run_actor_spawn_order_comparison(actor_system& sys) {
-    std::vector<int> sizes = {10,32,64,128,256,512,1024,2048};
-    int num_actors = 5000;
-    MatrixPool pool = create_matrix_pool(sizes);
-
-    std::cout << "\n=== Actor Spawn Order Comparison ===\n";
-    std::cout << "order num_actors time_seconds\n";
-
-    // Round-robin
-    {
-        caf::cuda::manager_config cfg(false);
-        caf::cuda::manager::init(sys, cfg);
-         double t = time_run([&] {
-                run_mmul_mixed_batch_cuda_scheduler(sys, sizes, num_actors , pool);
-            });
-        std::cout << "round_robin " << num_actors << " " << t << "\n";
-        caf::cuda::manager::shutdown();
-    }
-
-    // Largest-first
-    {
-        caf::cuda::manager_config cfg(false);
-        caf::cuda::manager::init(sys, cfg);
-        double t = time_run([&] {
-            run_mmul_spawn_counter(sys, sizes, num_actors, pool, true, false);
-        });
-        std::cout << "largest_first " << num_actors << " " << t << "\n";
-        caf::cuda::manager::shutdown();
-    }
-
-    // Smallest-first
-    {
-        caf::cuda::manager_config cfg(false);
-        caf::cuda::manager::init(sys, cfg);
-        double t = time_run([&] {
-            run_mmul_spawn_counter(sys, sizes, num_actors, pool, false, true);
-        });
-        std::cout << "smallest_first " << num_actors << " " << t << "\n";
-        caf::cuda::manager::shutdown();
-    }
-
-    std::cout << "=== Spawn Order Comparison Complete ===\n";
-}
-
-
 
 
 
@@ -607,9 +370,7 @@ void caf_main(caf::actor_system& sys) {
   caf::cuda::manager_config man_config(true);
   //caf::cuda::manager::init(sys,man_config);
 
- run_mmul_mixed_batch_comparison(sys);
 
-  //run_actor_spawn_order_comparison(sys);
 
 }
 
