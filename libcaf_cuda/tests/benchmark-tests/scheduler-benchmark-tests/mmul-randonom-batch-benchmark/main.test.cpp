@@ -327,10 +327,10 @@ caf::behavior supervisor_actor_fun(
                     wave_end - self->state().wave_start_time;
 
                 self->state().num_waves++;
-                std::cout << "Wave "
-                          << self->state().num_waves
-                          << " completed in "
-                          << wave_time.count() << " s\n";
+                //std::cout << "Wave "
+                  //        << self->state().num_waves
+                    //      << " completed in "
+                      //    << wave_time.count() << " s\n";
 
                 if (self->state().num_waves >= self->state().max_waves) {
                     auto end_time = std::chrono::steady_clock::now();
@@ -372,13 +372,13 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
                                   caf::cuda::manager_config man_config) {
 
     const int min_N = 256;
-    const int max_N = 2048;
+    const int max_N = 1024;
     const int num_sizes = 200;
 
     const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	    1000
+	    10000
     };
 
 
@@ -438,9 +438,6 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 	    
 	    });
 
-        std::cout << "Total time: "
-                  << std::fixed << std::setprecision(6)
-                  << elapsed << " seconds\n";
     
 	caf::cuda::manager::shutdown();
     }
@@ -470,9 +467,6 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 	    
 	    });
 
-        std::cout << "Total time: "
-                  << std::fixed << std::setprecision(6)
-                  << elapsed << " seconds\n";
     
 	caf::cuda::manager::shutdown();
     }
