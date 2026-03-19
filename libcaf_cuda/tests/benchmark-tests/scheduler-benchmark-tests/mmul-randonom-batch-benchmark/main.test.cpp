@@ -417,12 +417,12 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 
     const int min_N = 32;
     const int max_N = 2048;
-    const int num_sizes = 100;
+    const int num_sizes = 1000;
 
     const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	    1000
+	    30000
     };
 
 
