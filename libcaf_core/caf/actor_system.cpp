@@ -920,6 +920,16 @@ net::middleman& actor_system::network_manager() {
   CAF_RAISE_ERROR("cannot access network manager: module not loaded");
 }
 
+bool actor_system::has_cuda() const {
+  return impl_->modules[actor_system_module::cuda_manager] != nullptr;
+}
+
+cuda::middleman& actor_system::cuda() {
+  if (auto& clptr = impl_->modules[actor_system_module::cuda_manager])
+    return *reinterpret_cast<cuda::middleman*>(clptr->subtype_ptr());
+  CAF_RAISE_ERROR("cannot access CUDA middleman: module not loaded");
+}
+
 actor_id actor_system::next_actor_id() {
   return ++impl_->ids;
 }

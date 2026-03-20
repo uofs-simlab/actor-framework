@@ -4,6 +4,7 @@
 //your project
 #include "caf/cuda/types.hpp"
 #include "caf/cuda/manager.hpp"
+#include "caf/cuda/middleman.hpp"
 #include "caf/cuda/nd_range.hpp"
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/command_runner.hpp"
