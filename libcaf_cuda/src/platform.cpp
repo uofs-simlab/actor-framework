@@ -29,7 +29,14 @@ platform::platform() {
     check(cuDeviceGetName(name, sizeof(name), cuda_device), "cuDeviceGetName");
     device_names[i] = name;
 
+#if CUDA_VERSION >= 13000
+    {
+      CUctxCreateParams ctx_params = {};
+      check(cuCtxCreate(&contexts_[i], &ctx_params, CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, cuda_device), "cuCtxCreate");
+    }
+#else
     check(cuCtxCreate(&contexts_[i], CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, cuda_device), "cuCtxCreate");
+#endif
     devices_[i] = make_counted<device>(cuda_device, contexts_[i], name, i);
   }
 
