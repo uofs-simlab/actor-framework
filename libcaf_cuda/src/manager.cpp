@@ -13,6 +13,46 @@ namespace caf::cuda {
 	std::mutex manager::mutex_;
 
 
+void manager::start() {}
+
+void manager::stop() {}
+
+void manager::init(actor_system_config&) {};
+
+actor_system_module::id_t manager::id() const {
+    return actor_system_module::cuda_manager;
+}
+
+void* manager::subtype_ptr() {};
+
+manager::~manager() {
+    // nop
+}
+
+void manager::add_module_options(actor_system_config&) {
+  // No CLI options for now. Future: add caf.cuda.scheduler-enabled, etc.
+}    
+
+void manager::init_global_meta_objects() {
+//   caf::init_global_meta_objects<caf::id_block::cuda_manager>();
+  // nop
+}
+
+manager::manager(actor_system& sys)
+    : system_(sys), platform_(platform::create()) {
+    // cuInit is done in init()
+}
+
+void manager::check_abi_compatibility(version::abi_token token) {
+  if (static_cast<int>(token) != CAF_VERSION_MAJOR) {
+    CAF_CRITICAL("CAF ABI token mismatch");
+  }
+}
+
+
+actor_system_module* manager::make(actor_system& sys) {
+  return new manager(sys);
+}
 
 
 // --------------------------------
@@ -30,7 +70,7 @@ void manager::init(caf::actor_system& sys) {
     CUcontext ctx = nullptr;
     cuCtxGetCurrent(&ctx);
 
-    instance_ = new manager(sys);
+    // instance_ = new manager(sys);
 
     caf::init_global_meta_objects<caf::id_block::cuda>();
 }
@@ -50,7 +90,7 @@ void manager::init(caf::actor_system& sys, manager_config config) {
     CUcontext ctx = nullptr;
     cuCtxGetCurrent(&ctx);
 
-    instance_ = new manager(sys);
+    // instance_ = new manager(sys);
 
     caf::init_global_meta_objects<caf::id_block::cuda>();
     caf::init_global_meta_objects<caf::id_block::cuda_control>();

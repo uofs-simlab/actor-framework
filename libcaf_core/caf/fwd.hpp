@@ -326,7 +326,7 @@ using event_ptr = intrusive_ptr<event>;
 
 namespace cuda {
 
-class middleman;
+class manager;
 
 } // namespace cuda
 

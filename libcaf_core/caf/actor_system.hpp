@@ -348,11 +348,10 @@ public:
   net::middleman& network_manager();
 
   /// Returns `true` if the CUDA module is available, `false` otherwise.
-  bool has_cuda() const;
+  bool has_cuda_manager() const;
 
-  /// Returns the CUDA middleman instance.
-  /// @throws `std::logic_error` if module is not loaded.
-  cuda::middleman& cuda();
+  /// returns the CUDA manager instance.
+  cuda::manager& cuda_manager();
 
   /// Returns a new actor ID.
   actor_id next_actor_id();
