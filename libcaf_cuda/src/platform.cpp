@@ -14,6 +14,7 @@ platform_ptr platform::create() {
 //constructor
 platform::platform() {
   int device_count = 0;
+  std::cout << "Initializing CUDA platform..." << std::endl;
   check(cuDeviceGetCount(&device_count), "cuDeviceGetCount");
   devices_.resize(device_count);
   contexts_.resize(device_count);

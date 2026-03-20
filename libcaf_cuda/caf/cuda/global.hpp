@@ -23,8 +23,7 @@ void inline check(CUresult result, const char* msg) {
     if (result != CUDA_SUCCESS) {
         const char* err_str;
         cuGetErrorString(result, &err_str);
-        std::cerr << "CUDA Driver API Error (" << msg << "): " << err_str << "\n";
-        exit(1);
+        throw std::runtime_error(std::string("CUDA Driver API Error: ") + err_str);
     }
 }
 
