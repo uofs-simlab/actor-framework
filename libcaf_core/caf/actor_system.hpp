@@ -347,6 +347,12 @@ public:
   /// @throws `std::logic_error` if module is not loaded.
   net::middleman& network_manager();
 
+  /// Returns `true` if the CUDA module is available, `false` otherwise.
+  bool has_cuda_manager() const;
+
+  /// returns the CUDA manager instance.
+  cuda::manager& cuda_manager();
+
   /// Returns a new actor ID.
   actor_id next_actor_id();
 

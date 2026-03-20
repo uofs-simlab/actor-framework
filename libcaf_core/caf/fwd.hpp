@@ -322,6 +322,14 @@ using event_ptr = intrusive_ptr<event>;
 
 } // namespace log
 
+// -- CUDA classes -------------------------------------------------------------
+
+namespace cuda {
+
+class manager;
+
+} // namespace cuda
+
 // -- OpenSSL classes ----------------------------------------------------------
 
 namespace openssl {

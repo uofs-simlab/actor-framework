@@ -41,8 +41,33 @@ using platform_ptr = caf::intrusive_ptr<platform>;
 template <bool PassConfig, class... Ts>
 class actor_facade;
 
-class CAF_CUDA_EXPORT manager {
+class CAF_CUDA_EXPORT manager : public actor_system_module {
 public:
+
+  static void check_abi_compatibility(version::abi_token token);
+
+  static void add_module_options(actor_system_config& cfg);
+
+  // -- static utility functions -----------------------------------------------
+
+  static void init_global_meta_objects();
+
+  // -- interface functions ----------------------------------------------------
+
+  void start() override;
+
+  void stop() override;
+
+  void init(actor_system_config&) override;
+
+  id_t id() const override;
+
+  void* subtype_ptr() override;
+
+
+  static actor_system_module* make(actor_system& sys);
+
+
   /// Initializes the singleton. Must be called exactly once before get().
   static void init(caf::actor_system& sys);
 
@@ -60,8 +85,13 @@ public:
   static void shutdown();
 
   // Prevent copy/assignment
-  manager(const manager&) = delete;
-  manager& operator=(const manager&) = delete;
+  // manager(const manager&) = delete;
+  // manager& operator=(const manager&) = delete;
+
+  /// Constructor
+  explicit manager(actor_system& sys);
+  ~manager() override;
+
 
   //device_ptr getter
   device_ptr find_device(std::size_t id) const;
@@ -194,10 +224,7 @@ public:
   caf::actor spawn_exit_actor(int num_actors);
 
 private:
-  explicit manager(caf::actor_system& sys)
-    : system_(sys), platform_(platform::create()) {
-    // cuInit is done in init()
-  }
+
 
   caf::actor_system& system_;
   platform_ptr platform_;
