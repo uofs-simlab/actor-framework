@@ -112,21 +112,23 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
 
 			auto total_start = std::chrono::steady_clock::now();
 
-			int device = 0;
+			int device = rand() % caf::cuda::manager::get().get_num_devices();
 			int stream = rand();
 
+			std::cout << "device=" << device <<  "\n";
+			std::cout << "N=" << N <<  "\n";
 			// ---------------- H2D ----------------
 			auto h2d_start = std::chrono::steady_clock::now();
 
 			auto arg1 = mmul_command.transfer_memory(device, stream, std::move(matrixA));
 			auto arg2 = mmul_command.transfer_memory(device, stream, std::move(matrixB));
 
-			auto h2d_end = std::chrono::steady_clock::now();
 
 			// ---------------- Kernel ----------------
 			out<int> arg3 = caf::cuda::create_out_arg<int>(N * N);
 			in<int>  arg4 = caf::cuda::create_in_arg<int>(N);
 
+			auto h2d_end = std::chrono::steady_clock::now();
 			auto kernel_start = std::chrono::steady_clock::now();
 
 			auto result = async_mmul.run_async(
@@ -146,14 +148,15 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
 
 			auto total_end = std::chrono::steady_clock::now();
 
+			/*
 			// ---------------- COMPUTE ----------------
 			auto h2d = std::chrono::duration<double>(h2d_end - h2d_start).count();
 			auto kernel = std::chrono::duration<double>(kernel_end - kernel_start).count();
 			auto d2h = std::chrono::duration<double>(d2h_end - d2h_start).count();
 			auto total = std::chrono::duration<double>(total_end - total_start).count();
 
-			/*
 			// ---------------- PRINT ----------------
+			
 			std::cout << "\n[NO SCHEDULER] N=" << N << "\n";
 			std::cout << "H2D:    " << h2d * 1000 << " ms\n";
 			std::cout << "Kernel: " << kernel * 1000 << " ms\n";
@@ -198,8 +201,7 @@ caf::behavior mmul_actor_fun_scheduler(
                         dims,
                         0,
                         "hello",
-                        self,
-			rand() //dependency number, can declare indepedent but want to see what happens when you do not 
+                        self
                         );
         mgr.send_scheduler_actor_message(launch_token);
 
@@ -225,17 +227,24 @@ caf::behavior mmul_actor_fun_scheduler(
 				// ---------------- H2D ----------------
 				auto h2d_start = std::chrono::steady_clock::now();
 
-				auto arg1 = mmul.transfer_memory(res_token, std::move(matrixA));
-				auto arg2 = mmul.transfer_memory(res_token, std::move(matrixB));
-				auto arg3 = mmul.transfer_memory(res_token, caf::cuda::create_out_arg(N*N));
-				auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
+				auto arg1 = mmul.transfer_memory(res_token -> getDeviceNumber(),res_token -> getStreamId(), std::move(matrixA));
+				auto arg2 = mmul.transfer_memory(res_token -> getDeviceNumber(), res_token -> getStreamId(), std::move(matrixB));
+				//auto arg3 = mmul.transfer_memory(res_token, caf::cuda::create_out_arg(N*N));
+				//auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
+
+				std::cout << "res_token did = " << res_token -> getDeviceNumber() << "\n";
+				std::cout << "N = " << N << "\n";
+				 out<int> arg3 = caf::cuda::create_out_arg<int>(N * N);
+	 			 in<int>  arg4 = caf::cuda::create_in_arg<int>(N);
 
 				auto h2d_end = std::chrono::steady_clock::now();
 
 				// ---------------- Kernel ----------------
 				auto kernel_start = std::chrono::steady_clock::now();
 
-				auto tempC = mmul.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
+
+
+				auto tempC = async_mmul.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
 				auto bufferC = std::get<2>(tempC);
 
 				//bufferC->synchronize();
@@ -254,20 +263,19 @@ caf::behavior mmul_actor_fun_scheduler(
 				auto total_end = std::chrono::steady_clock::now();
 
 				// ---------------- COMPUTE ----------------
+				/*
 				auto h2d = std::chrono::duration<double>(h2d_end - h2d_start).count();
 				auto kernel = std::chrono::duration<double>(kernel_end - kernel_start).count();
 				auto d2h = std::chrono::duration<double>(d2h_end - d2h_start).count();
 				auto total = std::chrono::duration<double>(total_end - total_start).count();
 
-				/*
-				std::cout << "\n[SCHEDULER] N=" << N << "\n";
 				std::cout << "H2D:    " << h2d * 1000 << " ms\n";
 				std::cout << "Kernel: " << kernel * 1000 << " ms\n";
 				std::cout << "D2H:    " << d2h * 1000 << " ms\n";
 				std::cout << "TOTAL:  " << total * 1000 << " ms\n";
-				std::cout << "SUM:    " << (h2d + kernel + d2h) * 1000 << " ms\n";
-
+				std::cout << "SUM:    " << (h2d + kernel + d2h) * 1000 << " ms\n\n";
 				*/
+
 				self->mail(1).send(exit_actor);
 				self->quit();
 			}
@@ -415,14 +423,14 @@ double time_run(Fn&& fn) {
 void run_mmul_random_scaling_tests(caf::actor_system& sys,
                                   caf::cuda::manager_config man_config) {
 
-    const int min_N = 32;
+    const int min_N = 2048;
     const int max_N = 2048;
-    const int num_sizes = 1000;
+    const int num_sizes = 1;
 
     const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	    30000
+	    10
     };
 
 
