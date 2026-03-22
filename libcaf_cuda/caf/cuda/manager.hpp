@@ -64,13 +64,7 @@ public:
 
   void* subtype_ptr() override;
 
-
   static actor_system_module* make(actor_system& sys);
-
-
-  /// Initializes the singleton. Must be called exactly once before get().
-  static void init(caf::actor_system& sys);
-
 
   /// Returns the singleton instance. Crashes if not yet initialized.
   static manager& get();

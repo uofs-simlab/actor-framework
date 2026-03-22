@@ -61,28 +61,6 @@ actor_system_module* manager::make(actor_system& sys) {
   return new manager(sys);
 }
 
-
-// --------------------------------
-// Static init (no config)
-// --------------------------------
-void manager::init(caf::actor_system& sys) {
-    std::lock_guard<std::mutex> guard(mutex_);
-
-    if (instance_) {
-        throw std::runtime_error("CUDA manager already initialized");
-    }
-
-    std::cout << "Initializing CUDA manager with default config" << std::endl;
-    CHECK_CUDA(cuInit(0));
-
-    CUcontext ctx = nullptr;
-    cuCtxGetCurrent(&ctx);
-
-    // instance_ = new manager(sys);
-
-    caf::init_global_meta_objects<caf::id_block::cuda>();
-}
-
 int manager::get_num_devices() {return platform_ -> get_num_devices();}
 
 void manager::init_scheduler_actors(caf::actor_system& sys) {
