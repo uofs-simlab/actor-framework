@@ -29,10 +29,10 @@ void core_usage_behavior::on_enter() {
 	//std::cout << "Hello\n";
 }
 
-void core_usage_behavior::reclaim(int blocks_consumed,
-	       	int memory_returned,
-	       	int time,
-	       	int dependency_number) {
+void core_usage_behavior::reclaim([[maybe_unused]] int blocks_consumed,
+	       	                        [[maybe_unused]] int memory_returned,
+	       	                        [[maybe_unused]] int time,
+	       	                        [[maybe_unused]] int dependency_number) {
 
 	//std::cout << "blocks is " <<  blocks_consumed << "\n";
 	available_SM += blocks_consumed;
