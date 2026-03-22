@@ -20,7 +20,7 @@ caf::behavior memory_actor(caf::stateful_actor<memory_actor_state>* self,
     self->state().available_memory.resize(num_devices);
 
     for (int i = 0; i < num_devices; ++i) {
-        auto dev = manager::get().find_device(i);
+        auto dev = self->system().cuda_manager().find_device(i);
         self->state().devices[i] = dev;
         // initialize internal counter to what device reports at startup
         self->state().available_memory[i] =

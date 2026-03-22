@@ -66,9 +66,6 @@ public:
 
   static actor_system_module* make(actor_system& sys);
 
-  /// Returns the singleton instance. Crashes if not yet initialized.
-  static manager& get();
-
   /// Deletes the singleton if needed (optional).
   //deletes the scheduler actor as well if it exists
   static void shutdown();

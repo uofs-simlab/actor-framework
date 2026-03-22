@@ -81,10 +81,10 @@ void test_device([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_p
 void test_manager([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_ptr plat) {
     std::cout << "\n=== Test Manager ===\n";
     
-    std::cout << "Test 1: Initializing manager...\n";
-    manager& mgr = manager::get();
-    assert(&mgr == &manager::get() && "Manager singleton mismatch");
-    std::cout << "  -> Manager initialized successfully.\n";
+    // std::cout << "Test 1: Initializing manager...\n";
+    manager& mgr = sys.cuda_manager();
+    // assert(&mgr == &manager::get() && "Manager singleton mismatch");
+    // std::cout << "  -> Manager initialized successfully.\n";
 
     std::cout << "Test 2: Retrieving device 0...\n";
     device_ptr dev = mgr.find_device(0);
@@ -117,7 +117,7 @@ void test_program([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_
     std::cout << "\n=== Test Program ===\n";
     
     std::cout << "Test 1: Checking program properties...\n";
-    manager& mgr = manager::get();
+    manager& mgr = sys.cuda_manager();
     device_ptr dev = mgr.find_device(0);
     const char* kernel = R"(
         extern "C" __global__ void test_kernel(int* data) {
@@ -133,7 +133,7 @@ void test_program([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_
 void test_create_program([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_ptr plat) {
     std::cout << "\n=== Test Create Program ===\n";
 
-    manager& mgr = manager::get();
+    manager& mgr = sys.cuda_manager();
     device_ptr dev = mgr.find_device(0);
     std::cout << "  -> Device context: " << dev->getContext(0) << "\n";
 
@@ -186,7 +186,7 @@ void test_create_program([[maybe_unused]] actor_system& sys, [[maybe_unused]] pl
 void test_mem_ref([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_ptr plat) {
     std::cout << "\n=== Test Mem Ref ===\n";
     
-    manager& mgr = manager::get();
+    manager& mgr = sys.cuda_manager();
     device_ptr dev = mgr.find_device(0);
     CUcontext ctx = dev -> getContext(0);
     (void)ctx; //silence the warning
@@ -244,7 +244,7 @@ void test_command([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_
 void test_mem_ref_extended([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_ptr plat) {
     std::cout << "\n=== Test Mem Ref Extended ===\n";
     
-    manager& mgr = manager::get();
+    manager& mgr = sys.cuda_manager ();
     device_ptr dev = mgr.find_device(0);
 
     std::cout << "Test 1: Testing input memory allocation...\n";
@@ -292,7 +292,7 @@ void test_mem_ref_extended([[maybe_unused]] actor_system& sys, [[maybe_unused]] 
 void test_argument_translation([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_ptr plat) {
     std::cout << "\n=== Test Argument Translation ===\n";
     
-    manager& mgr = manager::get();
+    manager& mgr = sys.cuda_manager();
     device_ptr dev = mgr.find_device(0);
 
     std::cout << "Test 1: Testing output argument creation...\n";
@@ -327,7 +327,7 @@ void test_argument_translation([[maybe_unused]] actor_system& sys, [[maybe_unuse
 void test_kernel_launch([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_ptr plat) {
     std::cout << "\n=== Test Kernel Launch ===\n";
     
-    manager& mgr = manager::get();
+    manager& mgr = sys.cuda_manager();
     device_ptr dev = mgr.find_device(0);
     std::cout << "  -> Device context: " << dev->getContext(0) << "\n";
 
@@ -374,7 +374,7 @@ void test_kernel_launch([[maybe_unused]] actor_system& sys, [[maybe_unused]] pla
 void test_kernel_launch_direct([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_ptr plat) {
     std::cout << "\n=== Test Kernel Launch Direct ===\n";
     
-    manager& mgr = manager::get();
+    manager& mgr = sys.cuda_manager();
     device_ptr dev = mgr.find_device(0);
     std::cout << "  -> Device context: " << dev->getContext(0) << "\n";
 
@@ -435,7 +435,7 @@ void test_kernel_launch_direct([[maybe_unused]] actor_system& sys, [[maybe_unuse
 void test_kernel_launch_multi_buffer([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_ptr plat) {
   std::cout << "\n=== Test Kernel Launch Multi Buffer ===\n";
 
-  manager& mgr = manager::get();
+  manager& mgr = sys.cuda_manager();
   device_ptr dev = mgr.find_device(0);
   std::cout << "  -> Device context: " << dev->getContext(0) << "\n";
 
@@ -609,9 +609,9 @@ void test_mem_ref_scalar_host() {
   std::cout << "✔ mem_ref<int> scalar host copy correct\n";
 }
 
-void test_extract_kernel_args_scalar() {
+void test_extract_kernel_args_scalar(caf::actor_system& sys) {
   std::cout << "\n=== test_extract_kernel_args_scalar ===\n";
-  manager& mgr = manager::get();
+  manager& mgr = sys.cuda_manager();
   auto dev = mgr.find_device(0);
   assert(dev && "device 0 must exist");
 
@@ -632,9 +632,9 @@ void test_extract_kernel_args_scalar() {
   std::cout << "✔ extract_kernel_args_scalar returns device‐buffer pointer\n";
 }
 
-void test_device_make_arg_scalar() {
+void test_device_make_arg_scalar(caf::actor_system& sys) {
   std::cout << "\n=== test_device_make_arg_scalar ===\n";
-  manager& mgr = manager::get();
+  manager& mgr = sys.cuda_manager();
   auto dev = mgr.find_device(0);
   assert(dev);
 
@@ -654,9 +654,9 @@ void test_device_make_arg_scalar() {
   std::cout << "✔ device::make_arg(in_out<int> scalar) round-trip correct\n";
 }
 
-void test_scalar_kernel_launch_wrapper_api() {
+void test_scalar_kernel_launch_wrapper_api(caf::actor_system& sys) {
   std::cout << "\n=== test_scalar_kernel_launch_wrapper_api ===\n";
-  manager& mgr = manager::get();
+  manager& mgr = sys.cuda_manager();
   auto dev = mgr.find_device(0);
   assert(dev);
 
@@ -682,9 +682,9 @@ void test_scalar_kernel_launch_wrapper_api() {
   std::cout << "✔ scalar kernel launch via wrapper API succeeded\n";
 }
 
-void test_scalar_kernel_launch_runtime_api()  {
+void test_scalar_kernel_launch_runtime_api(caf::actor_system& sys)  {
   std::cout << "\n=== test_scalar_kernel_launch_program_runtime_api ===\n";
-  manager& mgr = manager::get();
+  manager& mgr = sys.cuda_manager();
   device_ptr dev = mgr.find_device(0);
   assert(dev);
 
@@ -749,9 +749,9 @@ void test_scalar_kernel_launch_runtime_api()  {
 }
 
 
-void test_add_scalar_to_buffer() {
+void test_add_scalar_to_buffer(actor_system& sys) {
   std::cout << "\n=== test_add_scalar_to_buffer ===\n";
-  manager& mgr = manager::get();
+  manager& mgr = sys.cuda_manager();
   auto dev = mgr.find_device(0);
   assert(dev);
 
@@ -841,11 +841,11 @@ void test_main([[maybe_unused]] actor_system& sys) {
     	test_in_out_wrapper();
 
 	test_mem_ref_scalar_host();
-  	test_extract_kernel_args_scalar();
-  	test_device_make_arg_scalar();
-  	test_scalar_kernel_launch_wrapper_api();
-  	test_scalar_kernel_launch_runtime_api();
-	test_add_scalar_to_buffer();
+  	test_extract_kernel_args_scalar(sys);
+  	test_device_make_arg_scalar(sys);
+  	test_scalar_kernel_launch_wrapper_api(sys);
+  	test_scalar_kernel_launch_runtime_api(sys);
+	test_add_scalar_to_buffer(sys);
 
 	/*
 	 * TODO actually write these tests someday

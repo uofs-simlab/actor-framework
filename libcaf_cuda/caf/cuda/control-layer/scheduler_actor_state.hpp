@@ -10,7 +10,7 @@ namespace caf::cuda {
 class scheduler_actor_behavior; 
 
 struct scheduler_actor_state {
-    caf::actor  self;
+    caf::event_based_actor* self; // self reference for ease of access in behaviors
     scheduler_actor_behavior* current_behavior = nullptr;
     std::unique_ptr<behavior_table> table;
     //behavior_table table;

@@ -13,7 +13,7 @@ pressure_scheduler::pressure_scheduler(scheduler_actor_state& state)
 pressure_scheduler::~pressure_scheduler() = default;
 
 void pressure_scheduler::init_state() {
-    device_ = manager::get().find_device(state_.device_number);
+    device_ = state_.self->system().cuda_manager().find_device(state_.device_number);
     heuristic.emplace(device_, false); // turn off ceiling functionality
 
     total_SM = device_->num_sms();

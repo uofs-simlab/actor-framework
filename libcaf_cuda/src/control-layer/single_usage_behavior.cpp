@@ -14,7 +14,7 @@ single_usage_behavior::single_usage_behavior(scheduler_actor_state& state)
 single_usage_behavior::~single_usage_behavior() = default;
 
 void single_usage_behavior::init_state() {
-    device_ = manager::get().find_device(state_.device_number);
+    device_ = state_.self->system().cuda_manager().find_device(state_.device_number);
     // We can still keep the heuristic if you want to log real SM usage later,
     // but we won't use it for scheduling decisions
     heuristic.emplace(device_);

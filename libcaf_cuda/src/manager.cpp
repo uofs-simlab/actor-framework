@@ -89,24 +89,6 @@ void manager::init_scheduler_actors(caf::actor_system& sys) {
 }
 
 
-
-
-// --------------------------------
-// Static get()
-// --------------------------------
-manager& manager::get() {
-    //std::lock_guard<std::mutex> guard(mutex_);
-
-    if (!instance_) {
-        throw std::runtime_error(
-            "CUDA manager used before initialization.\n"
-            "Call caf::cuda::manager::init() inside CAF_MAIN."
-        );
-    }
-
-    return *instance_;
-}
-
 // --------------------------------
 // Static shutdown()
 // --------------------------------

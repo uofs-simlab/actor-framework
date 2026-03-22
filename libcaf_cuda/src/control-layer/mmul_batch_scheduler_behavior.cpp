@@ -33,7 +33,7 @@ mmul_batch_scheduler_behavior::mmul_batch_scheduler_behavior(scheduler_actor_sta
 mmul_batch_scheduler_behavior::~mmul_batch_scheduler_behavior() {}
 
 void mmul_batch_scheduler_behavior::init_state() {
-    device_ = manager::get().find_device(state_.device_number);
+    device_ = state_.self->system().cuda_manager().find_device(state_.device_number);
     num_streams = 128;
 
     // default partitioning: LOW:50% of streams, MED:25%, HIGH:25%

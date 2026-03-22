@@ -16,7 +16,7 @@ core_usage_behavior::~core_usage_behavior(){
 }
 
 void core_usage_behavior::init_state() {
-    device_ = manager::get().find_device(state_.device_number);
+    device_ = state_.self->system().cuda_manager().find_device(state_.device_number);
     heuristic.emplace(device_);
     total_SM = device_->num_sms() * 16;
     available_SM = total_SM;
