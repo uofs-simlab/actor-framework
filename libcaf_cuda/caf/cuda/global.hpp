@@ -19,7 +19,7 @@
 
 
 //helper function to check errors
-void inline check(CUresult result, const char* msg) {
+void inline check(CUresult result) {
     if (result != CUDA_SUCCESS) {
         const char* err_str;
         cuGetErrorString(result, &err_str);

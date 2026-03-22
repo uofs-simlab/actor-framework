@@ -18,10 +18,8 @@ void manager::start() {}
 void manager::stop() {}
 
 void manager::init(actor_system_config&) {
-    std::cout << "manager::init called with config" << std::endl;
     CHECK_CUDA(cuInit(0));
     platform_ = platform::create();
-    platform_->getDevice(0); // Force device initialization
     CUcontext ctx = nullptr;
     cuCtxGetCurrent(&ctx);
 };
@@ -36,8 +34,6 @@ void* manager::subtype_ptr() {
 
 manager::manager(actor_system& sys)
     : system_(sys) {
-    // cuInit is done in init()
-
 }
 
 
@@ -50,8 +46,7 @@ void manager::add_module_options(actor_system_config&) {
 }    
 
 void manager::init_global_meta_objects() {
-//   caf::init_global_meta_objects<caf::id_block::cuda_manager>();
-  // nop
+    caf::init_global_meta_objects<caf::id_block::cuda>();
 }
 
 
@@ -77,6 +72,7 @@ void manager::init(caf::actor_system& sys) {
         throw std::runtime_error("CUDA manager already initialized");
     }
 
+    std::cout << "Initializing CUDA manager with default config" << std::endl;
     CHECK_CUDA(cuInit(0));
 
     CUcontext ctx = nullptr;
@@ -93,6 +89,7 @@ void manager::init(caf::actor_system& sys) {
 void manager::init(caf::actor_system& sys, manager_config config) {
     std::lock_guard<std::mutex> guard(mutex_);
 
+    std::cout << "Initializing CUDA manager with config: " << std::endl;
     if (instance_) {
         throw std::runtime_error("CUDA manager already initialized");
     }

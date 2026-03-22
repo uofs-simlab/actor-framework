@@ -176,7 +176,7 @@ private:
   }
 
   //ensure the lock is released on exit of this method 
-  auto clear_flag = caf::detail::scope_guard([this] noexcept {
+  auto clear_flag = caf::detail::scope_guard([this]() noexcept {
     resuming_flag_.clear(std::memory_order_release);
   });
 

@@ -37,7 +37,7 @@ public:
       }
 
   ~device() {
-    check(cuCtxDestroy(context_), "cuCtxDestroy");
+    check(cuCtxDestroy(context_));
   }
 
   device(const device&) = delete;
