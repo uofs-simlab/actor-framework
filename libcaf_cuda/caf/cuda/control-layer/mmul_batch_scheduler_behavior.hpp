@@ -23,10 +23,9 @@ public:
   void schedule() override;
   void receive(const token_ptr& tok) override;
 
-  void reclaim(int blocks_consumed, 
-               int memory_returned, 
-               int time, 
-               int dependency_number) override;
+  void reclaim(int value, int memory_returned, int runtime, int dependency) override;
+
+  void reclaim(int dependency_number);
 
   void reclaim(ack& return_msg) override;
 

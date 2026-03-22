@@ -242,10 +242,7 @@ void mmul_batch_scheduler_behavior::process_launch_token(const token_ptr& tok,
   // That triggers reclaim(...) in this actor.
 }
 
-void mmul_batch_scheduler_behavior::reclaim(int blocks_consumed,
-                                            int memory_returned,
-                                            int time,
-                                            int dependency_number) {
+void mmul_batch_scheduler_behavior::reclaim(int dependency_number) {
     // This reclaim() is called when the device (or the launch_response_token destructor)
     // sends the 4-tuple (reclaim_value, reclaim_memory, reclaim_runtime, reclaim_dependency).
 
