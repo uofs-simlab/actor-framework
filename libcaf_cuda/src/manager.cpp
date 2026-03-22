@@ -83,41 +83,6 @@ void manager::init(caf::actor_system& sys) {
     caf::init_global_meta_objects<caf::id_block::cuda>();
 }
 
-// --------------------------------
-// Static init (with config)
-// --------------------------------
-void manager::init(caf::actor_system& sys, manager_config config) {
-    std::lock_guard<std::mutex> guard(mutex_);
-
-    std::cout << "Initializing CUDA manager with config: " << std::endl;
-    if (instance_) {
-        throw std::runtime_error("CUDA manager already initialized");
-    }
-
-    CHECK_CUDA(cuInit(0));
-
-    CUcontext ctx = nullptr;
-    cuCtxGetCurrent(&ctx);
-
-    // instance_ = new manager(sys);
-
-    caf::init_global_meta_objects<caf::id_block::cuda>();
-    caf::init_global_meta_objects<caf::id_block::cuda_control>();
-
-    instance_->scheduler_on = config.getSchedulerOn();
-    instance_->memory_manager_on = config.getMemoryManagerOn();
-
-    if (instance_->scheduler_on) { 
-	    instance_ -> init_scheduler_actors(sys);
-    }
-    if (instance_->memory_manager_on) {
-	    instance_->init_memory_actor(sys);
-    }
-
-
-
-}
-
 int manager::get_num_devices() {return platform_ -> get_num_devices();}
 
 void manager::init_scheduler_actors(caf::actor_system& sys) {

@@ -72,11 +72,6 @@ public:
   static void init(caf::actor_system& sys);
 
 
-
-
- /// Initializes the singleton. Must be called exactly once before get().
-  static void init(caf::actor_system& sys,manager_config config);
-
   /// Returns the singleton instance. Crashes if not yet initialized.
   static manager& get();
 
