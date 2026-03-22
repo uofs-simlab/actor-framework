@@ -61,7 +61,9 @@ actor_system_module* manager::make(actor_system& sys) {
   return new manager(sys);
 }
 
-int manager::get_num_devices() {return platform_ -> get_num_devices();}
+int manager::get_num_devices() {
+  return platform_ -> get_num_devices();
+}
 
 void manager::init_scheduler_actors(caf::actor_system& sys) {
 

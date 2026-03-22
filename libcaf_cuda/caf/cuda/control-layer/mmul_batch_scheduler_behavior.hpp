@@ -16,20 +16,25 @@ namespace caf::cuda {
 
 class mmul_batch_scheduler_behavior : public scheduler_actor_behavior {
 public:
-    explicit mmul_batch_scheduler_behavior(scheduler_actor_state& state);
-    ~mmul_batch_scheduler_behavior() override;
+  explicit mmul_batch_scheduler_behavior(scheduler_actor_state& state);
+  ~mmul_batch_scheduler_behavior() override;
 
-    void on_enter() override;
-    void schedule() override;
-    void receive(const token_ptr& tok) override;
+  void on_enter() override;
+  void schedule() override;
+  void receive(const token_ptr& tok) override;
 
-    void reclaim(int blocks_consumed, int memory_returned, int time, int dependency_number) override;
-    void reclaim(ack& return_msg) override;
+  void reclaim(int blocks_consumed, 
+               int memory_returned, 
+               int time, 
+               int dependency_number) override;
 
-    std::string name() const override { return "mmul_batch_scheduler"; }
+  void reclaim(ack& return_msg) override;
+
+  std::string name() const override { return "mmul_batch_scheduler"; }
 
 protected:
-    void process_launch_token(const token_ptr& tok, int stream_id, int assigned_queue);
+  void process_launch_token(const token_ptr& tok, 
+                            int stream_id);
 
 private:
     enum queue_type { LOW = 0, MED = 1, HIGH = 2 };
