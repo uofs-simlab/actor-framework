@@ -182,9 +182,8 @@ void multilevel_usage_behavior::schedule() {
 }
 
 void multilevel_usage_behavior::reclaim(int blocks_consumed,
-                                       int memory_returned,
-                                       int time,
-                                       int dependency_number) {
+                                        int memory_returned,
+                                        int dependency_number) {
     // update available resources
     available_SM += blocks_consumed;
     available_memory += memory_returned;
