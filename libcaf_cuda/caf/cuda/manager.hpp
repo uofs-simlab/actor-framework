@@ -186,11 +186,10 @@ public:
   //@param dims: both block and grid dimensions of the kernel you want to launch
   //@returns a handle to the actor facade
   template <class... Ts>
-  caf::actor spawnFromCUBIN(
-                   const std::string& fileName,
-		   const char * kernelName,
-		   nd_range dims,
-                   Ts&&... xs) {
+  caf::actor spawnFromCUBIN(const std::string& fileName,
+		                        const char * kernelName,
+		                        nd_range dims,
+                            Ts&&... xs) {
     caf::detail::cuda_spawn_helper<false, Ts...> f;
     caf::actor_config cfg;
 

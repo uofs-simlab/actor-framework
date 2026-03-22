@@ -17,13 +17,29 @@ void manager::start() {}
 
 void manager::stop() {}
 
-void manager::init(actor_system_config&) {};
+void manager::init(actor_system_config&) {
+    std::cout << "manager::init called with config" << std::endl;
+    CHECK_CUDA(cuInit(0));
+    platform_ = platform::create();
+    platform_->getDevice(0); // Force device initialization
+    CUcontext ctx = nullptr;
+    cuCtxGetCurrent(&ctx);
+};
 
 actor_system_module::id_t manager::id() const {
     return actor_system_module::cuda_manager;
 }
 
-void* manager::subtype_ptr() {};
+void* manager::subtype_ptr() {
+    return this;
+};
+
+manager::manager(actor_system& sys)
+    : system_(sys) {
+    // cuInit is done in init()
+
+}
+
 
 manager::~manager() {
     // nop
@@ -38,10 +54,6 @@ void manager::init_global_meta_objects() {
   // nop
 }
 
-manager::manager(actor_system& sys)
-    : system_(sys), platform_(platform::create()) {
-    // cuInit is done in init()
-}
 
 void manager::check_abi_compatibility(version::abi_token token) {
   if (static_cast<int>(token) != CAF_VERSION_MAJOR) {
@@ -214,8 +226,7 @@ device_ptr manager::find_device(std::size_t) const {
 
 //finds a device given its id
 device_ptr manager::find_device(int id) {
-
-	return platform_ -> getDevice(id);
+	return platform_->getDevice(id);
 
 }
 

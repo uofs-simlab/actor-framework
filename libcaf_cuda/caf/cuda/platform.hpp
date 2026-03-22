@@ -49,12 +49,12 @@ public:
   //returns how many devices are currently on the GPU
   int get_num_devices();
 
+  std::string name_;
 
 private:
   platform();
   ~platform();
 
-  std::string name_;
   std::string vendor_;
   std::string version_;
   std::vector<device_ptr> devices_;

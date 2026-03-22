@@ -61,11 +61,13 @@ platform::platform() {
   if (device_count > 0) {
     check(cuCtxSetCurrent(contexts_[0]), "cuCtxSetCurrent");
   }
+
+  std::cout << "CUDA platform initialized with " << device_count << " device(s)." << std::endl;
 }
 
 
 platform::~platform() {
-	//no-op
+	std::cout << "Destroyed???????\n";
 }
 
 const std::string& platform::name() const {
