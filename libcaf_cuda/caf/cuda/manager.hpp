@@ -102,12 +102,12 @@ public:
 
   //Currently not working DO NOT USE 
   program_ptr create_program_from_ptx(const std::string& filename,
-                                    const char* kernel_name,
-                                    device_ptr device);
+                                      const char* kernel_name,
+                                      device_ptr device);
 
   program_ptr create_program_from_cubin(const std::string& filename,
-                                               const char* kernel_name,
-                                               device_ptr device);
+                                        const char* kernel_name,
+                                        device_ptr device);
 
 
 
@@ -116,7 +116,7 @@ public:
   //@param: filename, this is the path to the file that contains the kernel
   //@param: kernel_name, the function signature name of the kernel
   program_ptr create_program_from_cubin(const std::string& filename,
-                                               const char* kernel_name);
+                                        const char* kernel_name);
 
 
 
@@ -125,7 +125,7 @@ public:
   //@param: filename, this is the path to the file that contains the kernel
   //@param: kernel_name, the function signature name of the kernel
   program_ptr create_program_from_fatbin(const std::string& filename,
-                                               const char* kernel_name);
+                                         const char* kernel_name);
 
 
 
@@ -137,10 +137,10 @@ public:
   template <class... Ts>
   caf::actor spawn(const char* kernel,
                    const std::string& name,
-		   nd_range dims,
+		               nd_range dims,
                    Ts&&... xs) {
-    caf::detail::cuda_spawn_helper<false, Ts...> f;
-    caf::actor_config cfg;
+                   caf::detail::cuda_spawn_helper<false, Ts...> f;
+                   caf::actor_config cfg;
 
     device_ptr device = find_device(0);
     program_ptr prog = create_program(kernel, name, device);
@@ -151,11 +151,10 @@ public:
 
   //Currently broken DO not use  
   template <class... Ts>
-  caf::actor spawnFromPTX(
-                   const std::string& fileName,
-		   const char * kernelName,
-		   nd_range dims,
-                   Ts&&... xs) {
+  caf::actor spawnFromPTX(const std::string& fileName,
+		                      const char * kernelName,
+		                      nd_range dims,
+                          Ts&&... xs) {
     caf::detail::cuda_spawn_helper<false, Ts...> f;
     caf::actor_config cfg;
 
@@ -203,7 +202,8 @@ public:
 
   //methods used to send scheduler actors messages
   void send_scheduler_actor_message(token_ptr token,int device_number = -1);
-  void send_scheduler_actor_message(std::vector<token_ptr> tokens,int device_number = -1);
+  void send_scheduler_actor_message(std::vector<token_ptr> tokens,
+                                    int device_number = -1);
   void send_scheduler_actor_message(behavior_token_ptr token,int device_number);
   void send_scheduler_actor_message(std::string behavior,int device_number);
 
@@ -218,7 +218,9 @@ private:
   platform_ptr platform_;
 
   //helper to compile a nvrtc program
-  bool compile_nvrtc_program(const char* source, CUdevice device, std::vector<char>& ptx_out);
+  bool compile_nvrtc_program(const char* source, 
+                             CUdevice device, 
+                             std::vector<char>& ptx_out);
 
   void init_scheduler_actors(caf::actor_system&);
   

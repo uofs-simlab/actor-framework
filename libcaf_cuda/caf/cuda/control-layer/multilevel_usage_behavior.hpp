@@ -27,11 +27,6 @@ public:
     void schedule() override;
     void receive(const token_ptr& tok) override;
 
-    void reclaim(int blocks_consumed,
-                 int memory_returned,int time, 
-                 int dependency_number) override;
-
-
     // reclaim: called when resources are returned; dependency_number
     // allows this behavior to find the graph that might now be ready
     void reclaim(int blocks_consumed, 
