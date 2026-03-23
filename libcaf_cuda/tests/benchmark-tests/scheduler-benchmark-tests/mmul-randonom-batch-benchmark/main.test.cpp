@@ -578,7 +578,12 @@ caf::behavior supervisor_actor_fun(
                     std::cout << "Total runtime: "
                               << total_time.count() << " s\n";
 
-                    caf::cuda::manager::shutdown();
+
+		    anon_send_exit(
+				    scheduler_actor,
+				    caf::exit_reason::user_shutdown
+				  );
+		    caf::cuda::manager::shutdown();
                     self->quit();
                 } else {
                     self->mail("spawn").send(self);
@@ -616,7 +621,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	    10
+	    1024
     };
 
 
