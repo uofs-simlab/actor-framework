@@ -404,6 +404,79 @@ caf::behavior supervisor_actor_fun(
 }
 
 
+struct scheduler_actor_state {
+
+	std::vector<caf::actor> subscribers;
+	int num_devices;
+	std::vector<int> costs;
+};
+
+
+
+caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) {
+
+	self->state().num_devices = caf::cuda::manager::get().get_num_devices();
+	self->state().costs.resize(self->state().num_devices);
+
+	self->mail("publish").urgent().delay(std::chrono::milliseconds(5)).send(self);
+
+	return {
+
+		[=](std::string command,int device, int cost) {
+
+			if (command == "add") {
+
+				self->state().costs[device] +=cost;
+
+			}
+			else if (command == "subtract") {
+
+				int value = std::min(self->state().costs[device] - cost,0);
+				self->state().costs[device] = value;	
+			}
+
+
+		},
+			[=](std::string command, caf::actor actor) {
+
+				auto& subs = self->state().subscribers;
+
+				if (command == "subscribe") {
+					// avoid duplicates
+					if (std::find(subs.begin(), subs.end(), actor) == subs.end()) {
+						subs.push_back(actor);
+						//self->monitor(actor); // track lifecycle
+					}
+				}
+
+				else if (command == "unsubscribe") {
+					subs.erase(
+							std::remove(subs.begin(), subs.end(), actor),
+							subs.end()
+						  );
+					//self->demonitor(actor);
+				}
+			},
+
+			[=](std::string command) {
+				if (command == "publish") {
+					for (caf::actor a : self->state().subscribers) {
+
+						self -> mail(self->state().costs).urgent().send(a);
+
+					}
+					self->mail("publish").urgent().delay(std::chrono::milliseconds(5)).send(self);
+				}
+
+			}	
+
+	};
+}
+
+
+
+
+
 
 
 
@@ -524,8 +597,6 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     }
     caf::cuda::manager::shutdown();
 }
-
-
 
 
 
