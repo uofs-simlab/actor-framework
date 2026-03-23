@@ -98,12 +98,13 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
 		caf::cuda::program_ptr program,
 		caf::cuda::nd_range dims,
 		int N,
+		int stream,
 		const in<int> matrixA,
 		const in<int> matrixB
 		) {
 
 
-
+	int device = stream % caf::cuda::manager::get().get_num_devices();
 	self->mail(N).send(self);
 
 	return {
@@ -112,11 +113,9 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
 
 			auto total_start = std::chrono::steady_clock::now();
 
-			int device = rand() % caf::cuda::manager::get().get_num_devices();
-			int stream = rand();
 
-			std::cout << "device=" << device <<  "\n";
-			std::cout << "N=" << N <<  "\n";
+//			std::cout << "device=" << device <<  "\n";
+//			std::cout << "N=" << N <<  "\n";
 			// ---------------- H2D ----------------
 			auto h2d_start = std::chrono::steady_clock::now();
 
