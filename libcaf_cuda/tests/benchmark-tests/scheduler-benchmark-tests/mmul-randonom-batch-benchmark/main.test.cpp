@@ -393,121 +393,6 @@ caf::behavior mmul_actor_fun_scheduler2(caf::stateful_actor<mmul_state>* self,
 
 
 
-// ---------------------------- SUPERVISOR ACTOR ----------------------------
-struct supervisor_actor_state {
-    int num_actors;
-    int num_waves;
-    int completed;
-    int max_waves;
-
-    MatrixPool pool;
-
-    // Precomputed sequence of N values
-    std::vector<int> Ns;
-    int next_task;
-
-    // Timing
-    std::chrono::steady_clock::time_point start_time;
-    std::chrono::steady_clock::time_point wave_start_time;
-};
-
-caf::behavior supervisor_actor_fun(
-    caf::stateful_actor<supervisor_actor_state>* self,
-    int num_actors,
-    int max_waves,
-    MatrixPool pool,
-    const std::vector<int>& Ns,      // deterministic task sizes 
-    bool use_scheduler
-    ) {
-    // Initialize state
-    self->state().num_actors = num_actors;
-    self->state().completed = 0;
-    self->state().max_waves = max_waves;
-    self->state().num_waves = 0;
-    self->state().pool = std::move(pool);
-
-    self->state().Ns = Ns;
-    self->state().next_task = 0;
-
-
-    caf::cuda::manager& mgr = caf::cuda::manager::get();
-    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-    // Kick off first wave
-    self->mail("spawn").send(self);
-
-    // Start timing
-    self->state().start_time = std::chrono::steady_clock::now();
-    return {
-        // -------------------- SPAWN WAVE --------------------
-        [=](std::string cmd) {
-            if (cmd != "spawn") return;
-
-            self->state().completed = 0;
-            self->state().wave_start_time = std::chrono::steady_clock::now();
-
-            for (int i = 0; i < self->state().num_actors; ++i) {
-                if (self->state().next_task >= self->state().Ns.size())
-                    break;
-
-                int N = self->state().Ns[self->state().next_task++];
-
-
-                const auto& A = self->state().pool.A[N];
-                const auto& B = self->state().pool.B[N];
-
-                const int THREADS = 32;
-                const int BLOCKS = (N + THREADS - 1) / THREADS;
-
-                caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-		if (use_scheduler) {
-			self->spawn(mmul_actor_fun_scheduler, self, N, program, dims,
-                            caf::cuda::create_in_arg(A),
-                            caf::cuda::create_in_arg(B));
-		}
-		else {
-			self->spawn(mmul_actor_fun, self, program, dims,N,
-                            caf::cuda::create_in_arg(A),
-                            caf::cuda::create_in_arg(B));
-		}
-            }
-        },
-
-        // -------------------- COMPLETION TRACKING --------------------
-        [=](int done) {
-            self->state().completed += done;
-
-            if (self->state().completed >= self->state().num_actors) {
-                auto wave_end = std::chrono::steady_clock::now();
-                std::chrono::duration<double> wave_time =
-                    wave_end - self->state().wave_start_time;
-
-                self->state().num_waves++;
-                //std::cout << "Wave "
-                  //        << self->state().num_waves
-                    //      << " completed in "
-                      //    << wave_time.count() << " s\n";
-
-                if (self->state().num_waves >= self->state().max_waves) {
-                    auto end_time = std::chrono::steady_clock::now();
-                    std::chrono::duration<double> total_time =
-                        end_time - self->state().start_time;
-
-                    std::cout << "\n===== SUPERVISOR TOTAL TIME =====\n";
-                    std::cout << "Total runtime: "
-                              << total_time.count() << " s\n";
-
-                    caf::cuda::manager::shutdown();
-                    self->quit();
-                } else {
-                    self->mail("spawn").send(self);
-                }
-            }
-        }
-    };
-}
-
 
 struct scheduler_actor_state {
 
@@ -518,7 +403,7 @@ struct scheduler_actor_state {
 
 
 
-caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) {
+caf::behavior scheduler_actor_fun(caf::stateful_actor<scheduler_actor_state>* self) {
 
 	self->state().num_devices = caf::cuda::manager::get().get_num_devices();
 	self->state().costs.resize(self->state().num_devices);
@@ -579,6 +464,129 @@ caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self) 
 }
 
 
+
+// ---------------------------- SUPERVISOR ACTOR ----------------------------
+struct supervisor_actor_state {
+    int num_actors;
+    int num_waves;
+    int completed;
+    int max_waves;
+
+    MatrixPool pool;
+
+    // Precomputed sequence of N values
+    std::vector<int> Ns;
+    int next_task;
+
+    // Timing
+    std::chrono::steady_clock::time_point start_time;
+    std::chrono::steady_clock::time_point wave_start_time;
+};
+
+caf::behavior supervisor_actor_fun(
+    caf::stateful_actor<supervisor_actor_state>* self,
+    int num_actors,
+    int max_waves,
+    MatrixPool pool,
+    const std::vector<int>& Ns,      // deterministic task sizes 
+    bool use_scheduler
+    ) {
+    // Initialize state
+    self->state().num_actors = num_actors;
+    self->state().completed = 0;
+    self->state().max_waves = max_waves;
+    self->state().num_waves = 0;
+    self->state().pool = std::move(pool);
+
+    self->state().Ns = Ns;
+    self->state().next_task = 0;
+
+
+    caf::cuda::manager& mgr = caf::cuda::manager::get();
+    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+    // Kick off first wave
+    self->mail("spawn").send(self);
+
+    caf::actor scheduler_actor = self->spawn(scheduler_actor_fun);
+
+    // Start timing
+    self->state().start_time = std::chrono::steady_clock::now();
+    return {
+        // -------------------- SPAWN WAVE --------------------
+        [=](std::string cmd) {
+            if (cmd != "spawn") return;
+
+            self->state().completed = 0;
+            self->state().wave_start_time = std::chrono::steady_clock::now();
+
+            for (int i = 0; i < self->state().num_actors; ++i) {
+                if (self->state().next_task >= self->state().Ns.size())
+                    break;
+
+                int N = self->state().Ns[self->state().next_task++];
+
+
+                const auto& A = self->state().pool.A[N];
+                const auto& B = self->state().pool.B[N];
+
+                const int THREADS = 32;
+                const int BLOCKS = (N + THREADS - 1) / THREADS;
+
+                caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
+
+		if (use_scheduler) {
+			self->spawn(mmul_actor_fun_scheduler2, 
+					self,
+					scheduler_actor,
+				       	program, 
+					dims,
+					i,
+					N,
+                            caf::cuda::create_in_arg(A),
+                            caf::cuda::create_in_arg(B));
+		}
+		else {
+			self->spawn(mmul_actor_fun, self, program, dims,i,N,
+                            caf::cuda::create_in_arg(A),
+                            caf::cuda::create_in_arg(B));
+		}
+            }
+        },
+
+        // -------------------- COMPLETION TRACKING --------------------
+        [=](int done) {
+            self->state().completed += done;
+
+            if (self->state().completed >= self->state().num_actors) {
+                auto wave_end = std::chrono::steady_clock::now();
+                std::chrono::duration<double> wave_time =
+                    wave_end - self->state().wave_start_time;
+
+                self->state().num_waves++;
+                //std::cout << "Wave "
+                  //        << self->state().num_waves
+                    //      << " completed in "
+                      //    << wave_time.count() << " s\n";
+
+                if (self->state().num_waves >= self->state().max_waves) {
+                    auto end_time = std::chrono::steady_clock::now();
+                    std::chrono::duration<double> total_time =
+                        end_time - self->state().start_time;
+
+                    std::cout << "\n===== SUPERVISOR TOTAL TIME =====\n";
+                    std::cout << "Total runtime: "
+                              << total_time.count() << " s\n";
+
+                    caf::cuda::manager::shutdown();
+                    self->quit();
+                } else {
+                    self->mail("spawn").send(self);
+                }
+            }
+        }
+    };
+}
 
 
 
