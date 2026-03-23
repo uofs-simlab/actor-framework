@@ -97,8 +97,8 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
 		caf::actor exit_actor,
 		caf::cuda::program_ptr program,
 		caf::cuda::nd_range dims,
-		int N,
 		int stream,
+		int N,
 		const in<int> matrixA,
 		const in<int> matrixB
 		) {
