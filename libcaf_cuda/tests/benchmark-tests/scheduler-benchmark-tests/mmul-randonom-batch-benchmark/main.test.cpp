@@ -617,14 +617,14 @@ double time_run(Fn&& fn) {
 void run_mmul_random_scaling_tests(caf::actor_system& sys,
                                   caf::cuda::manager_config man_config) {
 
-    const int min_N = 2048;
+    const int min_N = 32;
     const int max_N = 2048;
-    const int num_sizes = 1;
+    const int num_sizes = 10;
 
     const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	    1024
+	    30000
     };
 
 
@@ -652,19 +652,16 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 	    Ns.push_back(sizes[dist(rng)]);
 
 
+   
     //scheduler
     for (int num_actors : actor_counts) {
 
     
 	    // Initialize CUDA manager
-	    caf::cuda::manager::init(sys, man_config);
+	    caf::cuda::manager::init(sys);
 	    std::cout << "=====================================\n";
 	    std::cout << "Running with Scheduler with " << num_actors << " actors\n";
 
-	    auto& mgr = caf::cuda::manager::get();
-	    for (int i = 0; i < mgr.get_num_devices(); i++) {
-		    mgr.send_scheduler_actor_message("green",i); 
-	    }
 
 
 
@@ -716,6 +713,10 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     
 	caf::cuda::manager::shutdown();
     }
+
+
+
+
     caf::cuda::manager::shutdown();
 }
 
