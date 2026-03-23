@@ -302,6 +302,8 @@ caf::behavior mmul_actor_fun_scheduler2(caf::stateful_actor<mmul_state>* self,
 
 	int device = stream % caf::cuda::manager::get().get_num_devices();
 
+	self->mail("subscribe",self).send(scheduler_actor);
+
 	self->mail(N).send(self);
 
 	return {
@@ -384,6 +386,7 @@ caf::behavior mmul_actor_fun_scheduler2(caf::stateful_actor<mmul_state>* self,
 
 			*/
 			self->mail(1).send(exit_actor);
+			self->mail("unsubscribe",self).send(scheduler_actor);
 			self->quit();
 		}
 	};
