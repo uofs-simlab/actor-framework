@@ -10,6 +10,7 @@
 #include <numeric>
 #include <random>
 #include "caf/actor_registry.hpp"
+#include <cuda.h>
 //#include <caf/atoms.hpp>
 
 
@@ -60,12 +61,12 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
       using ms = std::chrono::duration<double, std::milli>;
 
 
-      caf::cuda::manager& mgr = caf::cuda::manager::get();
+      caf::cuda::manager& mgr = self->system().cuda_manager();
       int device = 0;
       int stream = 1;
 
       auto program =
-        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+        mgr.create_program_from_cubin("mmul.cubin", "matrixMul");
 
       auto t_total_start = clock::now();
       // -------------------------
@@ -205,12 +206,12 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
       using ms = std::chrono::duration<double, std::milli>;
 
 
-      caf::cuda::manager& mgr = caf::cuda::manager::get();
+      caf::cuda::manager& mgr = self->system().cuda_manager();
       int device = 0;
       int stream = 1;
 
       auto program =
-        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+        mgr.create_program_from_cubin("mmul.cubin", "matrixMul");
 
       auto t_total_start = clock::now();
       // -------------------------
@@ -336,7 +337,7 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
 void run_mmul_test(caf::actor_system& sys, int matrix_size) {
 
 
-  caf::cuda::manager::init(sys);
+  // caf::cuda::manager::init(sys);
   // ------------------------------------
   // Start timing
   // ------------------------------------
@@ -373,7 +374,7 @@ auto t_end = clock::now();
   std::cout << "[MMUL TEST] matrix_size=" << matrix_size
             << ", time=" << duration_ms << " ms\n";
 
-  caf::cuda::manager::shutdown();
+  // caf::cuda::manager::shutdown();
 
 }
 
@@ -389,4 +390,4 @@ void caf_main(caf::actor_system& sys) {
 
 
 
-CAF_MAIN()
+CAF_MAIN(caf::cuda::manager)

@@ -33,21 +33,19 @@ class actor_facade : public caf::local_actor, public caf::resumable {
 public:
 
   //Factory methods to create the actor
-  static caf::actor create(
-    caf::actor_system& sys,
-    caf::actor_config&& actor_conf,
-    program_ptr program,
-    nd_range dims,
-    Ts&&... xs
-  ) {
+  static caf::actor create(caf::actor_system& sys,
+                           caf::actor_config&& actor_conf,
+                           program_ptr program,
+                           nd_range dims,
+                           Ts&&... xs) {
     return caf::make_actor<actor_facade<PassConfig, std::decay_t<Ts>...>, caf::actor>(
-      sys.next_actor_id(),
-      sys.node(),
-      &sys,
-      std::move(actor_conf),
-      std::move(program),
-      std::move(dims),
-      std::forward<Ts>(xs)...);
+        sys.next_actor_id(),
+        sys.node(),
+        &sys,
+        std::move(actor_conf),
+        std::move(program),
+        std::move(dims),
+        std::forward<Ts>(xs)...);
   }
 
   static caf::actor create(

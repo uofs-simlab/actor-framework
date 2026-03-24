@@ -1,6 +1,5 @@
 .make-release-steps.bash
 .push-doxygen-steps.bash
-Makefile
 bin/*
 build/*
 .devcontainer/build
