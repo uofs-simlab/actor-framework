@@ -624,7 +624,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	    30000
+	   30000,40000,50000
     };
 
 
@@ -659,10 +659,8 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     
 	    // Initialize CUDA manager
 	    caf::cuda::manager::init(sys);
-	    std::cout << "=====================================\n";
-	    std::cout << "Running with Scheduler with " << num_actors << " actors\n";
-
-
+  std::cout << "=====================================\n";
+        std::cout << "Random Scaling WITH scheduler | actors=" << num_actors << "\n";
 
 
         double elapsed = time_run([&]() {
@@ -692,9 +690,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 	    // Initialize CUDA manager
 	    caf::cuda::manager::init(sys);
 	    std::cout << "=====================================\n";
-	    std::cout << "Running no scheduler with " << num_actors << " actors\n";
-
-      
+	    std::cout << "Random Scaling NO scheduler | actors=" << num_actors << "\n";      
 	    double elapsed = time_run([&]() {
 
             auto sup = sys.spawn(
@@ -719,6 +715,89 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 
     caf::cuda::manager::shutdown();
 }
+
+void run_mmul_uniform_scaling_tests(caf::actor_system& sys,
+                                   caf::cuda::manager_config man_config) {
+
+    const int max_waves = 1;
+
+    // Matrix sizes: 1,2,4,...,2048
+    std::vector<int> matrix_sizes;
+    for (int n = 1; n <= 2048; n *= 2)
+        matrix_sizes.push_back(n);
+
+    // Actor counts: 10 → 1000
+    std::vector<int> actor_counts;
+    for (int a = 10; a <= 1000; a += 10)
+        actor_counts.push_back(a);
+
+    for (int N : matrix_sizes) {
+        for (int num_actors : actor_counts) {
+
+            // Create uniform pool (single size)
+            MatrixPool pool = create_matrix_pool_random(
+                1,
+                N,
+                N,
+                42
+            );
+
+            int total_tasks = num_actors * max_waves;
+
+            std::vector<int> Ns(total_tasks, N);
+
+            // ========================
+            // WITH SCHEDULER
+            // ========================
+            caf::cuda::manager::init(sys);
+            std::cout << "=====================================\n";
+            std::cout << "Uniform WITH scheduler | N=" << N
+                      << " actors=" << num_actors << "\n";
+
+            time_run([&]() {
+                auto sup = sys.spawn(
+                    supervisor_actor_fun,
+                    num_actors,
+                    max_waves,
+                    pool,
+                    Ns,
+                    true
+                );
+                sys.await_all_actors_done();
+            });
+
+            caf::cuda::manager::shutdown();
+
+            // ========================
+            // WITHOUT SCHEDULER
+            // ========================
+            caf::cuda::manager::init(sys);
+            std::cout << "=====================================\n";
+            std::cout << "Uniform NO scheduler | N=" << N
+                      << " actors=" << num_actors << "\n";
+
+            time_run([&]() {
+                auto sup = sys.spawn(
+                    supervisor_actor_fun,
+                    num_actors,
+                    max_waves,
+                    pool,
+                    Ns,
+                    false
+                );
+                sys.await_all_actors_done();
+            });
+
+            caf::cuda::manager::shutdown();
+        }
+    }
+}
+
+
+
+
+
+
 
 
 
