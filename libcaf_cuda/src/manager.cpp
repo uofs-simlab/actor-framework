@@ -9,31 +9,27 @@
 
 namespace caf::cuda {
 
-	manager* manager::instance_ = nullptr;
-	std::mutex manager::mutex_;
-
-
 void manager::start() {}
 
 void manager::stop() {}
 
 void manager::init(actor_system_config&) {
-    CHECK_CUDA(cuInit(0));
-    platform_ = platform::create();
-    CUcontext ctx = nullptr;
-    cuCtxGetCurrent(&ctx);
+  CHECK_CUDA(cuInit(0));
+  platform_ = platform::create();
+  CUcontext ctx = nullptr;
+  cuCtxGetCurrent(&ctx);
 };
 
 actor_system_module::id_t manager::id() const {
-    return actor_system_module::cuda_manager;
+  return actor_system_module::cuda_manager;
 }
 
 void* manager::subtype_ptr() {
-    return this;
+  return this;
 };
 
-manager::manager(actor_system& sys)
-    : system_(sys) {
+manager::manager(actor_system& sys) : system_(sys) {
+  // Constructor
 }
 
 
@@ -62,28 +58,22 @@ actor_system_module* manager::make(actor_system& sys) {
 }
 
 int manager::get_num_devices() {
-  return platform_ -> get_num_devices();
+  return platform_->get_num_devices();
 }
 
 void manager::init_scheduler_actors(caf::actor_system& sys) {
-
-	int num_devices = platform_ -> get_num_devices();
-
+	int num_devices = platform_->get_num_devices();
 	bool multi_gpu = num_devices > 1;
 	for (int i = 0; i < num_devices; i++) {
-	
-		instance_ -> scheduler_actors.push_back( sys.spawn(scheduler_actor,i,multi_gpu));
-	
+		this->scheduler_actors_.push_back(sys.spawn(scheduler_actor,i,multi_gpu));
 	}
 
 	//if there is multiple GPUs send every scheduler actor contact information 
 	//about the other on	
 	if (num_devices > 1) {
-	
 		for (int i = 0; i < num_devices; i++) {
-			anon_mail(scheduler_actors).send(instance_ -> scheduler_actors[i]);
+			anon_mail(scheduler_actors_).send(this->scheduler_actors_[i]);
 		}
-	
 	}
 
 }
@@ -93,34 +83,16 @@ void manager::init_scheduler_actors(caf::actor_system& sys) {
 // Static shutdown()
 // --------------------------------
 void manager::shutdown() {
-    std::lock_guard<std::mutex> guard(mutex_);
-
-    if (!instance_)
-        return;
-
-    if (instance_->scheduler_on) {
-        
-	for (int i = 0; i < instance_ ->  platform_ -> get_num_devices(); i++) {
-	    
-	anon_send_exit(
-            instance_->scheduler_actors[i],
-            caf::exit_reason::user_shutdown
-        );
-
-
-
+  if (this->scheduler_on_) {
+    for (int i = 0; i < this->platform_->get_num_devices(); i++) {
+	    anon_send_exit(this->scheduler_actors_[i], 
+                     caf::exit_reason::user_shutdown);
     }
-
-    }
-
-
-    if (instance_->memory_manager_on) {
-	    instance_->destroy_memory_actor();
-    }
-
-
-    delete instance_;
-    instance_ = nullptr;
+  }
+  
+  if (this->memory_manager_on_) {
+	  this->destroy_memory_actor();
+  }
 }
 
 // --------------------------------
@@ -129,15 +101,7 @@ void manager::shutdown() {
 // this is legacy code, do not use
 // only exists to be backwards compatable with tests 
 caf::actor manager::get_scheduler_actor() {
-    	//this is a read only data no need for lock
-	//std::lock_guard<std::mutex> guard(mutex_);
-
-
-    if (!instance_) {
-        throw std::runtime_error("CUDA manager not initialized");
-    }
-
-    return instance_->scheduler_actors[0];
+  return this->scheduler_actors_[0];
 }
 
 
@@ -279,10 +243,10 @@ bool manager::compile_nvrtc_program(const char* source, CUdevice device, std::ve
 // Send single token
 // ---------------------------------------------
 void manager::send_scheduler_actor_message(token_ptr token, int device_number) {
-    if (!scheduler_on || scheduler_actors.empty())
+    if (!scheduler_on_ || scheduler_actors_.empty())
         return;
 
-    int num_devices = static_cast<int>(scheduler_actors.size());
+    int num_devices = static_cast<int>(scheduler_actors_.size());
     int target = -1;
 
     if (device_number != -1) {
@@ -301,7 +265,7 @@ void manager::send_scheduler_actor_message(token_ptr token, int device_number) {
         }
     }
 
-    anon_mail(token).send(scheduler_actors[target]);
+    anon_mail(token).send(scheduler_actors_[target]);
 }
 
 // ---------------------------------------------
@@ -309,10 +273,10 @@ void manager::send_scheduler_actor_message(token_ptr token, int device_number) {
 // ---------------------------------------------
 void manager::send_scheduler_actor_message(std::vector<token_ptr> tokens,
                                            int device_number) {
-    if (!scheduler_on || scheduler_actors.empty() || tokens.empty())
+    if (!scheduler_on_ || scheduler_actors_.empty() || tokens.empty())
         return;
 
-    int num_devices = static_cast<int>(scheduler_actors.size());
+    int num_devices = static_cast<int>(scheduler_actors_.size());
     int target = -1;
 
     if (device_number != -1) {
@@ -325,20 +289,20 @@ void manager::send_scheduler_actor_message(std::vector<token_ptr> tokens,
         target = rand() % num_devices;
     }
 
-    anon_mail(std::move(tokens)).send(scheduler_actors[target]);
+    anon_mail(std::move(tokens)).send(scheduler_actors_[target]);
 }
 
 void manager::send_scheduler_actor_message(behavior_token_ptr token, int device_number) {
-    if (!scheduler_on || scheduler_actors.empty())
+    if (!scheduler_on_ || scheduler_actors_.empty())
         return;
 
-    int num_devices = static_cast<int>(scheduler_actors.size());
+    int num_devices = static_cast<int>(scheduler_actors_.size());
 
     // Drop if device number is invalid
     if (device_number < 0 || device_number >= num_devices)
         return;
 
-    anon_mail(token).send(scheduler_actors[device_number]);
+    anon_mail(token).send(scheduler_actors_[device_number]);
 }
 
 void manager::send_scheduler_actor_message(std::string behavior, int device_number) {
@@ -348,33 +312,31 @@ void manager::send_scheduler_actor_message(std::string behavior, int device_numb
 
 
 void manager::init_memory_actor(caf::actor_system& sys) {
-    if (memory_actor_handle)
+    if (memory_actor_handle_)
         return; // already initialized
 
     int num_devices = platform_->get_num_devices();
 
-    memory_actor_handle =
+    memory_actor_handle_ =
         sys.spawn(memory_actor, num_devices);
 }
 
 void manager::destroy_memory_actor() {
-    if (!memory_actor_handle)
+    if (!memory_actor_handle_)
         return;
 
-    anon_send_exit(
-        memory_actor_handle,
-        caf::exit_reason::user_shutdown
-    );
+    anon_send_exit(memory_actor_handle_,
+                   caf::exit_reason::user_shutdown);
 
-    memory_actor_handle = caf::actor{};
+    memory_actor_handle_ = caf::actor{};
 }
 
 caf::actor manager::get_memory_actor() {
-    if (!instance_ || !instance_->memory_actor_handle) {
+    if (!this->memory_actor_handle_) {
         throw std::runtime_error("Memory actor not initialized");
     }
 
-    return instance_->memory_actor_handle;
+    return this->memory_actor_handle_;
 }
 
 caf::actor manager::spawn_exit_actor(int num_actors) {

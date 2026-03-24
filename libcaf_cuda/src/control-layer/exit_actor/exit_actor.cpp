@@ -3,19 +3,15 @@
 
 namespace caf::cuda {
 caf::behavior exit_actor_fun(caf::stateful_actor<exit_actor_state>* self,int limit) {
-
-
-        return {
-                [=](int num_completed) {
-                        self->state().completed += num_completed;
-
-                        if (self->state().completed >= limit) {
-
-                                caf::cuda::manager::shutdown();
-                                self->quit();
-                        }
-                }
-        };
+  return {
+    [=](int num_completed) {
+      self->state().completed += num_completed;
+      if (self->state().completed >= limit) {
+        self->system().cuda_manager().shutdown();
+        self->quit();
+      }
+    }
+  };
 
 
 }

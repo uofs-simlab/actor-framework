@@ -68,7 +68,7 @@ public:
 
   /// Deletes the singleton if needed (optional).
   //deletes the scheduler actor as well if it exists
-  static void shutdown();
+  void shutdown();
 
   // Prevent copy/assignment
   // manager(const manager&) = delete;
@@ -209,11 +209,6 @@ public:
   caf::actor spawn_exit_actor(int num_actors);
 
 private:
-
-
-  caf::actor_system& system_;
-  platform_ptr platform_;
-
   //helper to compile a nvrtc program
   bool compile_nvrtc_program(const char* source, 
                              CUdevice device, 
@@ -225,13 +220,13 @@ private:
   void init_memory_actor(caf::actor_system&);
   void destroy_memory_actor();
 
-  static manager* instance_;
-  static std::mutex mutex_;
-  bool scheduler_on = false;
-  bool memory_manager_on = false;
-  caf::actor scheduler_actor_handle;
-  caf::actor memory_actor_handle;
-  std::vector<caf::actor> scheduler_actors;
+  caf::actor_system& system_;
+  platform_ptr platform_;
+  bool scheduler_on_ = false;
+  bool memory_manager_on_ = false;
+  caf::actor scheduler_actor_handle_;
+  caf::actor memory_actor_handle_;
+  std::vector<caf::actor> scheduler_actors_;
 };
 
 } // namespace caf::cuda

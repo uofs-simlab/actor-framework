@@ -856,11 +856,11 @@ void test_main([[maybe_unused]] actor_system& sys) {
 
     } catch (const std::exception& e) {
         std::cout << "Test failed: " << e.what() << "\n";
-        manager::shutdown();
+        sys.cuda_manager().shutdown();
         plat.reset();
         throw;
     }
-    manager::shutdown();
+    sys.cuda_manager().shutdown();
     plat.reset();
     std::cout << "\n===== All CUDA CAF Tests Completed Successfully =====\n";
 }
