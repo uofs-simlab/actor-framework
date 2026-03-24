@@ -163,74 +163,72 @@ private:
   }
 
 
-
-
-  subtype_t subtype() const noexcept override {
-    return subtype_t(0);
-  }
+  // subtype_t subtype() const noexcept override {
+  //   return subtype_t(0);
+  // }
 
   //handles scheduling for caf, will return based on what work needs to be done
- resumable::resume_result resume(::caf::scheduler* sched, size_t max_throughput) override {
-  if (resuming_flag_.test_and_set(std::memory_order_acquire)) {
-    return resumable::resume_later;
-  }
+  // void resume(::caf::scheduler* sched, size_t max_throughput) override {
+  //   if (resuming_flag_.test_and_set(std::memory_order_acquire)) {
+  //     return resumable::resume_later;
+  //   }
 
-  //ensure the lock is released on exit of this method 
-  auto clear_flag = caf::detail::scope_guard([this]() noexcept {
-    resuming_flag_.clear(std::memory_order_release);
-  });
+  //   //ensure the lock is released on exit of this method 
+  //   auto clear_flag = caf::detail::scope_guard([this]() noexcept {
+  //     resuming_flag_.clear(std::memory_order_release);
+  //   });
 
-  size_t processed = 0;
+  //   size_t processed = 0;
 
-  while (!mailbox_.empty() && processed < max_throughput) {
-    auto msg = std::move(mailbox_.front());
-    mailbox_.pop();
+  //   while (!mailbox_.empty() && processed < max_throughput) {
+  //     auto msg = std::move(mailbox_.front());
+  //     mailbox_.pop();
 
-    if (!msg || !msg->content().ptr()) {
-      std::cout << "[Thread " << std::this_thread::get_id()
-                << "] Dropping message with no content\n";
-      continue;
-    }
+  //     if (!msg || !msg->content().ptr()) {
+  //       std::cout << "[Thread " << std::this_thread::get_id()
+  //                 << "] Dropping message with no content\n";
+  //       continue;
+  //     }
 
-    pending_promises_++;
-    current_mailbox_element(msg.get());
+  //     pending_promises_++;
+  //     current_mailbox_element(msg.get());
 
-    if (msg->content().match_elements<kernel_done_atom>()) {
-      if (--pending_promises_ == 0 && shutdown_requested_) {
-        quit(exit_reason::user_shutdown);
-        return resumable::done;
-      }
-      current_mailbox_element(nullptr);
-      ++processed;
-      continue;
-    }
+  //     if (msg->content().match_elements<kernel_done_atom>()) {
+  //       if (--pending_promises_ == 0 && shutdown_requested_) {
+  //         quit(exit_reason::user_shutdown);
+  //         return resumable::done;
+  //       }
+  //       current_mailbox_element(nullptr);
+  //       ++processed;
+  //       continue;
+  //     }
 
-    //check for exit message if yes begin the shutdown process
-    if (msg->content().match_elements<exit_msg>()) {
-      auto exit = msg->content().get_as<exit_msg>(0);
-      shutdown_requested_ = true;
-      if (--pending_promises_ == 0) {
-        quit(static_cast<exit_reason>(exit.reason.code()));
-        return resumable::done;
-      } else {
-        current_mailbox_element(nullptr);
-        return resumable::resume_later;
-      }
-    }
+  //     //check for exit message if yes begin the shutdown process
+  //     if (msg->content().match_elements<exit_msg>()) {
+  //       auto exit = msg->content().get_as<exit_msg>(0);
+  //       shutdown_requested_ = true;
+  //       if (--pending_promises_ == 0) {
+  //         quit(static_cast<exit_reason>(exit.reason.code()));
+  //         return resumable::done;
+  //       } else {
+  //         current_mailbox_element(nullptr);
+  //         return resumable::resume_later;
+  //       }
+  //     }
 
-    //process the message and begin launching the kernel
-    handle_message(msg->content());
-    //pending_promises_--;
-    current_mailbox_element(nullptr);
-    ++processed;
-  }
+  //     //process the message and begin launching the kernel
+  //     handle_message(msg->content());
+  //     //pending_promises_--;
+  //     current_mailbox_element(nullptr);
+  //     ++processed;
+  //   }
 
-  // If there's still more work, return resume_later
-  if (!mailbox_.empty())
-    return resumable::resume_later;
+  //   // If there's still more work, return resume_later
+  //   if (!mailbox_.empty())
+  //     return resumable::resume_later;
 
-  return shutdown_requested_ ? resumable::resume_later : resumable::done;
-}
+  //   return shutdown_requested_ ? resumable::resume_later : resumable::done;
+  // }
 
   void ref_resumable() const noexcept override  {}
 

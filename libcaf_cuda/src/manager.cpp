@@ -5,6 +5,7 @@
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
 #include "caf/cuda/manager_config.hpp"
 #include "caf/cuda/control-layer/all-control-layer.hpp"
+#include "caf/version.hpp"
 
 
 namespace caf::cuda {
@@ -47,9 +48,7 @@ void manager::init_global_meta_objects() {
 
 
 void manager::check_abi_compatibility(version::abi_token token) {
-  if (static_cast<int>(token) != CAF_VERSION_MAJOR) {
-    CAF_CRITICAL("CAF ABI token mismatch");
-  }
+  version::check_abi_compatibility(token);
 }
 
 

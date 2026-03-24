@@ -832,11 +832,11 @@ net::middleman& actor_system::network_manager() {
 }
 
 bool actor_system::has_cuda_manager() const {
-  return impl_->modules[actor_system_module::cuda_manager] != nullptr;
+  return impl_->modules()[actor_system_module::cuda_manager] != nullptr;
 }
 
 cuda::manager& actor_system::cuda_manager() {
-  if (auto& clptr = impl_->modules[actor_system_module::cuda_manager])
+  if (auto& clptr = impl_->modules()[actor_system_module::cuda_manager])
     return *reinterpret_cast<cuda::manager*>(clptr->subtype_ptr());
   CAF_RAISE_ERROR("cannot access CUDA manager: module not loaded");
 }
