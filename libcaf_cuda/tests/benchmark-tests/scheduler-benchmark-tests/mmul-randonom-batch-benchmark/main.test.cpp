@@ -628,7 +628,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     };
 
 
-    int num_actors = actor_counts[0];
+    int num_actors = actor_counts[actor_counts.size()];
 
         // Generate deterministic random pool
         MatrixPool pool = create_matrix_pool_random(
