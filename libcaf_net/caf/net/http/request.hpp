@@ -11,6 +11,7 @@
 #include "caf/async/execution_context.hpp"
 #include "caf/async/promise.hpp"
 #include "caf/byte_span.hpp"
+#include "caf/detail/connection_guard.hpp"
 #include "caf/detail/net_export.hpp"
 
 #include <cstdint>
@@ -24,9 +25,11 @@ namespace caf::net::http {
 /// promise for the HTTP response.
 class CAF_NET_EXPORT request {
 public:
-  friend class router;
-
   class impl;
+
+  request(request_header hdr, std::vector<std::byte> body,
+          async::promise<response> prom,
+          detail::connection_guard_ptr conn_guard);
 
   request() noexcept = default;
 
@@ -65,10 +68,11 @@ public:
     return respond(code, content_type, as_bytes(std::span{content}));
   }
 
-private:
-  request(request_header hdr, std::vector<std::byte> body,
-          async::promise<response> prom);
+  /// Returns `true` if the socket manager that created this request has shut
+  /// down, `false` otherwise.
+  [[nodiscard]] bool orphaned() const noexcept;
 
+private:
   impl* impl_ = nullptr;
 };
 

@@ -21,12 +21,13 @@
 #include "caf/extend.hpp"
 #include "caf/fwd.hpp"
 #include "caf/intrusive/stack.hpp"
-#include "caf/is_timeout_or_catch_all.hpp"
 #include "caf/local_actor.hpp"
 #include "caf/mailbox_element.hpp"
 #include "caf/mixin/requester.hpp"
 #include "caf/none.hpp"
 #include "caf/policy/arg.hpp"
+#include "caf/telemetry/actor_metrics.hpp"
+#include "caf/timeout_definition.hpp"
 #include "caf/typed_actor.hpp"
 
 #include <chrono>
@@ -38,16 +39,14 @@ namespace caf {
 /// A thread-mapped or context-switching actor using a blocking
 /// receive rather than a behavior-stack based message processing.
 /// @extends local_actor
-class CAF_CORE_EXPORT blocking_actor
-  : public extend<abstract_blocking_actor,
-                  blocking_actor>::with<mixin::requester>,
-    public dynamically_typed_actor_base,
-    public blocking_actor_base {
+class CAF_CORE_EXPORT blocking_actor : public abstract_blocking_actor,
+                                       public dynamically_typed_actor_base,
+                                       public blocking_actor_base {
 public:
   // -- nested and member types ------------------------------------------------
 
   /// Base type.
-  using super = extended_base;
+  using super = abstract_blocking_actor;
 
   /// Absolute timeout type.
   using timeout_type = std::chrono::high_resolution_clock::time_point;
@@ -57,6 +56,11 @@ public:
 
   /// Declared message passing interface.
   using signatures = none_t;
+
+  // -- constants --------------------------------------------------------------
+
+  static constexpr auto forced_spawn_options = spawn_options::detach_flag
+                                               + spawn_options::blocking_flag;
 
   // -- nested classes ---------------------------------------------------------
 
@@ -92,7 +96,7 @@ public:
                     "operator() requires at least one argument");
       struct cond : receive_cond {
         fun_type stmt;
-        cond(fun_type x) : stmt(std::move(x)) {
+        explicit cond(fun_type x) : stmt(std::move(x)) {
           // nop
         }
         bool pre() override {
@@ -115,7 +119,7 @@ public:
     void operator()(Ts&&... xs) {
       struct cond : receive_cond {
         receive_for_helper& outer;
-        cond(receive_for_helper& x) : outer(x) {
+        explicit cond(receive_for_helper& x) : outer(x) {
           // nop
         }
         bool pre() override {
@@ -139,7 +143,7 @@ public:
     void until(Statement stmt) {
       struct cond : receive_cond {
         Statement f;
-        cond(Statement x) : f(std::move(x)) {
+        explicit cond(Statement x) : f(std::move(x)) {
           // nop
         }
         bool post() override {
@@ -157,7 +161,7 @@ public:
 
   // -- constructors and destructors -------------------------------------------
 
-  blocking_actor(actor_config& cfg);
+  explicit blocking_actor(actor_config& cfg);
 
   ~blocking_actor() override;
 
@@ -169,7 +173,11 @@ public:
 
   const char* name() const override;
 
-  void launch(scheduler* sched, bool lazy, bool hide) override;
+  bool initialize(scheduler* sched) override;
+
+  bool launch_delayed() override;
+
+  void launch(detail::private_thread* worker, scheduler* ctx) override;
 
   // -- virtual modifiers ------------------------------------------------------
 
@@ -280,6 +288,8 @@ public:
                          std::forward<Args>(args)...);
   }
 
+  CAF_ADD_DEPRECATED_REQUEST_API
+
   // -- monitoring -------------------------------------------------------------
 
   using super::monitor;
@@ -314,7 +324,7 @@ public:
 
   /// Returns the queue for storing incoming messages.
   abstract_mailbox& mailbox() {
-    return mailbox_;
+    return *mailbox_;
   }
   /// @cond
 
@@ -325,9 +335,9 @@ public:
     using namespace detail;
     static_assert(sizeof...(Ts), "at least one argument required");
     // extract how many arguments are actually the behavior part,
-    // i.e., neither `after(...) >> ...` nor `others >> ...`.
-    using filtered = tl_filter_not_t<type_list<std::decay_t<Ts>...>,
-                                     is_timeout_or_catch_all>;
+    // i.e., not `after(...) >> ...` (timeout definitions).
+    using filtered
+      = tl_filter_not_t<type_list<std::decay_t<Ts>...>, is_timeout_definition>;
     filtered tk;
     behavior bhvr{apply_moved_args(make_behavior_impl, get_indices(tk), tup)};
     using tail_indices = il_range_t<tl_size_v<filtered>, sizeof...(Ts)>;
@@ -360,7 +370,7 @@ public:
   }
 
   bool has_next_message() {
-    return !mailbox_.empty();
+    return !mailbox_->empty();
   }
 
   /// @endcond
@@ -378,7 +388,7 @@ private:
 
   void unstash();
 
-  void close_mailbox(const error& reason);
+  void close_mailbox();
 
   void force_close_mailbox() final;
 
@@ -398,7 +408,7 @@ private:
   // -- member variables -------------------------------------------------------
 
   /// Stores incoming messages.
-  detail::default_mailbox mailbox_;
+  abstract_mailbox_ptr mailbox_;
 
   /// Stashes skipped messages until the actor processes the next message.
   intrusive::stack<mailbox_element> stash_;

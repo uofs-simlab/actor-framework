@@ -22,8 +22,6 @@ namespace caf {
 /// needed.
 class CAF_CORE_EXPORT actor_registry {
 public:
-  friend class actor_system;
-
   virtual ~actor_registry();
 
   /// Returns the local actor associated to `key`.
@@ -41,23 +39,6 @@ public:
   /// Removes an actor from this registry,
   /// leaving `reason` for future reference.
   virtual void erase(actor_id key) = 0;
-
-  /// Increases running-actors-count by one.
-  /// @returns the increased count.
-  virtual size_t inc_running() = 0;
-
-  /// Decreases running-actors-count by one.
-  /// @returns the decreased count.
-  virtual size_t dec_running() = 0;
-
-  /// Returns the number of currently running actors.
-  virtual size_t running() const = 0;
-
-  /// Blocks the caller until running-actors-count becomes `expected`
-  /// (must be either 0 or 1) or timeout is reached.
-  virtual void
-  await_running_count_equal(size_t expected, timespan timeout = infinite) const
-    = 0;
 
   /// Returns the actor associated with `key` or `invalid_actor`.
   template <class T = strong_actor_ptr>

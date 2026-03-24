@@ -14,7 +14,6 @@
 #include "caf/local_actor.hpp"
 #include "caf/logger.hpp"
 #include "caf/mixin/requester.hpp"
-#include "caf/response_handle.hpp"
 #include "caf/scheduled_actor.hpp"
 
 #include <type_traits>
@@ -24,9 +23,8 @@ namespace caf {
 /// A cooperatively scheduled, event-based actor implementation. This is the
 /// recommended base class for user-defined actors.
 /// @extends scheduled_actor
-class CAF_CORE_EXPORT event_based_actor
-  : public extend<scheduled_actor, event_based_actor>::with<mixin::requester>,
-    public dynamically_typed_actor_base {
+class CAF_CORE_EXPORT event_based_actor : public scheduled_actor,
+                                          public dynamically_typed_actor_base {
 public:
   // -- member types -----------------------------------------------------------
 
@@ -38,15 +36,13 @@ public:
 
   using handle_type = actor;
 
+  using super = scheduled_actor;
+
   // -- constructors, destructors ----------------------------------------------
 
   explicit event_based_actor(actor_config& cfg);
 
   ~event_based_actor() override;
-
-  // -- overridden functions of local_actor ------------------------------------
-
-  void initialize() override;
 
   // -- messaging --------------------------------------------------------------
 
@@ -56,6 +52,8 @@ public:
     return event_based_mail(dynamically_typed{}, this,
                             std::forward<Args>(args)...);
   }
+
+  CAF_ADD_DEPRECATED_REQUEST_API
 
   // -- behavior management ----------------------------------------------------
 
@@ -80,6 +78,9 @@ public:
 protected:
   /// Returns the initial actor behavior.
   virtual behavior make_behavior();
+
+private:
+  behavior type_erased_initial_behavior() final;
 };
 
 } // namespace caf

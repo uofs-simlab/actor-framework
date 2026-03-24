@@ -26,6 +26,7 @@
 #include "caf/sec.hpp"
 #include "caf/send.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <limits>
 
@@ -243,7 +244,7 @@ behavior basp_broker::make_behavior() {
       if (i == node_observers.end())
         return;
       auto& observers = i->second;
-      auto j = std::find(observers.begin(), observers.end(), observer);
+      auto j = std::ranges::find(observers, observer);
       if (j != observers.end()) {
         observers.erase(j);
         if (observers.empty())
@@ -269,7 +270,7 @@ behavior basp_broker::make_behavior() {
       // deserialized and delivered.
       auto& q = instance.queue();
       auto msg_id = q.new_id();
-      q.push(context(), msg_id, ctrl(),
+      q.push(context(), msg_id, {ctrl(), add_ref},
              make_mailbox_element(nullptr, make_message_id(), delete_atom_v,
                                   msg.handle));
     },
@@ -283,7 +284,7 @@ behavior basp_broker::make_behavior() {
       // Same reasoning as in connection_closed_msg.
       auto& q = instance.queue();
       auto msg_id = q.new_id();
-      q.push(context(), msg_id, ctrl(),
+      q.push(context(), msg_id, {ctrl(), add_ref},
              make_mailbox_element(nullptr, make_message_id(), delete_atom_v,
                                   msg.handle));
     },
@@ -432,12 +433,12 @@ proxy_registry* basp_broker::proxy_registry_ptr() {
   return &instance.proxies();
 }
 
-resumable::resume_result basp_broker::resume(scheduler* ctx, size_t mt) {
+void basp_broker::resume(scheduler* ctx, uint64_t event_id) {
   proxy_registry::current(&instance.proxies());
   auto guard = detail::scope_guard{[]() noexcept { //
     proxy_registry::current(nullptr);
   }};
-  return super::resume(ctx, mt);
+  super::resume(ctx, event_id);
 }
 
 strong_actor_ptr basp_broker::make_proxy(node_id nid, actor_id aid) {
@@ -456,11 +457,11 @@ strong_actor_ptr basp_broker::make_proxy(node_id nid, actor_id aid) {
   // use a direct route if possible, i.e., when talking to a third node
   // create proxy and add functor that will be called if we
   // receive a basp::down_message
-  actor_config cfg;
+  actor_config cfg{no_spawn_options};
   auto res = make_actor<forwarding_actor_proxy, strong_actor_ptr>(aid, nid,
                                                                   &(system()),
                                                                   cfg, this);
-  strong_actor_ptr selfptr{ctrl()};
+  strong_actor_ptr selfptr{ctrl(), add_ref};
   res->get()->attach_functor([=](const error& rsn) {
     mm->backend().post([=] {
       // using res->id() instead of aid keeps this actor instance alive
@@ -722,7 +723,7 @@ scheduler* basp_broker::current_scheduler() {
 }
 
 strong_actor_ptr basp_broker::this_actor() {
-  return ctrl();
+  return {ctrl(), add_ref};
 }
 
 } // namespace caf::io

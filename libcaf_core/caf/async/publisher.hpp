@@ -57,8 +57,9 @@ public:
     auto* parent = decorated.parent();
     auto flag = disposable::make_flag();
     parent->watch(flag);
-    auto pimpl = make_counted<default_impl>(parent, std::move(decorated),
-                                            std::move(flag));
+    auto pimpl
+      = make_counted<default_impl>(execution_context_ptr{parent, add_ref},
+                                   std::move(decorated), std::move(flag));
     return publisher{std::move(pimpl)};
   }
 
@@ -94,7 +95,7 @@ private:
 
     flow::observable<T> observe_on(flow::coordinator* parent,
                                    size_t buffer_size,
-                                   size_t min_request_size) const {
+                                   size_t min_request_size) const override {
       // Short circuit if we are already on the target coordinator.
       if (parent == source_.get())
         return decorated_;
@@ -108,7 +109,7 @@ private:
       return pull.observe_on(parent);
     }
 
-    ~default_impl() {
+    ~default_impl() override {
       source_->schedule_fn([flag = std::move(flag_)]() mutable {
         // The source called `watch` on the flag to keep the event loop alive as
         // long as there are still async references to this observable. We need
@@ -135,7 +136,7 @@ private:
 
     flow::observable<T> observe_on(flow::coordinator* parent,
                                    size_t buffer_size,
-                                   size_t min_request_size) const {
+                                   size_t min_request_size) const override {
       auto [pull, push] = async::make_spsc_buffer_resource<T>(buffer_size,
                                                               min_request_size);
       decorated_->add(std::move(push));

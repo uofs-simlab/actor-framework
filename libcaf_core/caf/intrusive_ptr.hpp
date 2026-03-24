@@ -4,6 +4,10 @@
 
 #pragma once
 
+#include "caf/add_ref.hpp"
+#include "caf/adopt_ref.hpp"
+#include "caf/caf_deprecated.hpp"
+#include "caf/config.hpp"
 #include "caf/detail/append_hex.hpp"
 #include "caf/detail/concepts.hpp"
 #include "caf/fwd.hpp"
@@ -72,8 +76,20 @@ public:
     // nop
   }
 
-  intrusive_ptr(pointer raw_ptr, bool add_ref = true) noexcept {
-    set_ptr(raw_ptr, add_ref);
+  CAF_DEPRECATED("construct using add_ref or adopt_ref instead")
+  // cppcheck-suppress noExplicitConstructor
+  intrusive_ptr(pointer raw_ptr, bool increase_ref_count = true) noexcept {
+    set_ptr(raw_ptr, increase_ref_count);
+  }
+
+  intrusive_ptr(pointer raw_ptr, add_ref_t) noexcept : ptr_(raw_ptr) {
+    if (raw_ptr)
+      intrusive_ptr_access<T>::add_ref(ptr_);
+  }
+
+  constexpr intrusive_ptr(pointer raw_ptr, adopt_ref_t) noexcept
+    : ptr_(raw_ptr) {
+    // nop
   }
 
   intrusive_ptr(intrusive_ptr&& other) noexcept : ptr_(other.detach()) {
@@ -85,6 +101,7 @@ public:
   }
 
   template <class Y>
+  // cppcheck-suppress noExplicitConstructor
   intrusive_ptr(intrusive_ptr<Y> other) noexcept : ptr_(other.detach()) {
     static_assert(std::is_convertible_v<Y*, T*>, "Y* is not assignable to T*");
   }
@@ -115,18 +132,47 @@ public:
     return detach();
   }
 
-  void reset(pointer new_value = nullptr, bool add_ref = true) noexcept {
+  void reset() noexcept {
+    if (ptr_) {
+      // Must set ptr_ to nullptr BEFORE calling release, because release may
+      // trigger destruction of an object that owns this intrusive_ptr. If ptr_
+      // is still set when the owner's destructor runs, it would try to release
+      // again, causing a double-free.
+      auto tmp = ptr_;
+      ptr_ = nullptr;
+      intrusive_ptr_access<T>::release(tmp);
+    }
+  }
+
+  CAF_DEPRECATED("use 'reset(ptr, add_ref)' or 'reset(ptr, adopt_ref)' instead")
+  void reset(pointer new_value, bool increase_ref_count = true) noexcept {
+    intrusive_ptr tmp{new_value, increase_ref_count};
+    swap(tmp);
+  }
+
+  void reset(pointer new_value, adopt_ref_t) noexcept {
+    intrusive_ptr tmp{new_value, adopt_ref};
+    swap(tmp);
+  }
+
+  void reset(pointer new_value, add_ref_t) noexcept {
     intrusive_ptr tmp{new_value, add_ref};
     swap(tmp);
   }
 
   template <class... Ts>
   void emplace(Ts&&... xs) {
-    reset(new T(std::forward<Ts>(xs)...), false);
+    reset(new T(std::forward<Ts>(xs)...), adopt_ref);
   }
 
+  intrusive_ptr& operator=(std::nullptr_t) noexcept {
+    reset();
+    return *this;
+  }
+
+  CAF_DEPRECATED("use reset instead")
   intrusive_ptr& operator=(pointer ptr) noexcept {
-    reset(ptr);
+    reset(ptr, add_ref);
     return *this;
   }
 
@@ -136,7 +182,7 @@ public:
   }
 
   intrusive_ptr& operator=(const intrusive_ptr& other) noexcept {
-    reset(other.ptr_);
+    reset(other.ptr_, add_ref);
     return *this;
   }
 
@@ -172,29 +218,32 @@ public:
     return reinterpret_cast<ptrdiff_t>(get());
   }
 
+#ifdef CAF_ENABLE_RTTI
   template <class C>
   intrusive_ptr<C> downcast() const noexcept {
     static_assert(std::is_base_of_v<T, C>);
-    return intrusive_ptr<C>{ptr_ ? dynamic_cast<C*>(get()) : nullptr};
+    return {ptr_ ? dynamic_cast<C*>(get()) : nullptr, add_ref};
   }
+#endif
 
   template <class C>
   intrusive_ptr<C> upcast() const& noexcept {
     static_assert(std::is_base_of_v<C, T>);
-    return intrusive_ptr<C>{ptr_ ? ptr_ : nullptr};
+    return {ptr_ ? ptr_ : nullptr, add_ref};
   }
 
   template <class C>
   intrusive_ptr<C> upcast() && noexcept {
     static_assert(std::is_base_of_v<C, T>);
-    return intrusive_ptr<C>{ptr_ ? release() : nullptr, false};
+    return {ptr_ ? release() : nullptr, adopt_ref};
   }
 
 private:
-  void set_ptr(pointer raw_ptr, bool add_ref) noexcept {
+  void set_ptr(pointer raw_ptr, bool increase_ref_count) noexcept {
     ptr_ = raw_ptr;
-    if (raw_ptr && add_ref)
+    if (raw_ptr && increase_ref_count) {
       intrusive_ptr_access<T>::add_ref(raw_ptr);
+    }
   }
 
   pointer ptr_;

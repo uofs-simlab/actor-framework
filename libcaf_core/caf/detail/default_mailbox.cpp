@@ -21,24 +21,6 @@ void default_mailbox::push_front(mailbox_element_ptr ptr) {
     normal_queue_.push_front(ptr.release());
 }
 
-mailbox_element* default_mailbox::peek(message_id id) {
-  if (inbox_.closed() || inbox_.blocked()) {
-    return nullptr;
-  }
-  fetch_more();
-  if (id.is_async()) {
-    if (!urgent_queue_.empty())
-      return urgent_queue_.front();
-    if (!normal_queue_.empty())
-      return normal_queue_.front();
-    return nullptr;
-  }
-  auto pred = [id](mailbox_element& x) { return x.mid == id; };
-  if (auto result = urgent_queue_.find_if(pred))
-    return result;
-  return normal_queue_.find_if(pred);
-}
-
 mailbox_element_ptr default_mailbox::pop_front() {
   for (;;) {
     if (auto result = urgent_queue_.pop_front())
@@ -66,7 +48,7 @@ bool default_mailbox::try_unblock() {
   return inbox_.try_unblock();
 }
 
-size_t default_mailbox::close(const error&) {
+size_t default_mailbox::close() {
   size_t result = 0;
   detail::sync_request_bouncer bounce;
   auto bounce_and_count = [&bounce, &result](mailbox_element* ptr) {
@@ -107,11 +89,11 @@ bool default_mailbox::fetch_more() {
   return true;
 }
 
-void default_mailbox::ref_mailbox() noexcept {
+void default_mailbox::ref_mailbox() const noexcept {
   ++ref_count_;
 }
 
-void default_mailbox::deref_mailbox() noexcept {
+void default_mailbox::deref_mailbox() const noexcept {
   if (--ref_count_ == 0)
     delete this;
 }

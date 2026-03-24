@@ -78,7 +78,6 @@ public:
   /// Simple wrapper for runnables
   class CAF_IO_EXPORT runnable : public resumable, public ref_counted {
   public:
-    subtype_t subtype() const noexcept final;
     void ref_resumable() const noexcept final;
     void deref_resumable() const noexcept final;
   };
@@ -127,14 +126,15 @@ public:
   void post(F fun) {
     struct impl : runnable {
       F f;
-      impl(F&& mf) : f(std::move(mf)) {
+      explicit impl(F&& mf) : f(std::move(mf)) {
       }
-      resume_result resume(scheduler*, size_t) override {
-        f();
-        return done;
+      void resume(scheduler*, uint64_t event_id) override {
+        if (event_id != resumable::dispose_event_id) {
+          f();
+        }
       }
     };
-    delay(new impl(std::move(fun)));
+    delay(new impl(std::move(fun)), resumable::default_event_id);
   }
 
   /// Retrieves a pointer to the implementation or `nullptr` if CAF was
@@ -156,6 +156,8 @@ public:
   void start() override;
 
   void stop() override;
+
+  bool is_system_scheduler() const noexcept final;
 
 protected:
   /// Identifies the thread this multiplexer

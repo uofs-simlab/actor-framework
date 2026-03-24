@@ -4,6 +4,7 @@
 
 #include "caf/net/web_socket/with.hpp"
 
+#include "caf/net/middleman.hpp"
 #include "caf/net/ssl/context.hpp"
 #include "caf/net/ssl/tcp_acceptor.hpp"
 #include "caf/net/tcp_accept_socket.hpp"
@@ -11,6 +12,7 @@
 #include "caf/net/web_socket/handshake.hpp"
 #include "caf/net/web_socket/server.hpp"
 
+#include "caf/actor_system.hpp"
 #include "caf/defaults.hpp"
 #include "caf/detail/connection_acceptor.hpp"
 #include "caf/detail/ws_conn_acceptor.hpp"
@@ -34,8 +36,9 @@ public:
     // nop
   }
 
-  error start(net::socket_manager* parent) override {
+  error start(net::socket_manager* parent, action on_conn_close) override {
     parent_ = parent;
+    on_conn_close_ = std::move(on_conn_close);
     return {};
   }
 
@@ -45,19 +48,24 @@ public:
 
   expected<net::socket_manager_ptr> try_accept() override {
     if (wca_->canceled()) {
-      return make_error(sec::runtime_error,
-                        "WebSocket connection dropped: client canceled");
+      return expected<net::socket_manager_ptr>{
+        unexpect, sec::runtime_error,
+        "WebSocket connection dropped: client canceled"};
     }
     auto conn = accept(acceptor_);
     if (!conn) {
-      return conn.error();
+      return expected<net::socket_manager_ptr>{unexpect,
+                                               std::move(conn.error())};
     }
     auto app = internal::make_ws_flow_bridge(wca_);
     auto ws = net::web_socket::server::make(std::move(app));
     auto transport = internal::make_transport(std::move(*conn), std::move(ws));
     transport->max_consecutive_reads(max_consecutive_reads_);
     transport->active_policy().accept();
-    return net::socket_manager::make(parent_->mpx_ptr(), std::move(transport));
+    auto res = net::socket_manager::make(parent_->mpx_ptr(),
+                                         std::move(transport));
+    res->add_cleanup_listener(on_conn_close_);
+    return res;
   }
 
   net::socket handle() const override {
@@ -69,6 +77,7 @@ private:
   net::socket_manager* parent_ = nullptr;
   detail::ws_conn_acceptor_ptr wca_;
   size_t max_consecutive_reads_;
+  action on_conn_close_;
 };
 
 class with_t::config_impl : public internal::net_config {
@@ -96,8 +105,9 @@ public:
     auto ptr = net::socket_manager::make(mpx, std::move(handler));
     if (mpx->start(ptr))
       return expected<disposable>{disposable{std::move(ptr)}};
-    return make_error(sec::logic_error,
-                      "failed to register socket manager to net::multiplexer");
+    return expected<disposable>{
+      unexpect, sec::logic_error,
+      "failed to register socket manager to net::multiplexer"};
   }
 
   expected<disposable> start_server_impl(net::ssl::tcp_acceptor& acc) override {
@@ -127,8 +137,9 @@ public:
     if (mpx->start(ptr)) {
       return expected<disposable>{disposable{std::move(ptr)}};
     }
-    return make_error(sec::logic_error,
-                      "failed to register socket manager to net::multiplexer");
+    return expected<disposable>{
+      unexpect, sec::logic_error,
+      "failed to register socket manager to net::multiplexer"};
   }
 
   expected<disposable> start_client_impl(net::ssl::connection& conn) override {
@@ -145,14 +156,14 @@ public:
     auto port = auth.port;
     // Sanity checking.
     if (host.empty()) {
-      return make_error(sec::invalid_argument,
-                        "URI must provide a valid hostname");
+      return expected<disposable>{unexpect, sec::invalid_argument,
+                                  "URI must provide a valid hostname"};
     }
     // Spin up the server based on the scheme.
     if (endpoint.scheme() == "ws") {
       if (ctx) {
-        return make_error(sec::invalid_argument,
-                          "URI scheme is ws but SSL context is set");
+        return expected<disposable>{unexpect, sec::invalid_argument,
+                                    "URI scheme is ws but SSL context is set"};
       }
       if (port == 0) {
         port = defaults::net::http_default_port;
@@ -162,7 +173,7 @@ public:
         using ctx_t = ssl::context;
         auto new_ctx = ctx_t::make_client(ssl::tls::v1_2);
         if (!new_ctx) {
-          return new_ctx.error();
+          return expected<disposable>{unexpect, std::move(new_ctx.error())};
         }
         ctx = std::make_shared<ctx_t>(std::move(*new_ctx));
       }
@@ -170,8 +181,8 @@ public:
         port = defaults::net::https_default_port;
       }
     } else {
-      return make_error(sec::invalid_argument,
-                        "unsupported URI scheme: expected ws or wss");
+      return expected<disposable>{unexpect, sec::invalid_argument,
+                                  "unsupported URI scheme: expected ws or wss"};
     }
     // Fill the handshake with fields from the URI and try to connect.
     hs.host(host);
@@ -191,11 +202,12 @@ with_t::server_launcher_base::~server_launcher_base() {
 }
 
 expected<disposable> with_t::server_launcher_base::do_start() {
-  // Handle an error that could've been created by the DSL during server setup.
-  if (config_->err) {
+  // Handle an error that could've been created by the DSL during server
+  // setup.
+  if (config_->err.valid()) {
     if (config_->on_error)
       (*config_->on_error)(config_->err);
-    return config_->err;
+    return expected<disposable>{unexpect, config_->err};
   }
   return config_->start_server();
 }
@@ -262,12 +274,13 @@ with_t::client&& with_t::client::header_field(std::string_view key,
   return std::move(*this);
 }
 
-expected<disposable> with_t::client::do_start(pull_t& pull, push_t& push) {
-  // Handle an error that could've been created by the DSL during client setup.
-  if (config_->err) {
+expected<disposable> with_t::client::do_start(pull_t pull, push_t push) {
+  // Handle an error that could've been created by the DSL during client
+  // setup.
+  if (config_->err.valid()) {
     if (config_->on_error)
       (*config_->on_error)(config_->err);
-    return config_->err;
+    return expected<disposable>{unexpect, config_->err};
   }
   config_->pull = std::move(pull);
   config_->push = std::move(push);
@@ -281,7 +294,7 @@ with_t with(multiplexer* mpx) {
 }
 
 with_t with(actor_system& sys) {
-  return with(multiplexer::from(sys));
+  return with(sys.network_manager().mpx_ptr());
 }
 
 with_t::with_t(multiplexer* mpx) : config_(new config_impl(mpx)) {
@@ -300,7 +313,7 @@ with_t&& with_t::context(ssl::context ctx) && {
 with_t&& with_t::context(expected<ssl::context> ctx) && {
   if (ctx) {
     config_->ctx = std::make_shared<ssl::context>(std::move(*ctx));
-  } else if (ctx.error()) {
+  } else if (ctx.error().valid()) {
     config_->err = std::move(ctx.error());
   }
   return std::move(*this);
@@ -347,7 +360,7 @@ with_t::client with_t::connect(uri endpoint) && {
 with_t::client with_t::connect(expected<uri> endpoint) && {
   if (endpoint) {
     config_->client.assign(std::move(*endpoint));
-  } else if (endpoint.error()) {
+  } else if (endpoint.error().valid()) {
     config_->err = std::move(endpoint.error());
   }
   return client{std::move(config_)};

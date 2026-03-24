@@ -7,6 +7,7 @@
 #include "caf/config.hpp"
 #include "caf/detail/core_export.hpp"
 #include "caf/detail/critical.hpp"
+#include "caf/error_code.hpp"
 #include "caf/fwd.hpp"
 #include "caf/intrusive_ptr.hpp"
 #include "caf/node_id.hpp"
@@ -123,7 +124,7 @@ inline void intrusive_ptr_add_weak_ref(actor_control_block* x) {
   x->weak_refs.fetch_add(1, std::memory_order_relaxed);
 #else
   if (x->weak_refs.fetch_add(1, std::memory_order_relaxed) == 0)
-    CAF_CRITICAL("increased the weak reference count of an expired actor");
+    detail::critical("increased the weak reference count of an expired actor");
 #endif
 }
 
@@ -136,7 +137,8 @@ inline void intrusive_ptr_add_ref(actor_control_block* x) {
   x->strong_refs.fetch_add(1, std::memory_order_relaxed);
 #else
   if (x->strong_refs.fetch_add(1, std::memory_order_relaxed) == 0)
-    CAF_CRITICAL("increased the strong reference count of an expired actor");
+    detail::critical("increased the strong reference count "
+                     "of an expired actor");
 #endif
 }
 

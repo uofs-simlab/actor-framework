@@ -28,11 +28,10 @@ namespace caf::io {
 /// Describes a dynamically typed broker.
 /// @extends abstract_broker
 /// @ingroup Broker
-class CAF_IO_EXPORT broker
-  : public extend<abstract_broker, broker>::with<mixin::requester>,
-    public dynamically_typed_actor_base {
+class CAF_IO_EXPORT broker : public abstract_broker,
+                             public dynamically_typed_actor_base {
 public:
-  using super = extended_base;
+  using super = abstract_broker;
 
   using signatures = none_t;
 
@@ -45,15 +44,13 @@ public:
     CAF_ASSERT(sptr->hdl() == hdl);
     using trait = infer_handle_from_fun_trait_t<F>;
     using impl = typename trait::impl;
-    actor_config cfg{context()};
+    actor_config cfg{no_spawn_options, context()};
     detail::init_fun_factory<impl, F> fac;
     cfg.init_fun = fac(std::move(fun), hdl, std::forward<Ts>(xs)...);
-    auto res = this->system().spawn_class<impl, no_spawn_options>(cfg);
+    auto res = this->system().spawn_class<impl>(cfg);
     actor_cast<impl*>(res)->move_scribe(std::move(sptr));
     return res;
   }
-
-  void initialize() override;
 
   using super::super;
 
@@ -65,6 +62,8 @@ public:
     return event_based_mail(dynamically_typed{}, this,
                             std::forward<Args>(args)...);
   }
+
+  CAF_ADD_DEPRECATED_REQUEST_API
 
   // -- behavior management ----------------------------------------------------
 
@@ -87,6 +86,9 @@ public:
 
 protected:
   virtual behavior make_behavior();
+
+private:
+  behavior type_erased_initial_behavior() final;
 };
 
 /// Convenience template alias for declaring state-based brokers.

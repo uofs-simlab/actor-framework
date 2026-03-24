@@ -9,6 +9,7 @@
 #include "caf/io/network/default_multiplexer.hpp"
 
 #include "caf/actor.hpp"
+#include "caf/actor_from_state.hpp"
 #include "caf/actor_registry.hpp"
 #include "caf/actor_system_config.hpp"
 #include "caf/after.hpp"
@@ -17,10 +18,9 @@
 #include "caf/defaults.hpp"
 #include "caf/detail/actor_system_access.hpp"
 #include "caf/detail/assert.hpp"
-#include "caf/detail/latch.hpp"
 #include "caf/detail/prometheus_broker.hpp"
 #include "caf/format_to_error.hpp"
-#include "caf/function_view.hpp"
+#include "caf/format_to_unexpected.hpp"
 #include "caf/init_global_meta_objects.hpp"
 #include "caf/log/system.hpp"
 #include "caf/logger.hpp"
@@ -30,8 +30,10 @@
 #include "caf/send.hpp"
 #include "caf/telemetry/metric_registry.hpp"
 #include "caf/thread_owner.hpp"
+#include "caf/version.hpp"
 
 #include <cstring>
+#include <latch>
 #include <memory>
 
 #ifdef CAF_WINDOWS
@@ -85,7 +87,7 @@ auto make_metrics(telemetry::metric_registry& reg) {
 template <class T>
 class mm_impl : public middleman {
 public:
-  mm_impl(actor_system& ref) : middleman(ref), backend_(ref) {
+  explicit mm_impl(actor_system& ref) : middleman(ref), backend_(ref) {
     // nop
   }
 
@@ -99,7 +101,7 @@ private:
 
 class prometheus_scraping : public middleman::background_task {
 public:
-  prometheus_scraping(actor_system& sys) : mpx_(sys) {
+  explicit prometheus_scraping(actor_system& sys) : mpx_(sys) {
     // nop
   }
 
@@ -125,14 +127,14 @@ public:
     } else {
       auto& err = maybe_dptr.error();
       log::system::error("failed to expose Prometheus metrics: {}", err);
-      return std::move(err);
+      return expected<uint16_t>{unexpect, std::move(err)};
     }
     auto actual_port = dptr->port();
     using impl = detail::prometheus_broker;
     mpx_supervisor_ = mpx_.make_supervisor();
-    actor_config cfg{&mpx_};
-    broker_ = mpx_.system().spawn_impl<impl, hidden>(cfg, std::move(dptr));
-    detail::latch sync{1};
+    actor_config cfg{hidden, &mpx_};
+    broker_ = mpx_.system().spawn_impl<impl>(cfg, std::move(dptr));
+    std::latch sync{1};
     auto run_mpx = [this, sync_ptr{&sync}] {
       auto lg = log::io::trace("");
       mpx_.thread_id(std::this_thread::get_id());
@@ -217,9 +219,7 @@ actor_system_module* middleman::make(actor_system& sys) {
 }
 
 void middleman::check_abi_compatibility(version::abi_token token) {
-  if (static_cast<int>(token) != CAF_VERSION_MAJOR) {
-    CAF_CRITICAL("CAF ABI token mismatch");
-  }
+  version::check_abi_compatibility(token);
 }
 
 middleman::middleman(actor_system& sys) : system_(sys) {
@@ -260,7 +260,7 @@ expected<node_id> middleman::connect(std::string host, uint16_t port) {
                .request(actor_handle(), infinite)
                .receive();
   if (!res)
-    return std::move(res.error());
+    return expected<node_id>{unexpect, std::move(res.error())};
   return std::get<0>(*res);
 }
 
@@ -269,7 +269,7 @@ expected<uint16_t> middleman::publish(const strong_actor_ptr& whom,
                                       const char* cstr, bool ru) {
   auto lg = log::io::trace("whom = {}, sigs = {}, port = {}", whom, sigs, port);
   if (!whom)
-    return sec::cannot_publish_invalid_actor;
+    return expected<uint16_t>{unexpect, sec::cannot_publish_invalid_actor};
   std::string in;
   if (cstr != nullptr)
     in = cstr;
@@ -297,15 +297,16 @@ expected<strong_actor_ptr> middleman::remote_actor(std::set<std::string> ifs,
                .request(actor_handle(), infinite)
                .receive();
   if (!res)
-    return std::move(res.error());
+    return expected<strong_actor_ptr>{unexpect, std::move(res.error())};
   strong_actor_ptr ptr = std::move(std::get<1>(*res));
   if (!ptr)
-    return format_to_error(sec::no_actor_published_at_port,
-                           "no actor published at port {} on host {}", port);
+    return format_to_unexpected(sec::no_actor_published_at_port,
+                                "no actor published at port {} on host {}",
+                                port);
   if (!system().assignable(std::get<2>(*res), ifs))
-    return format_to_error(sec::unexpected_actor_messaging_interface,
-                           "expected interface {}, got {}", std::move(ifs),
-                           std::get<2>(*res));
+    return format_to_unexpected(sec::unexpected_actor_messaging_interface,
+                                "expected interface {}, got {}", std::move(ifs),
+                                std::get<2>(*res));
   return ptr;
 }
 
@@ -333,6 +334,64 @@ strong_actor_ptr middleman::remote_lookup(std::string name,
   return result;
 }
 
+namespace {
+
+struct config_serv_state {
+  static inline const char* name = "caf.io.config-server";
+
+  explicit config_serv_state(caf::event_based_actor* selfptr) : self(selfptr) {
+    // nop
+  }
+
+  caf::event_based_actor* self;
+  std::unordered_map<std::string, message> data;
+
+  behavior make_behavior() {
+    return {
+      // set a key/value pair
+      [this](put_atom, const std::string& key, message& msg) {
+        log::io::debug("PUT: key = {}, msg = {}", key, msg);
+        data[key] = std::move(msg);
+      },
+      // get a key/value pair
+      [this](get_atom, std::string& key) -> message {
+        log::io::debug("GET: key = {}", key);
+        auto i = data.find(key);
+        return make_message(std::move(key),
+                            i != data.end() ? i->second : make_message());
+      },
+      // get a 'named' actor from the local registry
+      [this](registry_lookup_atom, const std::string& name) {
+        return self->home_system().registry().get(name);
+      },
+    };
+  }
+};
+
+struct spawn_serv_state {
+  static inline const char* name = "caf.io.spawn-server";
+
+  explicit spawn_serv_state(caf::event_based_actor* selfptr) : self(selfptr) {
+    // nop
+  }
+
+  caf::event_based_actor* self;
+
+  behavior make_behavior() {
+    return {
+      [this](spawn_atom, const std::string& name, message& args,
+             actor_system::mpi& xs) -> result<strong_actor_ptr> {
+        log::io::debug("SPAWN: name = {}, args = {}", name, args);
+        return self->system().spawn<strong_actor_ptr>(name, std::move(args),
+                                                      self->context(), true,
+                                                      &xs);
+      },
+    };
+  }
+};
+
+} // namespace
+
 void middleman::start() {
   auto lg = log::io::trace("");
   // Consider using net::middleman for prometheus if caf-net is available.
@@ -345,10 +404,17 @@ void middleman::start() {
       background_tasks_.emplace_back(std::move(ptr));
     }
   }
+  // Create the internal actors for the I/O module.
+  auto config_serv
+    = system().spawn<hidden + lazy_init>(actor_from_state<config_serv_state>);
+  auto spawn_serv
+    = system().spawn<hidden + lazy_init>(actor_from_state<spawn_serv_state>);
+  system().registry().put("ConfigServ", std::move(config_serv));
+  system().registry().put("SpawnServ", std::move(spawn_serv));
   // Launch backend.
   backend_supervisor_ = backend().make_supervisor();
   CAF_ASSERT(backend_supervisor_ != nullptr);
-  detail::latch sync{1};
+  std::latch sync{1};
   auto run_backend = [this, sync_ptr{&sync}] {
     auto lg = log::io::trace("");
     backend().thread_id(std::this_thread::get_id());
@@ -389,6 +455,8 @@ void middleman::stop() {
     self->wait_for(manager_);
   destroy(manager_);
   background_tasks_.clear();
+  self->send_exit(system().registry().get("SpawnServ"), exit_reason::kill);
+  self->send_exit(system().registry().get("ConfigServ"), exit_reason::kill);
 }
 
 void middleman::init(actor_system_config& cfg) {

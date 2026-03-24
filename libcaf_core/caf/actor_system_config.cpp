@@ -7,18 +7,23 @@
 #include "caf/config.hpp"
 #include "caf/config_option.hpp"
 #include "caf/config_option_adder.hpp"
+#include "caf/console_printer.hpp"
 #include "caf/defaults.hpp"
+#include "caf/detail/actor_system_config_access.hpp"
 #include "caf/detail/assert.hpp"
 #include "caf/detail/config_consumer.hpp"
 #include "caf/detail/mailbox_factory.hpp"
 #include "caf/detail/parser/read_config.hpp"
 #include "caf/detail/parser/read_string.hpp"
 #include "caf/format_to_error.hpp"
+#include "caf/format_to_unexpected.hpp"
 #include "caf/message_builder.hpp"
 #include "caf/pec.hpp"
+#include "caf/scheduled_actor.hpp"
 #include "caf/sec.hpp"
 #include "caf/type_id.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -83,15 +88,22 @@ constexpr const char* default_config_file = "caf-application.conf";
 } // namespace
 
 struct actor_system_config::fields {
+  size_t max_throughput = defaults::scheduler::max_throughput;
   std::vector<std::string> paths;
   module_factory_list module_factories;
   actor_factory_dictionary actor_factories;
   thread_hook_list thread_hooks;
   std::unique_ptr<detail::mailbox_factory> mailbox_factory;
+  actor_system_config::console_printer_factory_ptr console_printer_factory;
   bool helptext_printed = false;
   std::string program_name;
   std::vector<std::string> args_remainder;
   c_args_wrapper c_args_remainder;
+
+#ifdef CAF_ENABLE_EXCEPTIONS
+  exception_handler_type exception_handler
+    = scheduled_actor::default_exception_handler;
+#endif // CAF_ENABLE_EXCEPTIONS
 };
 
 // -- constructors, destructors, and assignment operators ----------------------
@@ -110,11 +122,14 @@ actor_system_config::actor_system_config() {
                "same as --help but list options that are omitted by default")
     .add<bool>("dump-config,,", "print configuration and exit")
     .add<std::string>("config-file", "sets a path to a configuration file");
+  opt_group{custom_options_, "caf.clock"} //
+    .add<timespan>("cleanup-interval",
+                   "interval for cleaning up disposed jobs from the clock");
   opt_group{custom_options_, "caf.scheduler"}
     .add<std::string>("policy", "'stealing' (default) or 'sharing'")
     .add<size_t>("max-threads", "maximum number of worker threads")
-    .add<size_t>("max-throughput",
-                 "nr. of messages actors can consume per run");
+    .add(fields_->max_throughput, "max-throughput",
+         "nr. of messages actors can consume per run");
   opt_group(custom_options_, "caf.work-stealing")
     .add<size_t>("aggressive-poll-attempts", "nr. of aggressive steal attempts")
     .add<size_t>("aggressive-steal-interval",
@@ -137,6 +152,7 @@ actor_system_config::actor_system_config() {
   opt_group{custom_options_, "caf.logger.console"}
     .add<bool>("colored", "forces colored or uncolored output")
     .add<std::string>("format", "format for printed console lines")
+    .add<std::string>("stream", "'stderr' (default) or 'system'")
     .add<std::string>("verbosity", "minimum severity level for console output")
     .add<std::vector<std::string>>("excluded-components",
                                    "excluded components on console");
@@ -197,6 +213,10 @@ settings actor_system_config::dump_content() const {
   put_missing(console_group, "format", defaults::logger::console::format);
   put_missing(console_group, "excluded-components", std::vector<std::string>{});
   return result;
+}
+
+size_t actor_system_config::max_throughput() const noexcept {
+  return fields_->max_throughput;
 }
 
 // -- config file parsing ------------------------------------------------------
@@ -413,7 +433,7 @@ error actor_system_config::parse(std::vector<std::string> args,
                                  std::istream& config) {
   // Contents of the config file override hard-coded defaults.
   if (config.good()) {
-    if (auto err = parse_config(config, custom_options_, content))
+    if (auto err = parse_config(config, custom_options_, content); err.valid())
       return err;
   } else {
     // Not finding an explicitly defined config file is an error.
@@ -432,7 +452,7 @@ error actor_system_config::parse(std::vector<std::string> args,
     }
     if (auto* env_var = getenv(env_var_name)) {
       config_value value{env_var};
-      if (auto err = opt.sync(value); !err) {
+      if (auto err = opt.sync(value); err.empty()) {
         if (opt.category() == "global")
           put(content, opt.long_name(), std::move(value));
         else
@@ -471,7 +491,7 @@ error actor_system_config::parse(std::vector<std::string> args,
 }
 
 error actor_system_config::parse(std::vector<std::string> args) {
-  if (auto&& [err, path] = extract_config_file_path(args); !err) {
+  if (auto&& [err, path] = extract_config_file_path(args); err.empty()) {
     std::ifstream conf;
     if (!path.empty()) {
       conf.open(path);
@@ -490,7 +510,7 @@ error actor_system_config::parse(std::vector<std::string> args) {
       if (paths.empty())
         try_open(default_config_file);
       else
-        std::ignore = std::any_of(paths.begin(), paths.end(), try_open);
+        std::ignore = std::ranges::any_of(paths, try_open);
       // Note: not finding any file is not an error. It simply means that we
       //       use the hard-coded defaults.
     }
@@ -506,7 +526,7 @@ actor_system_config& actor_system_config::set_impl(std::string_view name,
   if (opt == nullptr) {
     std::cerr << "*** failed to set config parameter " << name
               << ": invalid name" << std::endl;
-  } else if (auto err = opt->sync(value)) {
+  } else if (auto err = opt->sync(value); err.valid()) {
     std::cerr << "*** failed to set config parameter " << name << ": "
               << to_string(err) << std::endl;
   } else {
@@ -529,8 +549,8 @@ actor_system_config::parse_config_file(const char* filename,
                                        const config_option_set& opts) {
   std::ifstream f{filename};
   if (!f.is_open())
-    return format_to_error(sec::cannot_open_file, "cannot open config file: {}",
-                           filename);
+    return format_to_unexpected(sec::cannot_open_file,
+                                "cannot open config file: {}", filename);
   return parse_config(f, opts);
 }
 
@@ -543,8 +563,8 @@ expected<settings>
 actor_system_config::parse_config(std::istream& source,
                                   const config_option_set& opts) {
   settings result;
-  if (auto err = parse_config(source, opts, result))
-    return err;
+  if (auto err = parse_config(source, opts, result); err.valid())
+    return expected<settings>{unexpect, err};
   return result;
 }
 
@@ -589,7 +609,7 @@ actor_system_config::extract_config_file_path(std::vector<std::string>& args) {
   auto path_str = std::string{path};
   args.erase(first, last);
   config_value val{path_str};
-  if (auto err = ptr->sync(val)) {
+  if (auto err = ptr->sync(val); err.valid()) {
     return {std::move(err), std::string{}};
   }
   put(content, "config-file", std::move(val));
@@ -606,18 +626,13 @@ void actor_system_config::print_content() const {
   std::cout << std::endl;
 }
 
-// -- module factories ---------------------------------------------------------
+// -- modifiers ----------------------------------------------------------------
 
-void actor_system_config::add_module_factory(module_factory_fn ptr) {
-  fields_->module_factories.emplace_back(ptr);
+actor_system_config& actor_system_config::console_printer_factory(
+  console_printer_factory_ptr factory) {
+  fields_->console_printer_factory = std::move(factory);
+  return *this;
 }
-
-std::span<actor_system_config::module_factory_fn>
-actor_system_config::module_factories() {
-  return fields_->module_factories;
-}
-
-// -- actor factories ----------------------------------------------------------
 
 actor_system_config& actor_system_config::add_actor_factory(std::string name,
                                                             actor_factory fun) {
@@ -625,33 +640,16 @@ actor_system_config& actor_system_config::add_actor_factory(std::string name,
   return *this;
 }
 
-actor_factory* actor_system_config::get_actor_factory(std::string_view name) {
-  auto i = fields_->actor_factories.find(name);
-  if (i == fields_->actor_factories.end())
-    return nullptr;
-  return &i->second;
+#ifdef CAF_ENABLE_EXCEPTIONS
+void actor_system_config::exception_handler(exception_handler_type fun) {
+  fields_->exception_handler = std::move(fun);
 }
 
-// -- thread hooks -------------------------------------------------------------
-
-void actor_system_config::add_thread_hook(std::unique_ptr<thread_hook> ptr) {
-  fields_->thread_hooks.emplace_back(std::move(ptr));
+const actor_system_config::exception_handler_type&
+actor_system_config::exception_handler() const noexcept {
+  return fields_->exception_handler;
 }
-
-std::span<std::unique_ptr<thread_hook>> actor_system_config::thread_hooks() {
-  return fields_->thread_hooks;
-}
-
-// -- mailbox factory ----------------------------------------------------------
-
-void actor_system_config::mailbox_factory(
-  std::unique_ptr<detail::mailbox_factory> factory) {
-  fields_->mailbox_factory = std::move(factory);
-}
-
-detail::mailbox_factory* actor_system_config::mailbox_factory() {
-  return fields_->mailbox_factory.get();
-}
+#endif // CAF_ENABLE_EXCEPTIONS
 
 // -- internal bookkeeping -----------------------------------------------------
 
@@ -661,6 +659,16 @@ bool actor_system_config::helptext_printed() const noexcept {
 
 const std::string& actor_system_config::program_name() const noexcept {
   return fields_->program_name;
+}
+
+void actor_system_config::add_module_factory(module_factory_fn new_factory) {
+  fields_->module_factories.emplace_back(new_factory);
+}
+
+actor_system_config&
+actor_system_config::add_thread_hook_impl(std::unique_ptr<thread_hook> ptr) {
+  fields_->thread_hooks.emplace_back(std::move(ptr));
+  return *this;
 }
 
 void actor_system_config::set_remainder(std::vector<std::string> args) {
@@ -678,3 +686,78 @@ std::pair<int, char**> actor_system_config::c_args_remainder() const noexcept {
 }
 
 } // namespace caf
+
+namespace caf::detail {
+
+std::span<actor_system_config_access::module_factory_fn>
+actor_system_config_access::module_factories() {
+  return cfg_->fields_->module_factories;
+}
+
+caf::actor_factory*
+actor_system_config_access::actor_factory(std::string_view name) {
+  auto i = cfg_->fields_->actor_factories.find(name);
+  if (i != cfg_->fields_->actor_factories.end()) {
+    return &i->second;
+  }
+  return nullptr;
+}
+
+std::span<std::unique_ptr<thread_hook>>
+actor_system_config_access::thread_hooks() {
+  return cfg_->fields_->thread_hooks;
+}
+
+void actor_system_config_access::mailbox_factory(
+  std::unique_ptr<detail::mailbox_factory> factory) {
+  cfg_->fields_->mailbox_factory = std::move(factory);
+}
+
+detail::mailbox_factory* actor_system_config_access::mailbox_factory() {
+  return cfg_->fields_->mailbox_factory.get();
+}
+
+namespace {
+
+class default_console_printer : public console_printer {
+public:
+  default_console_printer(FILE* out, bool colored)
+    : out_(out), colored_(colored && detail::is_tty(out)) {
+    CAF_ASSERT(out_ != nullptr);
+  }
+
+  void print(term color, const char* buf, size_t len) override {
+    if (!colored_ || color <= term::reset_endl) {
+      fwrite(buf, 1, len, out_);
+    } else {
+      detail::set_color(out_, color);
+      fwrite(buf, 1, len, out_);
+      detail::set_color(out_, term::reset);
+    }
+    fflush(out_);
+  }
+
+private:
+  FILE* out_;
+  bool colored_;
+};
+
+} // namespace
+
+std::unique_ptr<console_printer>
+actor_system_config_access::make_console_printer() {
+  // User-defined factory takes precedence over the default implementation.
+  if (cfg_->fields_->console_printer_factory) {
+    return (*cfg_->fields_->console_printer_factory)();
+  }
+  // Pick a default implementation based on the configuration.
+  auto colored = get_or(*cfg_, "caf.console.colored", true);
+  auto out = get_or(*cfg_, "caf.console.stream", "stdout");
+  if (icase_equal(out, "none")) {
+    return {};
+  }
+  auto* hdl = icase_equal(out, "stderr") ? stderr : stdout;
+  return std::make_unique<default_console_printer>(hdl, colored);
+}
+
+} // namespace caf::detail

@@ -6,10 +6,12 @@
 
 #include "caf/config.hpp"
 #include "caf/detail/critical.hpp"
+#include "caf/detail/panic.hpp"
 #include "caf/detail/socket_sys_aliases.hpp"
 #include "caf/error.hpp"
 #include "caf/expected.hpp"
 #include "caf/format_to_error.hpp"
+#include "caf/format_to_unexpected.hpp"
 #include "caf/internal/net_syscall.hpp"
 #include "caf/internal/socket_sys_includes.hpp"
 #include "caf/logger.hpp"
@@ -36,14 +38,17 @@ uint16_t port_of(sockaddr& what) {
     default:
       break;
   }
-  CAF_CRITICAL("invalid protocol family");
+  caf::detail::panic("invalid protocol family: {} (expected AF_INET ({}) or "
+                     "AF_INET6 ({}))",
+                     what.sa_family, AF_INET, AF_INET6);
 }
 
 } // namespace
 
 namespace caf::net {
 
-#if defined(CAF_MACOS) || defined(CAF_IOS) || defined(CAF_BSD)
+#if defined(CAF_MACOS) || defined(CAF_IOS)                                     \
+  || (defined(CAF_BSD) && defined(SO_NOSIGPIPE))
 #  define CAF_HAS_NOSIGPIPE_SOCKET_FLAG
 #endif
 
@@ -93,10 +98,10 @@ error allow_udp_connreset(network_socket x, bool) {
 expected<size_t> send_buffer_size(network_socket x) {
   int size = 0;
   socket_size_type ret_size = sizeof(size);
-  CAF_NET_SYSCALL("getsockopt", res, !=, 0,
-                  getsockopt(x.id, SOL_SOCKET, SO_SNDBUF,
-                             reinterpret_cast<getsockopt_ptr>(&size),
-                             &ret_size));
+  CAF_NET_SYSCALL_TO_UNEXPECTED(
+    "getsockopt", res, !=, 0,
+    getsockopt(x.id, SOL_SOCKET, SO_SNDBUF,
+               reinterpret_cast<getsockopt_ptr>(&size), &ret_size));
   return static_cast<size_t>(size);
 }
 
@@ -113,7 +118,8 @@ expected<std::string> local_addr(network_socket x) {
   sockaddr_storage st;
   socket_size_type st_len = sizeof(st);
   sockaddr* sa = reinterpret_cast<sockaddr*>(&st);
-  CAF_NET_SYSCALL("getsockname", tmp1, !=, 0, getsockname(x.id, sa, &st_len));
+  CAF_NET_SYSCALL_TO_UNEXPECTED("getsockname", tmp1, !=, 0,
+                                getsockname(x.id, sa, &st_len));
   char addr[INET6_ADDRSTRLEN]{0};
   switch (sa->sa_family) {
     case AF_INET:
@@ -126,16 +132,17 @@ expected<std::string> local_addr(network_socket x) {
     default:
       break;
   }
-  return format_to_error(sec::invalid_protocol_family,
-                         "local_addr: invalid protocol family {}",
-                         sa->sa_family);
+  return format_to_unexpected(sec::invalid_protocol_family,
+                              "local_addr: invalid protocol family {}",
+                              sa->sa_family);
 }
 
 expected<uint16_t> local_port(network_socket x) {
   sockaddr_storage st;
   auto st_len = static_cast<socket_size_type>(sizeof(st));
-  CAF_NET_SYSCALL("getsockname", tmp, !=, 0,
-                  getsockname(x.id, reinterpret_cast<sockaddr*>(&st), &st_len));
+  CAF_NET_SYSCALL_TO_UNEXPECTED(
+    "getsockname", tmp, !=, 0,
+    getsockname(x.id, reinterpret_cast<sockaddr*>(&st), &st_len));
   return ntohs(port_of(reinterpret_cast<sockaddr&>(st)));
 }
 
@@ -143,7 +150,8 @@ expected<std::string> remote_addr(network_socket x) {
   sockaddr_storage st;
   socket_size_type st_len = sizeof(st);
   sockaddr* sa = reinterpret_cast<sockaddr*>(&st);
-  CAF_NET_SYSCALL("getpeername", tmp, !=, 0, getpeername(x.id, sa, &st_len));
+  CAF_NET_SYSCALL_TO_UNEXPECTED("getpeername", tmp, !=, 0,
+                                getpeername(x.id, sa, &st_len));
   char addr[INET6_ADDRSTRLEN]{0};
   switch (sa->sa_family) {
     case AF_INET:
@@ -156,17 +164,39 @@ expected<std::string> remote_addr(network_socket x) {
     default:
       break;
   }
-  return format_to_error(sec::invalid_protocol_family,
-                         "remote_addr: invalid protocol family {}",
-                         sa->sa_family);
+  return format_to_unexpected(sec::invalid_protocol_family,
+                              "remote_addr: invalid protocol family {}",
+                              sa->sa_family);
 }
 
 expected<uint16_t> remote_port(network_socket x) {
   sockaddr_storage st;
   socket_size_type st_len = sizeof(st);
-  CAF_NET_SYSCALL("getpeername", tmp, !=, 0,
-                  getpeername(x.id, reinterpret_cast<sockaddr*>(&st), &st_len));
+  CAF_NET_SYSCALL_TO_UNEXPECTED(
+    "getpeername", tmp, !=, 0,
+    getpeername(x.id, reinterpret_cast<sockaddr*>(&st), &st_len));
   return ntohs(port_of(reinterpret_cast<sockaddr&>(st)));
+}
+
+namespace {
+
+int get_family(network_socket fd) {
+  sockaddr_storage addr;
+  socklen_t len = sizeof(addr);
+  if (getsockname(fd.id, reinterpret_cast<sockaddr*>(&addr), &len) == -1) {
+    return -1;
+  }
+  return addr.ss_family;
+}
+
+} // namespace
+
+bool is_ipv4(network_socket x) {
+  return get_family(x) == AF_INET;
+}
+
+bool is_ipv6(network_socket x) {
+  return get_family(x) == AF_INET6;
 }
 
 } // namespace caf::net

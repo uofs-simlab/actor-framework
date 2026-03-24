@@ -34,8 +34,6 @@ namespace caf::io {
 /// Manages brokers and network backends.
 class CAF_IO_EXPORT middleman : public actor_system::networking_module {
 public:
-  friend class actor_system;
-
   /// Metrics that the middleman collects by default.
   struct metric_singletons_t {
     /// Samples the size of inbound messages before deserializing them.
@@ -107,7 +105,7 @@ public:
     type_list<ActorHandle> tk;
     auto x = remote_actor(system().message_types(tk), std::move(host), port);
     if (!x)
-      return x.error();
+      return expected<ActorHandle>{unexpect, x.error()};
     CAF_ASSERT(x && *x);
     return actor_cast<ActorHandle>(std::move(*x));
   }
@@ -132,8 +130,8 @@ public:
     auto i = named_brokers_.find(name);
     if (i != named_brokers_.end())
       return i->second;
-    actor_config cfg{&backend()};
-    auto result = system().spawn_impl<Impl, hidden>(cfg);
+    actor_config cfg{hidden, &backend()};
+    auto result = system().spawn_impl<Impl>(cfg);
     named_brokers_.emplace(name, result);
     return result;
   }
@@ -160,13 +158,13 @@ public:
   remote_spawn(const node_id& nid, std::string name, message args,
                timespan timeout = timespan{std::chrono::minutes{1}}) {
     if (!nid || name.empty())
-      return sec::invalid_argument;
+      return expected<Handle>{unexpect, sec::invalid_argument};
     if (nid == system().node())
       return system().spawn<Handle>(std::move(name), std::move(args));
     auto res = remote_spawn_impl(nid, name, args,
                                  system().message_types<Handle>(), timeout);
     if (!res)
-      return std::move(res.error());
+      return expected<Handle>{unexpect, std::move(res.error())};
     return actor_cast<Handle>(std::move(*res));
   }
 
@@ -206,9 +204,9 @@ public:
     static constexpr bool spawnable = detail::spawnable<F, impl, Ts...>();
     static_assert(spawnable,
                   "cannot spawn function-based broker with given arguments");
-    actor_config cfg{&backend()};
-    return system().spawn_functor<Os>(std::bool_constant<spawnable>{}, cfg, fun,
-                                      std::forward<Ts>(xs)...);
+    actor_config cfg{Os, &backend()};
+    return system().spawn_functor(std::bool_constant<spawnable>{}, cfg, fun,
+                                  std::forward<Ts>(xs)...);
   }
 
   /// Returns a new functor-based broker connected
@@ -280,17 +278,17 @@ private:
   spawn_client_impl(F fun, const std::string& host, uint16_t port, Ts&&... xs) {
     auto eptr = backend().new_tcp_scribe(host, port);
     if (!eptr)
-      return eptr.error();
+      return expected<infer_handle_from_class_t<Impl>>{unexpect, eptr.error()};
     auto ptr = std::move(*eptr);
     CAF_ASSERT(ptr != nullptr);
     detail::init_fun_factory<Impl, F> fac;
-    actor_config cfg{&backend()};
+    actor_config cfg{Os, &backend()};
     auto fptr = fac.make(std::move(fun), ptr->hdl(), std::forward<Ts>(xs)...);
     fptr->hook([=](local_actor* self) mutable {
       static_cast<abstract_broker*>(self)->add_scribe(std::move(ptr));
     });
     cfg.init_fun.assign(fptr.release());
-    return system().spawn_class<Impl, Os>(cfg);
+    return system().spawn_class<Impl>(cfg);
   }
 
   template <spawn_options Os, class Impl, class F, class... Ts>
@@ -298,7 +296,7 @@ private:
   spawn_server_impl(F fun, uint16_t& port, Ts&&... xs) {
     auto eptr = backend().new_tcp_doorman(port);
     if (!eptr)
-      return eptr.error();
+      return {unexpect, eptr.error()};
     auto ptr = std::move(*eptr);
     detail::init_fun_factory<Impl, F> fac;
     port = ptr->port();
@@ -306,9 +304,9 @@ private:
     fptr->hook([=](local_actor* self) mutable {
       static_cast<abstract_broker*>(self)->add_doorman(std::move(ptr));
     });
-    actor_config cfg{&backend()};
+    actor_config cfg{Os, &backend()};
     cfg.init_fun.assign(fptr.release());
-    return system().spawn_class<Impl, Os>(cfg);
+    return system().spawn_class<Impl>(cfg);
   }
 
   expected<strong_actor_ptr>

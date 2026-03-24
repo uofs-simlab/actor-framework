@@ -44,10 +44,12 @@ add_robot_test(
   --variable BINARY_PATH:$<TARGET_FILE:caf-robot-config-options-driver>
   --variable CONFIG_FILE_DIR:${CMAKE_CURRENT_SOURCE_DIR}/config)
 
-add_robot_test(
-  config
-  dump-config
-  --variable BINARY_PATH:$<TARGET_FILE:hello_world>)
+if(CAF_ENABLE_EXAMPLES)
+  add_robot_test(
+    config
+    dump-config
+    --variable BINARY_PATH:$<TARGET_FILE:hello_world>)
+endif()
 
 caf_add_test_executable(
   caf-robot-flow-merge-driver
@@ -61,8 +63,20 @@ add_robot_test(
   merge
   --variable BINARY_PATH:$<TARGET_FILE:caf-robot-flow-merge-driver>)
 
-# The logging test assumes that the CAF_LOG_LEVEL is set to TRACE.
-if (CAF_LOG_LEVEL STREQUAL "TRACE")
+caf_add_test_executable(
+  caf-robot-type-id-driver
+  SOURCES
+    type-id/driver.cpp
+  DEPENDENCIES
+    CAF::core)
+
+add_robot_test(
+  type-id
+  missing-type-id
+  --variable BINARY_PATH:$<TARGET_FILE:caf-robot-type-id-driver>)
+
+# The logging test requires that the trace logging is enabled.
+if (CAF_ENABLE_TRACE_LOGGING)
   caf_add_test_executable(
     caf-robot-logging-driver
     SOURCES
@@ -117,7 +131,9 @@ if(TARGET CAF::net AND CAF_ENABLE_EXAMPLES)
     web-socket
     echo
     --variable BINARY_PATH:$<TARGET_FILE:echo>
-    --variable SSL_PATH:${CMAKE_CURRENT_SOURCE_DIR})
+    --variable SSL_PATH:${CMAKE_CURRENT_SOURCE_DIR}
+    --variable PYTHON:${Python_EXECUTABLE}
+    --variable CLOSE_FRAME_SCRIPT:${CMAKE_SOURCE_DIR}/scripts/websocket-close-frame-test.py)
 
   add_robot_test(
     web-socket

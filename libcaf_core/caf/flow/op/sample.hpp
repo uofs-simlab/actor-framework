@@ -167,17 +167,17 @@ private:
   void shutdown() {
     value_sub_.cancel();
     control_sub_.cancel();
-    if (!err_)
+    if (err_.empty())
       out_.on_complete();
     else
       out_.on_error(err_);
-    state_ = err_ ? state::aborted : state::disposed;
+    state_ = err_.valid() ? state::aborted : state::disposed;
   }
 
   void on_request() {
     if (demand_ == 0 || !buf_.has_value())
       return;
-    if (!err_)
+    if (err_.empty())
       out_.on_complete();
     else
       out_.on_error(err_);
@@ -243,9 +243,12 @@ public:
                                          out);
     ptr->init(in_, select_);
     if (!ptr->running()) {
-      return super::fail_subscription(
-        out, ptr->err().or_else(sec::runtime_error,
-                                "failed to initialize sample subscription"));
+      auto err = ptr->err();
+      if (!err.valid()) {
+        err = error{sec::runtime_error,
+                    "failed to initialize sample subscription"};
+      }
+      return super::fail_subscription(out, err);
     }
     out.on_subscribe(subscription{ptr});
     return ptr->as_disposable();

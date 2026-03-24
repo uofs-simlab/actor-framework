@@ -9,11 +9,13 @@
 
 #include "caf/action.hpp"
 #include "caf/callback.hpp"
+#include "caf/detail/actor_system_access.hpp"
 #include "caf/detail/assert.hpp"
 #include "caf/detail/default_invoke_result_visitor.hpp"
 #include "caf/detail/sync_request_bouncer.hpp"
 #include "caf/invoke_message_result.hpp"
 #include "caf/log/net.hpp"
+#include "caf/telemetry/gauge.hpp"
 
 namespace caf::net {
 
@@ -21,12 +23,17 @@ namespace caf::net {
 
 abstract_actor_shell::abstract_actor_shell(actor_config& cfg,
                                            socket_manager* owner)
-  : super(cfg), manager_(owner) {
+  : super(cfg), manager_(owner, add_ref) {
   mailbox_.try_block();
   resume_ = make_action([this] {
     for (;;) {
-      if (!consume_message() && try_block_mailbox())
+      auto consumed = consume_message();
+      if (terminated()) { // Stop unconditionally if the actor called `quit()`.
         return;
+      }
+      if (!consumed && try_block_mailbox()) {
+        return;
+      }
     }
   });
 }
@@ -50,9 +57,9 @@ void abstract_actor_shell::quit(error reason) {
 // -- mailbox access -----------------------------------------------------------
 
 mailbox_element_ptr abstract_actor_shell::next_message() {
-  if (!mailbox_.blocked())
-    return mailbox_.pop_front();
-  return nullptr;
+  if (mailbox_.closed() || mailbox_.blocked())
+    return nullptr;
+  return mailbox_.pop_front();
 }
 
 bool abstract_actor_shell::try_block_mailbox() {
@@ -128,10 +135,9 @@ bool abstract_actor_shell::enqueue(mailbox_element_ptr ptr, scheduler*) {
   CAF_LOG_SEND_EVENT(ptr);
   auto mid = ptr->mid;
   auto sender = ptr->sender;
-  auto collects_metrics = getf(abstract_actor::collects_metrics_flag);
-  if (collects_metrics) {
+  if (auto* mailbox_size = metrics_.mailbox_size) {
     ptr->set_enqueue_time();
-    metrics_.mailbox_size->inc();
+    mailbox_size->inc();
   }
   switch (mailbox().push_back(std::move(ptr))) {
     case intrusive::inbox_result::unblocked_reader: {
@@ -151,9 +157,10 @@ bool abstract_actor_shell::enqueue(mailbox_element_ptr ptr, scheduler*) {
       return true;
     default: { // intrusive::inbox_result::queue_closed
       CAF_LOG_REJECT_EVENT();
-      home_system().base_metrics().rejected_messages->inc();
-      if (collects_metrics)
-        metrics_.mailbox_size->dec();
+      detail::actor_system_access{home_system()}.message_rejected(this);
+      if (auto* mailbox_size = metrics_.mailbox_size) {
+        mailbox_size->dec();
+      }
       if (mid.is_request()) {
         detail::sync_request_bouncer f;
         f(sender, mid);
@@ -165,17 +172,22 @@ bool abstract_actor_shell::enqueue(mailbox_element_ptr ptr, scheduler*) {
 
 // -- overridden functions of local_actor --------------------------------------
 
-void abstract_actor_shell::launch(scheduler*, bool, bool hide) {
-  CAF_PUSH_AID_FROM_PTR(this);
-  auto lg = log::net::trace("hide = {}", hide);
+bool abstract_actor_shell::initialize(scheduler*) {
+  setf(is_initialized_flag);
+  return true;
+}
+
+bool abstract_actor_shell::launch_delayed() {
+  return mailbox().try_block();
+}
+
+void abstract_actor_shell::launch(caf::detail::private_thread*, scheduler*) {
   CAF_ASSERT(!getf(is_blocking_flag));
-  if (!hide)
-    register_at_system();
 }
 
 void abstract_actor_shell::on_cleanup(const error& reason) {
   auto lg = log::net::trace("reason = {}", reason);
-  close_mailbox(reason);
+  close_mailbox();
   // Detach from owner.
   {
     std::unique_lock<std::mutex> guard{loop_mtx_};
@@ -192,16 +204,16 @@ void abstract_actor_shell::do_unstash(mailbox_element_ptr ptr) {
   mailbox_.push_front(std::move(ptr));
 }
 
-void abstract_actor_shell::close_mailbox(const error& reason) {
+void abstract_actor_shell::close_mailbox() {
   if (!mailbox_.closed()) {
-    auto dropped = mailbox_.close(reason);
+    auto dropped = mailbox_.close();
     if (dropped > 0 && metrics_.mailbox_size)
       metrics_.mailbox_size->dec(static_cast<int64_t>(dropped));
   }
 }
 
 void abstract_actor_shell::force_close_mailbox() {
-  close_mailbox(make_error(exit_reason::unreachable));
+  close_mailbox();
 }
 
 flow::coordinator* abstract_actor_shell::flow_context() {

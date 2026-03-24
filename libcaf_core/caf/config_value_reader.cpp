@@ -11,21 +11,19 @@
 #include "caf/detail/parser/add_ascii.hpp"
 #include "caf/detail/print.hpp"
 #include "caf/format_to_error.hpp"
-#include "caf/internal/fast_pimpl.hpp"
 #include "caf/settings.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <stack>
 #include <vector>
-
-namespace caf {
 
 namespace {
 
 struct absent_field {};
 
 struct sequence {
-  using list_pointer = const std::vector<config_value>*;
+  using list_pointer = const std::vector<caf::config_value>*;
   size_t index;
   list_pointer ls;
   explicit sequence(list_pointer ls) : index(0), ls(ls) {
@@ -34,7 +32,7 @@ struct sequence {
   bool at_end() const noexcept {
     return index >= ls->size();
   }
-  const config_value& current() {
+  const caf::config_value& current() {
     return (*ls)[index];
   }
   void advance() {
@@ -43,12 +41,12 @@ struct sequence {
 };
 
 struct associative_array {
-  settings::const_iterator pos;
-  settings::const_iterator end;
+  caf::settings::const_iterator pos;
+  caf::settings::const_iterator end;
   bool at_end() const noexcept {
     return pos == end;
   }
-  const std::pair<const std::string, config_value>& current() {
+  const std::pair<const std::string, caf::config_value>& current() {
     return *pos;
   }
 };
@@ -95,7 +93,11 @@ inline constexpr auto pretty_name_v = pretty_name<T>::value;
   }                                                                            \
   [[maybe_unused]] auto& top = get<top_type>(st_.top());
 
-class impl : public deserializer, public internal::fast_pimpl<impl> {
+} // namespace
+
+namespace caf {
+
+class config_value_reader::impl : public deserializer {
 public:
   // -- member types------------------------------------------------------------
 
@@ -138,23 +140,23 @@ public:
     return st_.pop();
   }
 
-  void set_error(error stop_reason) {
+  void set_error(error stop_reason) override {
     err_ = std::move(stop_reason);
   }
 
-  error& get_error() noexcept {
+  error& get_error() noexcept override {
     return err_;
   }
 
-  caf::actor_system* sys() const noexcept {
+  caf::actor_system* sys() const noexcept override {
     return sys_;
   }
 
-  bool has_human_readable_format() const noexcept {
+  bool has_human_readable_format() const noexcept override {
     return true;
   }
 
-  bool fetch_next_object_type(type_id_t& type) {
+  bool fetch_next_object_type(type_id_t& type) override {
     if (st_.empty()) {
       emplace_error(sec::runtime_error,
                     "tried to read multiple objects from the root object");
@@ -211,7 +213,7 @@ public:
     }
   }
 
-  bool begin_object(type_id_t type, std::string_view) {
+  bool begin_object(type_id_t type, std::string_view) override {
     if (st_.empty()) {
       emplace_error(sec::runtime_error,
                     "tried to read multiple objects from the root object");
@@ -296,13 +298,13 @@ public:
     }
   }
 
-  bool end_object() {
+  bool end_object() override {
     SCOPE(const settings*);
     st_.pop();
     return true;
   }
 
-  bool begin_field(std::string_view name) {
+  bool begin_field(std::string_view name) override {
     SCOPE(const settings*);
     if (auto i = top->find(name); i != top->end()) {
       st_.push(std::addressof(i->second));
@@ -313,7 +315,7 @@ public:
     }
   }
 
-  bool begin_field(std::string_view name, bool& is_present) {
+  bool begin_field(std::string_view name, bool& is_present) override {
     SCOPE(const settings*);
     if (auto i = top->find(name); i != top->end()) {
       is_present = true;
@@ -325,7 +327,7 @@ public:
   }
 
   bool begin_field(std::string_view name, std::span<const type_id_t> types,
-                   size_t& index) {
+                   size_t& index) override {
     SCOPE(const settings*);
     std::string key;
     key += '@';
@@ -339,8 +341,7 @@ public:
     } else if (id = query_type_id(*str); id == invalid_type_id) {
       emplace_error(sec::runtime_error, "no such type: " + *str);
       return false;
-    } else if (auto i = std::find(types.begin(), types.end(), id);
-               i == types.end()) {
+    } else if (auto i = std::ranges::find(types, id); i == types.end()) {
       emplace_error(sec::conversion_failed,
                     "instrid type for variant field: " + *str);
       return false;
@@ -351,7 +352,7 @@ public:
   }
 
   bool begin_field(std::string_view name, bool& is_present,
-                   std::span<const type_id_t> types, size_t& index) {
+                   std::span<const type_id_t> types, size_t& index) override {
     SCOPE(const settings*);
     if (top->contains(name)) {
       is_present = true;
@@ -362,13 +363,13 @@ public:
     }
   }
 
-  bool end_field() {
+  bool end_field() override {
     CHECK_NOT_EMPTY();
     // Note: no pop() here, because the value(s) were already consumed.
     return true;
   }
 
-  bool begin_tuple(size_t size) {
+  bool begin_tuple(size_t size) override {
     size_t list_size = 0;
     if (begin_sequence(list_size)) {
       if (list_size == size)
@@ -384,11 +385,11 @@ public:
     return false;
   }
 
-  bool end_tuple() {
+  bool end_tuple() override {
     return end_sequence();
   }
 
-  bool begin_key_value_pair() {
+  bool begin_key_value_pair() override {
     SCOPE(associative_array);
     if (top.at_end()) {
       emplace_error(sec::runtime_error,
@@ -401,13 +402,13 @@ public:
     return true;
   }
 
-  bool end_key_value_pair() {
+  bool end_key_value_pair() override {
     SCOPE(associative_array);
     ++top.pos;
     return true;
   }
 
-  bool begin_sequence(size_t& size) {
+  bool begin_sequence(size_t& size) override {
     SCOPE(const config_value*);
     if (auto ls = get_if<config_value::list>(top)) {
       size = ls->size();
@@ -422,7 +423,7 @@ public:
     return false;
   }
 
-  bool end_sequence() {
+  bool end_sequence() override {
     SCOPE(sequence);
     if (!top.at_end()) {
       emplace_error(sec::runtime_error,
@@ -433,7 +434,7 @@ public:
     return true;
   }
 
-  bool begin_associative_array(size_t& size) {
+  bool begin_associative_array(size_t& size) override {
     SCOPE(const config_value*);
     if (auto dict = get_if<settings>(top)) {
       size = dict->size();
@@ -447,7 +448,7 @@ public:
     return false;
   }
 
-  bool end_associative_array() {
+  bool end_associative_array() override {
     SCOPE(associative_array);
     if (!top.at_end()) {
       emplace_error(sec::runtime_error,
@@ -458,7 +459,7 @@ public:
     return true;
   }
 
-  bool value(std::byte& x) {
+  bool value(std::byte& x) override {
     CHECK_NOT_EMPTY();
     auto tmp = uint8_t{0};
     if (pull(*this, tmp)) {
@@ -514,7 +515,7 @@ public:
         reader.pop();
         return true;
       } else {
-        if (auto err = detail::parse(*ptr, x)) {
+        if (auto err = detail::parse(*ptr, x); err.valid()) {
           reader.set_error(std::move(err));
           return false;
         } else {
@@ -527,82 +528,82 @@ public:
     return false;
   }
 
-  bool value(bool& x) {
+  bool value(bool& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(int8_t& x) {
+  bool value(int8_t& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(uint8_t& x) {
+  bool value(uint8_t& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(int16_t& x) {
+  bool value(int16_t& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(uint16_t& x) {
+  bool value(uint16_t& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(int32_t& x) {
+  bool value(int32_t& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(uint32_t& x) {
+  bool value(uint32_t& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(int64_t& x) {
+  bool value(int64_t& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(uint64_t& x) {
+  bool value(uint64_t& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(float& x) {
+  bool value(float& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(double& x) {
+  bool value(double& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(long double& x) {
+  bool value(long double& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(std::string& x) {
+  bool value(std::string& x) override {
     CHECK_NOT_EMPTY();
     return pull(*this, x);
   }
 
-  bool value(std::u16string&) {
+  bool value(std::u16string&) override {
     emplace_error(sec::runtime_error, "u16string support not implemented yet");
     return false;
   }
 
-  bool value(std::u32string&) {
+  bool value(std::u32string&) override {
     emplace_error(sec::runtime_error, "u32string support not implemented yet");
     return false;
   }
 
-  bool value(byte_span bytes) {
+  bool value(byte_span bytes) override {
     CHECK_NOT_EMPTY();
     std::string x;
     if (!pull(*this, x))
@@ -655,175 +656,174 @@ private:
   error err_;
 };
 
-} // namespace
-
 // -- constructors, destructors, and assignment operators ----------------------
 
 config_value_reader::config_value_reader(const config_value* input) {
-  impl::construct(impl_, input, nullptr);
+  static_assert(sizeof(impl) <= impl_storage_size);
+  impl_.reset(new (impl_storage_) impl(input, nullptr));
 }
 
 config_value_reader::config_value_reader(const config_value* input,
                                          actor_system& sys) {
-  impl::construct(impl_, input, &sys);
+  impl_.reset(new (impl_storage_) impl(input, &sys));
 }
 
 config_value_reader::~config_value_reader() {
-  impl::destruct(impl_);
+  // nop
 }
 
 // -- interface functions ------------------------------------------------------
 
 void config_value_reader::set_error(error stop_reason) {
-  return impl::cast(impl_).set_error(std::move(stop_reason));
+  impl_->set_error(std::move(stop_reason));
 }
 
 error& config_value_reader::get_error() noexcept {
-  return impl::cast(impl_).get_error();
+  return impl_->get_error();
 }
 
 caf::actor_system* config_value_reader::sys() const noexcept {
-  return impl::cast(impl_).sys();
+  return impl_->sys();
 }
 
 bool config_value_reader::has_human_readable_format() const noexcept {
-  return impl::cast(impl_).has_human_readable_format();
+  return impl_->has_human_readable_format();
 }
 
 bool config_value_reader::fetch_next_object_type(type_id_t& type) {
-  return impl::cast(impl_).fetch_next_object_type(type);
+  return impl_->fetch_next_object_type(type);
 }
 
 bool config_value_reader::begin_object(type_id_t type, std::string_view) {
-  return impl::cast(impl_).begin_object(type, {});
+  return impl_->begin_object(type, {});
 }
 
 bool config_value_reader::end_object() {
-  return impl::cast(impl_).end_object();
+  return impl_->end_object();
 }
 
 bool config_value_reader::begin_field(std::string_view name) {
-  return impl::cast(impl_).begin_field(name);
+  return impl_->begin_field(name);
 }
 
 bool config_value_reader::begin_field(std::string_view name, bool& is_present) {
-  return impl::cast(impl_).begin_field(name, is_present);
+  return impl_->begin_field(name, is_present);
 }
 
 bool config_value_reader::begin_field(std::string_view name,
                                       std::span<const type_id_t> types,
                                       size_t& index) {
-  return impl::cast(impl_).begin_field(name, types, index);
+  return impl_->begin_field(name, types, index);
 }
 
 bool config_value_reader::begin_field(std::string_view name, bool& is_present,
                                       std::span<const type_id_t> types,
                                       size_t& index) {
-  return impl::cast(impl_).begin_field(name, is_present, types, index);
+  return impl_->begin_field(name, is_present, types, index);
 }
 
 bool config_value_reader::end_field() {
-  return impl::cast(impl_).end_field();
+  return impl_->end_field();
 }
 
 bool config_value_reader::begin_tuple(size_t size) {
-  return impl::cast(impl_).begin_tuple(size);
+  return impl_->begin_tuple(size);
 }
 
 bool config_value_reader::end_tuple() {
-  return impl::cast(impl_).end_tuple();
+  return impl_->end_tuple();
 }
 
 bool config_value_reader::begin_key_value_pair() {
-  return impl::cast(impl_).begin_key_value_pair();
+  return impl_->begin_key_value_pair();
 }
 
 bool config_value_reader::end_key_value_pair() {
-  return impl::cast(impl_).end_key_value_pair();
+  return impl_->end_key_value_pair();
 }
 
 bool config_value_reader::begin_sequence(size_t& size) {
-  return impl::cast(impl_).begin_sequence(size);
+  return impl_->begin_sequence(size);
 }
 
 bool config_value_reader::end_sequence() {
-  return impl::cast(impl_).end_sequence();
+  return impl_->end_sequence();
 }
 
 bool config_value_reader::begin_associative_array(size_t& size) {
-  return impl::cast(impl_).begin_associative_array(size);
+  return impl_->begin_associative_array(size);
 }
 
 bool config_value_reader::end_associative_array() {
-  return impl::cast(impl_).end_associative_array();
+  return impl_->end_associative_array();
 }
 
 bool config_value_reader::value(std::byte& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(bool& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(int8_t& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(uint8_t& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(int16_t& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(uint16_t& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(int32_t& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(uint32_t& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(int64_t& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(uint64_t& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(float& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(double& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(long double& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(std::string& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(std::u16string& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(std::u32string& x) {
-  return impl::cast(impl_).value(x);
+  return impl_->value(x);
 }
 
 bool config_value_reader::value(byte_span bytes) {
-  return impl::cast(impl_).value(bytes);
+  return impl_->value(bytes);
 }
 
 } // namespace caf

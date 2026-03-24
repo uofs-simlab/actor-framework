@@ -56,7 +56,8 @@ bool inspect(Inspector& f, counted_int_ptr& x) {
   }
 }
 
-CAF_BEGIN_TYPE_ID_BLOCK(message_builder_test, caf::first_custom_type_id)
+CAF_BEGIN_TYPE_ID_BLOCK(message_builder_test, caf::first_custom_type_id + 60,
+                        10)
 
   CAF_ADD_TYPE_ID(message_builder_test, (counted_int))
   CAF_ADD_TYPE_ID(message_builder_test, (counted_int_ptr))
@@ -119,6 +120,13 @@ TEST("message_builder can build messages incrementally") {
       check_eq(msg2.size(), 1u);
       check_eq(msg2.get_as<int32_t>(0), 3);
     }
+  }
+  SECTION("append_tuple() adds values from a tuple") {
+    builder.append_tuple(std::tuple{42, "answer"});
+    auto msg = builder.to_message();
+    check_eq(msg.size(), 2u);
+    check_eq(msg.get_as<int32_t>(0), 42);
+    check_eq(msg.get_as<std::string>(1), "answer");
   }
   SECTION("to_message copies all elements into a message") {
     builder.append("foo");

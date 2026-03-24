@@ -15,7 +15,6 @@
 #include "caf/timespan.hpp"
 
 #include <chrono>
-#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -38,7 +37,7 @@ public:
 
   // -- constructors, destructors, and assignment operators --------------------
 
-  virtual ~coordinator();
+  ~coordinator() override;
 
   // -- factories --------------------------------------------------------------
 
@@ -77,7 +76,7 @@ public:
   template <class T>
     requires std::is_base_of_v<coordinated, T>
   void release_later(intrusive_ptr<T>& child) {
-    auto ptr = coordinated_ptr{child.release(), false};
+    auto ptr = coordinated_ptr{child.release(), adopt_ref};
     release_later(ptr);
   }
 

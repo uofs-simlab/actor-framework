@@ -12,7 +12,6 @@
 #include "caf/actor_system_config.hpp"
 #include "caf/byte_span.hpp"
 #include "caf/caf_main.hpp"
-#include "caf/detail/latch.hpp"
 #include "caf/event_based_actor.hpp"
 #include "caf/ipv4_address.hpp"
 #include "caf/scheduled_actor/flow.hpp"
@@ -65,7 +64,7 @@ int caf_main(caf::actor_system& sys, const config& cfg) {
     return EXIT_FAILURE;
   }
   uri resource;
-  if (auto err = parse(remainder[0], resource)) {
+  if (auto err = parse(remainder[0], resource); err.valid()) {
     sys.println("*** failed to parse URI: {} ", err);
     return EXIT_FAILURE;
   }

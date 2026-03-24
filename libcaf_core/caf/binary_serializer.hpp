@@ -6,6 +6,7 @@
 
 #include "caf/detail/core_export.hpp"
 #include "caf/fwd.hpp"
+#include "caf/placement_ptr.hpp"
 #include "caf/save_inspector_base.hpp"
 
 #include <concepts>
@@ -136,13 +137,21 @@ public:
 
   bool value(const std::vector<bool>& x);
 
-  virtual bool value(const strong_actor_ptr& ptr);
+  bool value(const strong_actor_ptr& ptr);
 
-  virtual bool value(const weak_actor_ptr& ptr);
+  bool value(const weak_actor_ptr& ptr);
 
 private:
+  static constexpr size_t impl_storage_size = 40;
+
+  /// Opaque implementation class.
+  class impl;
+
+  /// Pointer to the implementation object.
+  placement_ptr<impl> impl_;
+
   /// Storage for the implementation object.
-  alignas(std::max_align_t) std::byte impl_[40];
+  alignas(std::max_align_t) std::byte impl_storage_[impl_storage_size];
 };
 
 } // namespace caf

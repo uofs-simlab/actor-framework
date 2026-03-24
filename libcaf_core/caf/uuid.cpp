@@ -222,8 +222,8 @@ std::string to_string(const uuid& x) {
 
 expected<uuid> make_uuid(std::string_view str) {
   uuid result;
-  if (auto err = parse(str, result))
-    return err;
+  if (auto err = parse(str, result); err.valid())
+    return expected<uuid>{unexpect, err};
   return result;
 }
 

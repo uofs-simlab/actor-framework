@@ -88,7 +88,8 @@ public:
     auto key = next_key_++;
     inputs_.emplace(key, merge_input<T>{});
     using fwd_impl = forwarder<T, merge_sub, size_t>;
-    auto fwd = parent_->add_child(std::in_place_type<fwd_impl>, this, key);
+    auto fwd = parent_->add_child(std::in_place_type<fwd_impl>,
+                                  intrusive_ptr<merge_sub>{this, add_ref}, key);
     what.pimpl()->subscribe(fwd->as_observer());
   }
 
@@ -162,7 +163,7 @@ public:
   }
 
   void fwd_on_error(input_key key, const error& what) {
-    if (err_)
+    if (err_.valid())
       return;
     auto i = inputs_.find(key);
     if (i == inputs_.end())
@@ -276,7 +277,7 @@ private:
       ++pos_;
     // Check if we can call it a day.
     if (out_ && done()) {
-      if (!err_)
+      if (err_.empty())
         out_.on_complete();
       else
         out_.on_error(err_);

@@ -4,9 +4,8 @@ set -e
 # Convenience wrapper for easily setting options that the project's CMake
 # scripts will recognize.
 
-Command="$0 $*"
-CommandDirname=`dirname $0`
-SourceDir=`cd $CommandDirname && pwd`
+CommandDirname=$(dirname $0)
+SourceDir=$(cd $CommandDirname && pwd)
 
 usage="\
 Usage:
@@ -21,7 +20,7 @@ General CMake options:
   --generator=STRING        set CMake generator (see cmake --help)
   --cxx-flags=STRING        set CMAKE_CXX_FLAGS when running CMake
   --prefix=PATH             set installation directory
-  --debug-postfix           set CMAKE_DEBUG_POSTFIX
+  --debug-postfix=STRING    set CMAKE_DEBUG_POSTFIX
 
 Locating packages in non-standard locations:
 
@@ -29,40 +28,41 @@ Locating packages in non-standard locations:
 
 Debugging options:
 
-  --log-level=STRING      build with debugging output, possible values:
-                            - ERROR
-                            - WARNING
-                            - INFO
-                            - DEBUG
-                            - TRACE
-  --sanitizers=STRING     build with this list of sanitizers enabled
+  --enable-trace-logging    build with trace logging enabled
+  --sanitizers=STRING       build with this list of sanitizers enabled
 
 Convenience options:
 
   --dev-mode                shortcut for passing:
                               --build-type=Debug
-                              --log-level=TRACE
-                              --sanitizers=address,undefined
-                              --disable-examples
-                              --disable-tools
                               --disable-shared-libs
-                              --enable-utility-targets
+                              --enable-robot-tests
                               --enable-runtime-checks
+                              --enable-trace-logging
+                              --sanitizers=address,undefined
+  --coverage                shortcut for passing:
+                              --build-type=Debug
+                              --disable-shared-libs
+                              --enable-examples
+                              --enable-robot-tests
+                              --enable-runtime-checks
+                              --cxx-flags='--coverage'
 
 Flags (use --enable-<name> to activate and --disable-<name> to deactivate):
 
   cpack                     build with CPack package description [OFF]
-  shared-libs               build shared library targets [ON]
-  export-compile-commands   write JSON compile commands database [ON]
-  prefer-pthread-flag       prefer -pthread flag if available  [ON]
   curl-examples             build examples with libcurl [OFF]
-  protobuf-examples         build examples with Google Protobuf [OFF]
-  qt6-examples              build examples with the Qt6 framework [OFF]
-  runtime-checks            build CAF with extra runtime assertions [OFF]
-  utility-targets           include targets like consistency-check [OFF]
   examples                  build small programs showcasing CAF features [ON]
+  export-compile-commands   write JSON compile commands database [ON]
   io-module                 build networking I/O module [ON]
   openssl-module            build OpenSSL module [ON]
+  prefer-pthread-flag       prefer -pthread flag if available  [ON]
+  protobuf-examples         build examples with Google Protobuf [OFF]
+  qt6-examples              build examples with the Qt6 framework [OFF]
+  robot-tests               add the Robot tests to CTest [OFF]
+  rtti                      build CAF with RTTI support [ON]
+  runtime-checks            build CAF with extra runtime assertions [OFF]
+  shared-libs               build shared library targets [ON]
   testing                   build unit test suites [ON]
   with-exceptions           build CAF with support for exceptions [ON]
 
@@ -71,6 +71,7 @@ Influential Environment Variables (only on first invocation):
   CXX                       C++ compiler command
   CXXFLAGS                  Additional C++ compiler flags
   LDFLAGS                   Additional linker flags
+  CAF_BUILD_DIR             Overrides the default build directory [build]
 "
 
 # Appends a CMake cache entry definition to the CMakeCacheEntries variable.
@@ -97,20 +98,21 @@ set_build_flag() {
   FlagName=''
   case "$1" in
     cpack)                   FlagName='CAF_ENABLE_CPACK' ;;
-    shared-libs)             FlagName='BUILD_SHARED_LIBS' ;;
-    export-compile-commands) FlagName='CMAKE_EXPORT_COMPILE_COMMANDS' ;;
-    prefer-pthread-flag)     FlagName='THREADS_PREFER_PTHREAD_FLAG' ;;
     curl-examples)           FlagName='CAF_ENABLE_CURL_EXAMPLES' ;;
-    protobuf-examples)       FlagName='CAF_ENABLE_PROTOBUF_EXAMPLES' ;;
-    qt6-examples)            FlagName='CAF_ENABLE_QT6_EXAMPLES' ;;
-    runtime-checks)          FlagName='CAF_ENABLE_RUNTIME_CHECKS' ;;
-    utility-targets)         FlagName='CAF_ENABLE_UTILITY_TARGETS' ;;
     examples)                FlagName='CAF_ENABLE_EXAMPLES' ;;
+    exceptions)              FlagName='CAF_ENABLE_EXCEPTIONS' ;;
+    export-compile-commands) FlagName='CMAKE_EXPORT_COMPILE_COMMANDS' ;;
     io-module)               FlagName='CAF_ENABLE_IO_MODULE' ;;
     net-module)              FlagName='CAF_ENABLE_NET_MODULE' ;;
     openssl-module)          FlagName='CAF_ENABLE_OPENSSL_MODULE' ;;
+    prefer-pthread-flag)     FlagName='THREADS_PREFER_PTHREAD_FLAG' ;;
+    protobuf-examples)       FlagName='CAF_ENABLE_PROTOBUF_EXAMPLES' ;;
+    qt6-examples)            FlagName='CAF_ENABLE_QT6_EXAMPLES' ;;
+    robot-tests)             FlagName='CAF_ENABLE_ROBOT_TESTS' ;;
+    rtti)                    FlagName='CAF_ENABLE_RTTI' ;;
+    runtime-checks)          FlagName='CAF_ENABLE_RUNTIME_CHECKS' ;;
+    shared-libs)             FlagName='BUILD_SHARED_LIBS' ;;
     testing)                 FlagName='CAF_ENABLE_TESTING' ;;
-    exceptions)              FlagName='CAF_ENABLE_EXCEPTIONS' ;;
     *)
       echo "Invalid flag '$1'.  Try $0 --help to see available options."
       exit 1
@@ -120,16 +122,20 @@ set_build_flag() {
 }
 
 # Set defaults.
-CMakeBuildDir="$SourceDir/build"
+if [ -n "$CAF_BUILD_DIR" ]; then
+  CMakeBuildDir="$CAF_BUILD_DIR"
+else
+  CMakeBuildDir="$SourceDir/build"
+fi
 CMakeCacheEntries=""
 
 # Parse user input.
 while [ $# -ne 0 ]; do
   # Fetch the option argument.
   case "$1" in
-    --*=*) optarg=`echo "$1" | sed 's/[-_a-zA-Z0-9]*=//'` ;;
-    --enable-*) optarg=`echo "$1" | sed 's/--enable-//'` ;;
-    --disable-*) optarg=`echo "$1" | sed 's/--disable-//'` ;;
+    --*=*) optarg=$(echo "$1" | sed 's/[-_a-zA-Z0-9]*=//') ;;
+    --enable-*) optarg=$(echo "$1" | sed 's/--enable-//') ;;
+    --disable-*) optarg=$(echo "$1" | sed 's/--disable-//') ;;
     *) ;;
   esac
   # Consume current input.
@@ -156,21 +162,27 @@ while [ $# -ne 0 ]; do
     --prefix=*)
       append_cache_entry CMAKE_INSTALL_PREFIX PATH "$optarg"
       ;;
-    --log-level=*)
-      append_cache_entry CAF_LOG_LEVEL STRING "$optarg"
+    --enable-trace-logging)
+      append_cache_entry CAF_ENABLE_TRACE_LOGGING BOOL ON
       ;;
     --sanitizers=*)
       append_cache_entry CAF_SANITIZERS STRING "$optarg"
       ;;
     --dev-mode)
-      append_cache_entry CAF_LOG_LEVEL STRING 'TRACE'
+      append_cache_entry CAF_ENABLE_TRACE_LOGGING BOOL ON
       append_cache_entry CAF_SANITIZERS STRING 'address,undefined'
-      append_cache_entry CMAKE_BUILD_TYPE STRING 'Debug'
-      set_build_flag examples OFF
-      set_build_flag shared-libs OFF
-      set_build_flag tools OFF
+      append_cache_entry CMAKE_BUILD_TYPE STRING Debug
+      set_build_flag robot-tests ON
       set_build_flag runtime-checks ON
-      set_build_flag utility-targets ON
+      set_build_flag shared-libs OFF
+      ;;
+    --coverage)
+      append_cache_entry CMAKE_BUILD_TYPE STRING Debug
+      append_cache_entry CMAKE_CXX_FLAGS STRING --coverage
+      set_build_flag examples ON
+      set_build_flag robot-tests ON
+      set_build_flag runtime-checks ON
+      set_build_flag shared-libs OFF
       ;;
    --enable-*)
       set_build_flag $optarg ON
@@ -234,20 +246,3 @@ if [ -n "$CMakeGenerator" ]; then
 else
   "$CMakeCommand" $CMakeCacheEntries "$SourceDir"
 fi
-
-# Generate a config.status file that allows re-running a clean build.
-printf "#!/bin/sh\n\n" > config.status
-printf "# Switch to the source of this build directory.\n" >> config.status
-printf "cd \"%s\"\n\n" "$SourceDir" >> config.status
-printf "# Invoke the command to configure this build.\n" >> config.status
-if [ -n "$CXX" ]; then
-  printf "CXX=\"%s\"\n" "$CXX" >> config.status
-fi
-if [ -n "$CXXFLAGS" ]; then
-  printf "CXXFLAGS=\"%s\"\n" "$CXXFLAGS" >> config.status
-fi
-if [ -n "$LDFLAGS" ]; then
-  printf "LDFLAGS=\"%s\"\n" "$LDFLAGS" >> config.status
-fi
-echo $Command >> config.status
-chmod u+x config.status

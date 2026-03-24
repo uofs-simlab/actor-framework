@@ -11,15 +11,16 @@
 #include "caf/actor_system_config.hpp"
 #include "caf/binary_deserializer.hpp"
 #include "caf/binary_serializer.hpp"
+#include "caf/config.hpp"
 #include "caf/detail/concepts.hpp"
-#include "caf/detail/source_location.hpp"
 #include "caf/detail/test_export.hpp"
+#include "caf/local_actor.hpp"
 #include "caf/mailbox_element.hpp"
 #include "caf/resumable.hpp"
-#include "caf/scheduled_actor.hpp"
 
 #include <list>
 #include <memory>
+#include <source_location>
 
 namespace caf::test::fixture {
 
@@ -30,26 +31,6 @@ namespace caf::test::fixture {
 class CAF_TEST_EXPORT deterministic {
 private:
   // -- private member types (implementation details) --------------------------
-
-  class mailbox_impl;
-
-  class scheduler_impl;
-
-  class mailbox_factory_impl;
-
-  /// Wraps a resumable pointer and a mailbox element pointer.
-  struct scheduling_event {
-    scheduling_event(resumable* target, mailbox_element_ptr payload)
-      : target(target), item(std::move(payload)) {
-      // nop
-    }
-
-    /// The target of the event.
-    intrusive_ptr<resumable> target;
-
-    /// The message for the event or `nullptr` if the target is not an actor.
-    mailbox_element_ptr item;
-  };
 
   /// A predicate for checking of single value. When constructing from a
   /// reference wrapper, the predicate assigns the found value to the reference
@@ -139,7 +120,7 @@ private:
 
     message_predicate& operator=(const message_predicate&) = default;
 
-    bool operator()(const message& msg) {
+    bool operator()(const message& msg) override {
       if (!predicates_)
         return true;
       if (auto view = make_const_typed_message_view<Ts...>(msg))
@@ -162,18 +143,23 @@ private:
 public:
   // -- public member types ----------------------------------------------------
 
-  /// The custom system implementation for this fixture.
-  class system_impl : public actor_system {
-  public:
-    system_impl(actor_system_config& cfg, deterministic* fix);
+  /// Wraps a resumable pointer and a mailbox element pointer.
+  struct scheduling_event {
+    scheduling_event(resumable* target, mailbox_element_ptr payload)
+      : target(target, add_ref), item(std::move(payload)) {
+      // nop
+    }
 
-  private:
-    static actor_system_config& prepare(actor_system_config& cfg,
-                                        deterministic* fix);
+    /// The target of the event.
+    intrusive_ptr<resumable> target;
 
-    static void custom_setup(actor_system& sys, actor_system_config& cfg,
-                             void* custom_setup_data);
+    /// The message for the event or `nullptr` if the target is not an actor.
+    mailbox_element_ptr item;
   };
+
+  using events_list = std::list<std::unique_ptr<scheduling_event>>;
+
+  using events_list_ptr = std::shared_ptr<events_list>;
 
   /// Configures the algorithm to evaluate for an `evaluator` instances.
   enum class evaluator_algorithm {
@@ -193,7 +179,7 @@ public:
   template <class... Ts>
   class evaluator {
   public:
-    evaluator(deterministic* fix, detail::source_location loc,
+    evaluator(deterministic* fix, std::source_location loc,
               evaluator_algorithm algorithm)
       : fix_(fix), loc_(loc), algo_(algorithm) {
       // nop
@@ -272,6 +258,7 @@ public:
 
     /// Sets the target actor for this evaluator and evaluate the predicate.
     template <class T>
+      requires(!std::is_same_v<T, scoped_actor>)
     bool to(const T& dst) && {
       auto dst_ptr = actor_cast<strong_actor_ptr>(dst);
       switch (algo_) {
@@ -308,6 +295,7 @@ public:
           ctx.fail({"no matching message found", loc_});
         return false;
       }
+      CAF_ASSERT(event->item != nullptr);
       if (!from_(event->item->sender) || !with_(event->item->payload)) {
         if (fail_on_mismatch)
           ctx.fail({"no matching message found", loc_});
@@ -342,7 +330,7 @@ public:
     }
 
     deterministic* fix_;
-    detail::source_location loc_;
+    std::source_location loc_;
     evaluator_algorithm algo_;
     actor_predicate from_;
     message_predicate<Ts...> with_;
@@ -354,7 +342,7 @@ public:
   template <class... Ts>
   class injector {
   public:
-    injector(deterministic* fix, detail::source_location loc, Ts... values)
+    injector(deterministic* fix, std::source_location loc, Ts... values)
       : fix_(fix), loc_(loc), values_(std::move(values)...) {
       // nop
     }
@@ -412,7 +400,7 @@ public:
     }
 
     deterministic* fix_;
-    detail::source_location loc_;
+    std::source_location loc_;
     strong_actor_ptr from_;
     std::tuple<Ts...> values_;
   };
@@ -444,10 +432,6 @@ public:
 
   // -- friends ----------------------------------------------------------------
 
-  friend class mailbox_impl;
-
-  friend class scheduler_impl;
-
   template <class... Ts>
   friend class evaluator;
 
@@ -465,7 +449,7 @@ public:
   size_t mail_count();
 
   /// Returns the number of pending messages for `receiver`.
-  size_t mail_count(scheduled_actor* receiver);
+  size_t mail_count(local_actor* receiver);
 
   /// Returns the number of pending messages for `receiver`.
   size_t mail_count(const strong_actor_ptr& receiver);
@@ -517,25 +501,25 @@ public:
 
   /// Sets the time to an arbitrary point in time.
   /// @returns the number of triggered timeouts.
-  size_t set_time(actor_clock::time_point value,
-                  const detail::source_location& loc
-                  = detail::source_location::current());
+  size_t
+  set_time(actor_clock::time_point value,
+           const std::source_location& loc = std::source_location::current());
 
   /// Advances the clock by `amount`.
   /// @returns the number of triggered timeouts.
   size_t advance_time(actor_clock::duration_type amount,
-                      const detail::source_location& loc
-                      = detail::source_location::current());
+                      const std::source_location& loc
+                      = std::source_location::current());
 
   /// Tries to trigger the next pending timeout. Returns `true` if a timeout
   /// was triggered, `false` otherwise.
-  bool trigger_timeout(const detail::source_location& loc
-                       = detail::source_location::current());
+  bool trigger_timeout(const std::source_location& loc
+                       = std::source_location::current());
 
   /// Triggers all pending timeouts by advancing the clock to the point in time
   /// where the last timeout is due.
-  size_t trigger_all_timeouts(const detail::source_location& loc
-                              = detail::source_location::current());
+  size_t trigger_all_timeouts(const std::source_location& loc
+                              = std::source_location::current());
 
   /// Returns the number of pending timeouts.
   [[nodiscard]] size_t num_timeouts() noexcept;
@@ -547,13 +531,13 @@ public:
 
   /// Returns the time of the next pending timeout.
   [[nodiscard]] actor_clock::time_point
-  next_timeout(const detail::source_location& loc
-               = detail::source_location::current());
+  next_timeout(const std::source_location& loc
+               = std::source_location::current());
 
   /// Returns the time of the last pending timeout.
   [[nodiscard]] actor_clock::time_point
-  last_timeout(const detail::source_location& loc
-               = detail::source_location::current());
+  last_timeout(const std::source_location& loc
+               = std::source_location::current());
 
   // -- message-based predicates -----------------------------------------------
 
@@ -561,31 +545,31 @@ public:
   /// the receiver and aborts the test if the message is missing. Otherwise
   /// executes the message.
   template <class... Ts>
-  auto expect(const detail::source_location& loc
-              = detail::source_location::current()) {
+  auto
+  expect(const std::source_location& loc = std::source_location::current()) {
     return evaluator<Ts...>{this, loc, evaluator_algorithm::expect};
   }
 
   /// Tries to match a message with types `Ts...` and executes it if it is the
   /// next message in the mailbox of the receiver.
   template <class... Ts>
-  auto allow(const detail::source_location& loc
-             = detail::source_location::current()) {
+  auto
+  allow(const std::source_location& loc = std::source_location::current()) {
     return evaluator<Ts...>{this, loc, evaluator_algorithm::allow};
   }
 
   /// Tries to match a message with types `Ts...` and executes it if it is the
   /// next message in the mailbox of the receiver.
   template <class... Ts>
-  auto disallow(const detail::source_location& loc
-                = detail::source_location::current()) {
+  auto
+  disallow(const std::source_location& loc = std::source_location::current()) {
     return evaluator<Ts...>{this, loc, evaluator_algorithm::disallow};
   }
 
   /// Helper class for `inject` that only provides `with`.
   struct inject_helper {
     deterministic* fix;
-    detail::source_location loc;
+    std::source_location loc;
 
     template <class... Ts>
     auto with(Ts... values) {
@@ -596,8 +580,8 @@ public:
   /// Starts an `inject` clause. Inject clauses provide a shortcut for sending a
   /// message to an actor and then calling `expect` with the same arguments to
   /// check whether the actor handles the message as expected.
-  auto inject(const detail::source_location& loc
-              = detail::source_location::current()) {
+  auto
+  inject(const std::source_location& loc = std::source_location::current()) {
     return inject_helper{this, loc};
   }
 
@@ -605,22 +589,22 @@ public:
   /// the receiver such that the next call to `dispatch_message` will run it.
   /// @returns `true` if the message could be preponed, `false` otherwise.
   template <class... Ts>
-  auto prepone(const detail::source_location& loc
-               = detail::source_location::current()) {
+  auto
+  prepone(const std::source_location& loc = std::source_location::current()) {
     return evaluator<Ts...>{this, loc, evaluator_algorithm::prepone};
   }
 
   /// Shortcut for calling `prepone` and then `expect` with the same arguments.
   template <class... Ts>
-  auto prepone_and_expect(const detail::source_location& loc
-                          = detail::source_location::current()) {
+  auto prepone_and_expect(const std::source_location& loc
+                          = std::source_location::current()) {
     return evaluator<Ts...>{this, loc, evaluator_algorithm::prepone_and_expect};
   }
 
   /// Shortcut for calling `prepone` and then `allow` with the same arguments.
   template <class... Ts>
-  auto prepone_and_allow(const detail::source_location& loc
-                         = detail::source_location::current()) {
+  auto prepone_and_allow(const std::source_location& loc
+                         = std::source_location::current()) {
     return evaluator<Ts...>{this, loc, evaluator_algorithm::prepone_and_allow};
   }
 
@@ -632,13 +616,13 @@ public:
     {
       binary_serializer sink{sys, buf};
       if (!sink.apply(value))
-        return sink.get_error();
+        return unexpected<error>{std::in_place, sink.get_error()};
     }
     T result;
     {
       binary_deserializer source{sys, buf};
       if (!source.apply(result))
-        return source.get_error();
+        return unexpected<error>{std::in_place, source.get_error()};
     }
     return result;
   }
@@ -654,8 +638,10 @@ public:
   /// Iterates over all pending messages.
   template <class Fn>
   void for_each_message(Fn&& fn) {
-    for (auto& event : events_) {
-      fn(event->item->payload);
+    for (auto& event : *events_) {
+      if (event->item) {
+        fn(event->item->payload);
+      }
     }
   }
 
@@ -666,35 +652,27 @@ public:
       return;
     }
     auto* base_ptr = actor_cast<abstract_actor*>(hdl);
-    auto* ptr = dynamic_cast<scheduled_actor*>(base_ptr);
-    if (ptr == nullptr) {
+    if (!base_ptr->is_local_actor()) {
       return;
     }
-    std::for_each(events_.begin(), events_.end(), [ptr, &fn](auto& event) {
-      if (event->target == ptr) {
+    auto* ptr = static_cast<local_actor*>(base_ptr)->as_resumable();
+    for (auto& event : *events_) {
+      if (event->target == ptr && event->item) {
         fn(event->item->payload);
       }
-    });
+    }
   }
 
-private:
-  // Note: this is put here because this member variable must be destroyed
-  //       *after* the actor system (and thus must come before `sys` in
-  //       the declaration order).
+  // -- member variables -------------------------------------------------------
 
-  /// Stores all pending messages of scheduled actors.
-  std::list<std::unique_ptr<scheduling_event>> events_;
-
-public:
-  /// Configures the actor system with deterministic scheduling.
+  /// The actor system configuration.
   actor_system_config cfg;
 
   /// The actor system instance for the tests.
-  system_impl sys;
+  actor_system sys;
 
 private:
-  /// Removes all events from the queue.
-  void drop_events();
+  explicit deterministic(events_list_ptr events);
 
   /// Tries find a message in `events_` that matches the given predicate and
   /// moves it to the front of the queue.
@@ -706,14 +684,10 @@ private:
                           actor_predicate& sender_pred,
                           abstract_message_predicate& payload_pred);
 
-  /// Returns the scheduler implementation.
-  scheduler_impl& sched_impl();
-
   /// Returns the next event for `receiver` or `nullptr` if there is none.
   scheduling_event* find_event_impl(const strong_actor_ptr& receiver);
-
-  /// Removes the next message for `receiver` from the queue and returns it.
-  mailbox_element_ptr pop_msg_impl(scheduled_actor* receiver);
+  /// Stores all pending messages of scheduled actors.
+  events_list_ptr events_;
 };
 
 } // namespace caf::test::fixture

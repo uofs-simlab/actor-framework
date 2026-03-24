@@ -7,6 +7,7 @@
 #include "caf/actor_cast.hpp"
 #include "caf/actor_registry.hpp"
 #include "caf/detail/assert.hpp"
+#include "caf/detail/current_actor.hpp"
 #include "caf/log/system.hpp"
 #include "caf/spawn_options.hpp"
 
@@ -16,7 +17,10 @@ namespace {
 
 class impl : public blocking_actor {
 public:
-  impl(actor_config& cfg) : blocking_actor(cfg) {
+  static constexpr auto forced_spawn_options = spawn_options::blocking_flag;
+
+  explicit impl(actor_config& cfg)
+    : blocking_actor(cfg.add_flag(abstract_actor::is_scoped_actor_impl_flag)) {
     // nop
   }
 
@@ -28,13 +32,13 @@ public:
     return "scoped_actor";
   }
 
-  void launch(scheduler*, bool, bool hide) override {
-    CAF_PUSH_AID_FROM_PTR(this);
-    std::ignore = log::system::trace("hide = {}", hide);
+  void launch([[maybe_unused]] detail::private_thread* worker,
+              scheduler* ctx) override {
+    CAF_ASSERT(worker == nullptr);
+    detail::current_actor_guard ctx_guard{this};
+    auto lg = log::system::trace("");
     CAF_ASSERT(getf(is_blocking_flag));
-    if (!hide)
-      register_at_system();
-    initialize();
+    initialize(ctx);
   }
 };
 
@@ -42,12 +46,15 @@ public:
 
 scoped_actor::scoped_actor(actor_system& sys, bool hide) {
   CAF_SET_LOGGER_SYS(&sys);
-  actor_config cfg;
-  if (hide)
-    cfg.flags |= abstract_actor::is_hidden_flag;
-  auto hdl = sys.spawn_impl<impl, no_spawn_options>(cfg);
-  self_ = actor_cast<strong_actor_ptr>(std::move(hdl));
-  prev_ = CAF_SET_AID(self_->id());
+  auto do_spawn = [&sys, hide] {
+    if (hide) {
+      return sys.spawn<impl, hidden>();
+    }
+    return sys.spawn<impl>();
+  };
+  self_ = actor_cast<strong_actor_ptr>(do_spawn());
+  prev_ = detail::current_actor();
+  detail::current_actor(self_->get());
 }
 
 scoped_actor::~scoped_actor() {
@@ -56,7 +63,7 @@ scoped_actor::~scoped_actor() {
   auto x = ptr();
   if (!x->getf(abstract_actor::is_terminated_flag))
     x->cleanup(exit_reason::normal, nullptr);
-  CAF_SET_AID(prev_);
+  detail::current_actor(prev_);
 }
 
 blocking_actor* scoped_actor::ptr() const {

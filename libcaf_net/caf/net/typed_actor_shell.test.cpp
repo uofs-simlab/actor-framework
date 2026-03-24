@@ -21,9 +21,12 @@
 #include "caf/flow/observable.hpp"
 #include "caf/flow/single.hpp"
 #include "caf/init_global_meta_objects.hpp"
+#include "caf/scheduled_actor/flow.hpp"
 #include "caf/scoped_actor.hpp"
 #include "caf/type_id.hpp"
 #include "caf/typed_actor.hpp"
+
+#include <algorithm>
 
 using namespace caf;
 using namespace std::literals;
@@ -38,7 +41,8 @@ using testee_actor = typed_actor<testee_trait>;
 
 } // namespace
 
-CAF_BEGIN_TYPE_ID_BLOCK(typed_actor_shell_test, caf::first_custom_type_id + 10)
+CAF_BEGIN_TYPE_ID_BLOCK(typed_actor_shell_test, caf::first_custom_type_id + 210,
+                        10)
   CAF_ADD_TYPE_ID(typed_actor_shell_test, (testee_actor))
 CAF_END_TYPE_ID_BLOCK(typed_actor_shell_test)
 
@@ -93,7 +97,7 @@ public:
   ptrdiff_t consume(byte_span buf, byte_span) override {
     // Seek newline character.
     constexpr auto nl = std::byte{'\n'};
-    if (auto i = std::find(buf.begin(), buf.end(), nl); i != buf.end()) {
+    if (auto i = std::ranges::find(buf, nl); i != buf.end()) {
       auto pos = std::distance(buf.begin(), i);
       std::string line;
       line.reserve(pos);

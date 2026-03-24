@@ -6,13 +6,17 @@
 
 #include "caf/action.hpp"
 #include "caf/actor_registry.hpp"
+#include "caf/actor_system_config.hpp"
 #include "caf/anon_mail.hpp"
 #include "caf/config.hpp"
 #include "caf/defaults.hpp"
+#include "caf/detail/actor_system_access.hpp"
 #include "caf/detail/assert.hpp"
 #include "caf/detail/critical.hpp"
+#include "caf/detail/current_actor.hpp"
 #include "caf/detail/default_invoke_result_visitor.hpp"
 #include "caf/detail/mailbox_factory.hpp"
+#include "caf/detail/pretty_type_name.hpp"
 #include "caf/detail/private_thread.hpp"
 #include "caf/detail/sync_request_bouncer.hpp"
 #include "caf/flow/observable_builder.hpp"
@@ -89,7 +93,7 @@ void scheduled_actor::default_node_down_handler(scheduled_actor* ptr,
 }
 
 void scheduled_actor::default_exit_handler(scheduled_actor* ptr, exit_msg& x) {
-  if (x.reason)
+  if (x.reason.valid())
     default_error_handler(ptr, x.reason);
 }
 
@@ -99,14 +103,21 @@ error scheduled_actor::default_exception_handler(local_actor* ptr,
   CAF_ASSERT(x != nullptr);
   try {
     std::rethrow_exception(x);
-  } catch (std::exception& e) {
-    auto pretty_type = detail::pretty_type_name(typeid(e));
+  } catch (const std::exception& e) {
+#  ifdef CAF_ENABLE_RTTI
+    auto pretty_type = detail::pretty_type_name(typeid(e).name());
     ptr->println(
       "*** unhandled exception: [id: {}, name: {}, exception: {}]: {}",
       ptr->id(), ptr->name(), pretty_type, e.what());
     return format_to_error(sec::runtime_error,
                            "unhandled exception of type {}: {}", pretty_type,
                            e.what());
+#  else
+    ptr->println("*** unhandled exception: [id: {}, name: {}]: {}", ptr->id(),
+                 ptr->name(), e.what());
+    return format_to_error(sec::runtime_error, "unhandled exception: {}",
+                           e.what());
+#  endif
   } catch (...) {
     ptr->println(
       "*** unhandled exception: [id: {}, name: {}]: unknown exception",
@@ -124,7 +135,7 @@ scheduled_actor::batch_forwarder::~batch_forwarder() {
 }
 
 scheduled_actor::scheduled_actor(actor_config& cfg)
-  : super(cfg),
+  : super(cfg.add_flag(is_scheduled_actor_flag)),
     default_handler_(print_and_drop),
     error_handler_(default_error_handler),
     down_handler_(default_down_handler),
@@ -133,13 +144,15 @@ scheduled_actor::scheduled_actor(actor_config& cfg)
     private_thread_(nullptr)
 #ifdef CAF_ENABLE_EXCEPTIONS
     ,
-    exception_handler_(default_exception_handler)
+    exception_handler_(home_system().config().exception_handler())
 #endif // CAF_ENABLE_EXCEPTIONS
 {
-  if (cfg.mbox_factory == nullptr)
+  if (cfg.mbox_factory == nullptr) {
     mailbox_ = new (&default_mailbox_) detail::default_mailbox();
-  else
+  } else {
     mailbox_ = cfg.mbox_factory->make(this);
+  }
+  max_throughput_ = home_system().config().max_throughput();
 }
 
 scheduled_actor::~scheduled_actor() {
@@ -155,25 +168,39 @@ scheduled_actor::~scheduled_actor() {
 bool scheduled_actor::enqueue(mailbox_element_ptr ptr, scheduler* sched) {
   CAF_ASSERT(ptr != nullptr);
   CAF_ASSERT(!getf(is_blocking_flag));
+  auto use_delay = true; // Whether we can use delay() instead of schedule().
+  if (auto* pinned = pinned_scheduler(); pinned != nullptr) {
+    // If this actor is pinned to a scheduler, always use that scheduler.
+    if (pinned != sched) {
+      use_delay = false;
+      sched = pinned;
+    }
+  } else if (sched == nullptr || !sched->is_system_scheduler()) {
+    // When enqueued without scheduler context (sched == nullptr), fall back to
+    // the system scheduler. Furthermore, regular actors (any actor that is not
+    // explicitly pinned) may *only* run on the system scheduler.
+    use_delay = false;
+    sched = &home_system().scheduler();
+  }
   auto lg = log::core::trace("ptr = {}", *ptr);
   CAF_LOG_SEND_EVENT(ptr);
   auto mid = ptr->mid;
   auto sender = ptr->sender;
-  auto collects_metrics = getf(abstract_actor::collects_metrics_flag);
-  if (collects_metrics) {
+  if (auto* mailbox_size = metrics_.mailbox_size) {
     ptr->set_enqueue_time();
-    metrics_.mailbox_size->inc();
+    mailbox_size->inc();
   }
   switch (mailbox().push_back(std::move(ptr))) {
     case intrusive::inbox_result::unblocked_reader: {
       CAF_LOG_ACCEPT_EVENT(true);
       intrusive_ptr_add_ref(ctrl());
-      if (private_thread_)
+      if (private_thread_) {
         private_thread_->resume(this);
-      else if (sched != nullptr)
-        sched->delay(this);
-      else
-        home_system().scheduler().schedule(this);
+      } else if (use_delay) {
+        sched->delay(this, resumable::default_event_id);
+      } else {
+        sched->schedule(this, resumable::default_event_id);
+      }
       return true;
     }
     case intrusive::inbox_result::success:
@@ -182,9 +209,10 @@ bool scheduled_actor::enqueue(mailbox_element_ptr ptr, scheduler* sched) {
       return true;
     default: { // intrusive::inbox_result::queue_closed
       CAF_LOG_REJECT_EVENT();
-      home_system().base_metrics().rejected_messages->inc();
-      if (collects_metrics)
-        metrics_.mailbox_size->dec();
+      detail::actor_system_access{home_system()}.message_rejected(this);
+      if (auto* mailbox_size = metrics_.mailbox_size) {
+        mailbox_size->dec();
+      }
       if (mid.is_request()) {
         detail::sync_request_bouncer f;
         f(sender, mid);
@@ -200,27 +228,55 @@ const char* scheduled_actor::name() const {
   return "user.scheduled-actor";
 }
 
-void scheduled_actor::launch(scheduler* sched, bool lazy, bool hide) {
-  CAF_ASSERT(sched != nullptr);
-  CAF_PUSH_AID_FROM_PTR(this);
-  auto lg = log::core::trace("lazy = {}, hide = {}", lazy, hide);
-  CAF_ASSERT(!getf(is_blocking_flag));
-  if (!hide)
-    register_at_system();
-  auto delay_first_scheduling = lazy && mailbox().try_block();
-  if (getf(is_detached_flag)) {
-    private_thread_ = system().acquire_private_thread();
-    if (!delay_first_scheduling) {
-      intrusive_ptr_add_ref(ctrl());
-      private_thread_->resume(this);
-    }
-  } else if (!delay_first_scheduling) {
-    intrusive_ptr_add_ref(ctrl());
-    sched->delay(this);
+bool scheduled_actor::initialize(scheduler* ctx) {
+#ifdef CAF_ENABLE_RTTI
+  auto lg = log::core::trace("subtype = {}",
+                             detail::pretty_type_name(typeid(*this).name()));
+#endif
+  CAF_ASSERT(!getf(is_initialized_flag));
+  setf(is_initialized_flag);
+  context(ctx);
+#ifdef CAF_ENABLE_EXCEPTIONS
+  behavior bhvr;
+  try {
+    bhvr = type_erased_initial_behavior();
+  } catch (...) {
+    quit(make_error(sec::runtime_error, "failed to initialize actor"));
+    return !finalize();
   }
-  processed_messages_
-    = home_system().base_metrics().processed_messages->get_or_add(
-      {{"name", name()}});
+#else
+  auto bhvr = type_erased_initial_behavior();
+#endif
+  if (!bhvr) {
+    log::core::debug("make_behavior() did not return a behavior: alive = {}",
+                     alive());
+  } else {
+    // make_behavior() did return a behavior instead of using become()
+    log::core::debug("make_behavior() did return a valid behavior");
+    do_become(std::move(bhvr), true);
+  }
+  return !finalize();
+}
+
+bool scheduled_actor::launch_delayed() {
+  return mailbox().try_block();
+}
+
+void scheduled_actor::launch(detail::private_thread* worker, scheduler* ctx) {
+  detail::current_actor_guard ctx_guard{this};
+  auto lg = log::core::trace("");
+  if (worker) {
+    private_thread_ = worker;
+    intrusive_ptr_add_ref(ctrl());
+    private_thread_->resume(this);
+    return;
+  }
+  if (auto* pinned = pinned_scheduler()) {
+    ctx = pinned;
+  }
+  CAF_ASSERT(ctx != nullptr);
+  intrusive_ptr_add_ref(ctrl());
+  ctx->delay(this, resumable::initialization_event_id);
 }
 
 void scheduled_actor::on_cleanup(const error& reason) {
@@ -233,16 +289,16 @@ void scheduled_actor::on_cleanup(const error& reason) {
   awaited_responses_.clear();
   multiplexed_responses_.clear();
   cancel_flows_and_streams();
-  close_mailbox(reason);
+  close_mailbox();
   // Dispatch to parent's `on_cleanup` function.
   super::on_cleanup(reason);
 }
 
-// -- overridden functions of resumable ----------------------------------------
-
-resumable::subtype_t scheduled_actor::subtype() const noexcept {
-  return resumable::scheduled_actor;
+resumable* scheduled_actor::as_resumable() noexcept {
+  return this;
 }
+
+// -- overridden functions of resumable ----------------------------------------
 
 void scheduled_actor::ref_resumable() const noexcept {
   intrusive_ptr_add_ref(ctrl());
@@ -252,18 +308,23 @@ void scheduled_actor::deref_resumable() const noexcept {
   intrusive_ptr_release(ctrl());
 }
 
-resumable::resume_result scheduled_actor::resume(scheduler* sched,
-                                                 size_t max_throughput) {
-  CAF_PUSH_AID(id());
-  auto lg = log::core::trace("max_throughput = {}", max_throughput);
+void scheduled_actor::resume(scheduler* sched, uint64_t event_id) {
+  CAF_ASSERT(!private_thread_
+             || private_thread_->id() == std::this_thread::get_id());
+  detail::current_actor_guard ctx_guard{this};
+  auto lg = log::core::trace("event-id = {}", event_id);
+  if (event_id == resumable::dispose_event_id) {
+    cleanup(make_error(exit_reason::user_shutdown), sched);
+    return;
+  }
   if (!activate(sched))
-    return resumable::done;
+    return;
   size_t consumed = 0;
   auto guard = detail::scope_guard{[this, &consumed]() noexcept {
     if (consumed > 0) {
       auto val = static_cast<int64_t>(consumed);
-      if (processed_messages_)
-        processed_messages_->inc(val);
+      if (metrics_.processed_messages)
+        metrics_.processed_messages->inc(val);
     }
   }};
   auto reset_timeouts_if_needed = [&] {
@@ -272,13 +333,14 @@ resumable::resume_result scheduled_actor::resume(scheduler* sched,
       set_receive_timeout();
   };
   mailbox_element_ptr ptr;
-  while (consumed < max_throughput) {
+  // Note: detached actors ignore the max throughput limit.
+  while (private_thread_ != nullptr || consumed < max_throughput_) {
     auto ptr = mailbox().pop_front();
     if (!ptr) {
       if (mailbox().try_block()) {
         reset_timeouts_if_needed();
         log::core::debug("mailbox empty: await new messages");
-        return resumable::awaiting_message;
+        return;
       }
       continue; // Interrupted by a new message, try again.
     }
@@ -298,16 +360,22 @@ resumable::resume_result scheduled_actor::resume(scheduler* sched,
       return res;
     });
     if (res == activation_result::terminated)
-      return resumable::done;
+      return;
   }
+  // Dropping here means we have reached the max throughput limit. Check if we
+  // have messages left in the mailbox and if so, tell the scheduler to run this
+  // actor again.
+  CAF_ASSERT(private_thread_ == nullptr);
   reset_timeouts_if_needed();
   if (mailbox().try_block()) {
     log::core::debug("mailbox empty: await new messages");
-    return resumable::awaiting_message;
+    return;
   }
-  // time's up
+  using detail::actor_system_access;
   log::core::debug("max throughput reached: resume later");
-  return resumable::resume_later;
+  actor_system_access{home_system()}.impl()->max_throughput_reached(this);
+  intrusive_ptr_add_ref(ctrl());
+  sched->delay(this, resumable::default_event_id);
 }
 
 // -- scheduler callbacks ------------------------------------------------------
@@ -357,8 +425,9 @@ void scheduled_actor::set_receive_timeout() {
     case timeout_mode::repeat_weak:
       timeout_state_.id = new_u64_id();
       timeout_state_.pending = clock().schedule_message(
-        nullptr, weak_actor_ptr{ctrl()}, clock().now() + timeout_state_.delay,
-        make_message_id(), make_message(timeout_msg{timeout_state_.id}));
+        nullptr, weak_actor_ptr{ctrl(), add_ref},
+        clock().now() + timeout_state_.delay, make_message_id(),
+        make_message(timeout_msg{timeout_state_.id}));
       break;
     case timeout_mode::legacy:
       if (bhvr_stack_.empty()) {
@@ -370,8 +439,9 @@ void scheduled_actor::set_receive_timeout() {
     case timeout_mode::repeat_strong:
       timeout_state_.id = new_u64_id();
       timeout_state_.pending = clock().schedule_message(
-        nullptr, strong_actor_ptr{ctrl()}, clock().now() + timeout_state_.delay,
-        make_message_id(), make_message(timeout_msg{timeout_state_.id}));
+        nullptr, strong_actor_ptr{ctrl(), add_ref},
+        clock().now() + timeout_state_.delay, make_message_id(),
+        make_message(timeout_msg{timeout_state_.id}));
       break;
   }
 }
@@ -559,7 +629,8 @@ void scheduled_actor::delay(action what) {
 
 disposable scheduled_actor::delay_until(steady_time_point abs_time,
                                         action what) {
-  return clock().schedule(abs_time, std::move(what), strong_actor_ptr{ctrl()});
+  return clock().schedule(abs_time, std::move(what),
+                          strong_actor_ptr{ctrl(), add_ref});
 }
 
 // -- message processing -------------------------------------------------------
@@ -590,7 +661,7 @@ scheduled_actor::categorize(mailbox_element& x) {
     auto& what = content.get_as<std::string>(2);
     if (what == "info") {
       log::core::debug("reply to 'info' message");
-      rp.deliver(ok_atom_v, what, strong_actor_ptr{ctrl()}, name());
+      rp.deliver(ok_atom_v, what, strong_actor_ptr{ctrl(), add_ref}, name());
     } else {
       rp.deliver(make_error(sec::unsupported_sys_key));
     }
@@ -643,14 +714,15 @@ scheduled_actor::categorize(mailbox_element& x) {
           // Inform the sink that the stream is now open.
           stream_subs_.emplace(flow_id, std::move(fwd));
           auto mipb = static_cast<uint32_t>(i->second.max_items_per_batch);
-          unsafe_send_as(this, sink_hdl,
-                         stream_ack_msg{ctrl(), sink_id, flow_id, mipb});
+          unsafe_send_as(
+            this, sink_hdl,
+            stream_ack_msg{{ctrl(), add_ref}, sink_id, flow_id, mipb});
           if (sink_hdl.node() != node()) {
             // Actors cancel any pending streams when they terminate. However,
             // remote actors may terminate without sending us a proper goodbye.
             // Hence, we add a function object to remote actors to make sure we
             // get a cancel in all cases.
-            auto weak_self = weak_actor_ptr{ctrl()};
+            auto weak_self = weak_actor_ptr{ctrl(), add_ref};
             sink_hdl->attach_functor([weak_self, flow_id] {
               if (auto sptr = weak_self.lock())
                 caf::anon_mail(stream_cancel_msg{flow_id})
@@ -842,8 +914,8 @@ invoke_message_result scheduled_actor::consume(mailbox_element& x) {
         return visit(f, sres);
       }
     }
-    // Unreachable.
-    CAF_CRITICAL("invalid message type");
+    // Should be unreachable.
+    detail::critical("categorize() returned an invalid message category");
   };
   // Post-process the returned value from the function body.
   auto result = body();
@@ -876,12 +948,11 @@ bool scheduled_actor::activate(scheduler* sched) {
   try {
 #endif // CAF_ENABLE_EXCEPTIONS
     if (!getf(is_initialized_flag)) {
-      initialize();
-      if (finalize()) {
-        log::core::debug(
-          "finalize() returned true right after make_behavior()");
+      if (!initialize(sched)) {
+        log::core::debug("actor terminated immediately after initialization");
         return false;
       }
+      CAF_ASSERT(getf(is_initialized_flag));
       log::core::debug("initialized actor: name = {}", name());
     }
 #ifdef CAF_ENABLE_EXCEPTIONS
@@ -1009,7 +1080,8 @@ disposable scheduled_actor::run_scheduled(actor_clock::time_point when,
   CAF_ASSERT(what.ptr() != nullptr);
   auto lg = log::core::trace("when = {}",
                              const_cast<const actor_clock::time_point*>(&when));
-  return clock().schedule(when, std::move(what), strong_actor_ptr{ctrl()});
+  return clock().schedule(when, std::move(what),
+                          strong_actor_ptr{ctrl(), add_ref});
 }
 
 disposable scheduled_actor::run_scheduled_weak(timestamp when, action what) {
@@ -1024,7 +1096,8 @@ disposable scheduled_actor::run_scheduled_weak(actor_clock::time_point when,
   CAF_ASSERT(what.ptr() != nullptr);
   auto lg = log::core::trace("when = {}",
                              const_cast<const actor_clock::time_point*>(&when));
-  return clock().schedule(when, std::move(what), weak_actor_ptr{ctrl()});
+  return clock().schedule(when, std::move(what),
+                          weak_actor_ptr{ctrl(), add_ref});
 }
 
 disposable scheduled_actor::run_delayed(timespan delay, action what) {
@@ -1051,7 +1124,7 @@ stream scheduled_actor::to_stream_impl(cow_string name, batch_op_ptr batch_op,
   auto local_id = new_u64_id();
   stream_sources_.emplace(local_id, stream_source_state{std::move(batch_op),
                                                         max_items_per_batch});
-  return {ctrl(), item_type, std::move(name), local_id};
+  return {{ctrl(), add_ref}, item_type, std::move(name), local_id};
 }
 
 flow::observable<async::batch>
@@ -1163,7 +1236,7 @@ void scheduled_actor::cancel_flows_and_streams() {
   run_actions();
 }
 
-void scheduled_actor::close_mailbox(const error& reason) {
+void scheduled_actor::close_mailbox() {
   // Discard stashed messages.
   auto dropped = size_t{0};
   if (!stash_.empty()) {
@@ -1176,13 +1249,13 @@ void scheduled_actor::close_mailbox(const error& reason) {
   }
   // Clear mailbox.
   if (!mailbox().closed())
-    dropped += mailbox().close(reason);
+    dropped += mailbox().close();
   if (dropped > 0 && metrics_.mailbox_size)
     metrics_.mailbox_size->dec(static_cast<int64_t>(dropped));
 }
 
 void scheduled_actor::force_close_mailbox() {
-  close_mailbox(make_error(exit_reason::unreachable));
+  close_mailbox();
 }
 
 // -- monitoring ---------------------------------------------------------------

@@ -7,6 +7,7 @@
 #include "caf/test/fixture/deterministic.hpp"
 #include "caf/test/test.hpp"
 
+#include "caf/config.hpp"
 #include "caf/event_based_actor.hpp"
 #include "caf/scoped_actor.hpp"
 #include "caf/stateful_actor.hpp"
@@ -36,7 +37,7 @@ behavior adder(stateful_actor<counter>* self) {
 
 class adder_class : public stateful_actor<counter> {
 public:
-  adder_class(actor_config& cfg) : stateful_actor<counter>(cfg) {
+  explicit adder_class(actor_config& cfg) : stateful_actor<counter>(cfg) {
     // nop
   }
 
@@ -57,7 +58,7 @@ class typed_adder_class : public typed_adder_actor::stateful_impl<counter> {
 public:
   using super = typed_adder_actor::stateful_impl<counter>;
 
-  typed_adder_class(actor_config& cfg) : super(cfg) {
+  explicit typed_adder_class(actor_config& cfg) : super(cfg) {
     // nop
   }
 
@@ -107,9 +108,13 @@ struct fixture : test::fixture::deterministic {
 
   template <class T = caf::scheduled_actor, class Handle = caf::actor>
   T& deref(const Handle& hdl) {
-    auto ptr = caf::actor_cast<caf::abstract_actor*>(hdl);
+    auto* ptr = caf::actor_cast<caf::abstract_actor*>(hdl);
     test::runnable::current().require(ptr != nullptr);
+#ifdef CAF_ENABLE_RTTI
     return dynamic_cast<T&>(*ptr);
+#else
+    return static_cast<T&>(*ptr);
+#endif
   }
 };
 

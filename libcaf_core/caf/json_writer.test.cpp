@@ -27,7 +27,7 @@ struct widget;
 
 } // namespace
 
-CAF_BEGIN_TYPE_ID_BLOCK(json_write_test, caf::first_custom_type_id + 60)
+CAF_BEGIN_TYPE_ID_BLOCK(json_write_test, caf::first_custom_type_id + 50, 10)
 
   CAF_ADD_TYPE_ID(json_write_test, (circle))
   CAF_ADD_TYPE_ID(json_write_test, (dummy_struct))
@@ -41,6 +41,10 @@ CAF_BEGIN_TYPE_ID_BLOCK(json_write_test, caf::first_custom_type_id + 60)
 CAF_END_TYPE_ID_BLOCK(json_write_test)
 
 namespace {
+
+TEST_INIT() {
+  caf::init_global_meta_objects<caf::id_block::json_write_test>();
+}
 
 struct my_request {
   int32_t a = 0;
@@ -198,7 +202,7 @@ struct fixture {
       return {std::string{buf.begin(), buf.end()}};
     } else {
       log::test::debug("partial JSON output: {}", writer.str());
-      return {writer.get_error()};
+      return caf::unexpected{std::move(writer.get_error())};
     }
   }
 };
@@ -546,51 +550,4 @@ SCENARIO("the JSON writer can render nested lists") {
   }
 }
 
-class custom_writer : public json_writer {
-public:
-  using super = json_writer;
-
-  using super::super;
-
-  using super::value;
-
-  bool value(const strong_actor_ptr& ptr) override {
-    strong_actor_ptr_serialized = true;
-    return super::value(ptr);
-  }
-
-  bool value(const weak_actor_ptr& ptr) override {
-    weak_actor_ptr_serialized = true;
-    return super::value(ptr);
-  }
-
-  bool strong_actor_ptr_serialized = false;
-
-  bool weak_actor_ptr_serialized = false;
-};
-
-SCENARIO("users can override member functions for actor serialization") {
-  GIVEN("a custom writer") {
-    custom_writer writer;
-    WHEN("serializing a strong actor pointer") {
-      strong_actor_ptr ptr;
-      writer.value(ptr);
-      THEN("the overridden function is called") {
-        check(writer.strong_actor_ptr_serialized);
-      }
-    }
-    WHEN("serializing a weak actor pointer") {
-      weak_actor_ptr ptr;
-      writer.value(ptr);
-      THEN("the overridden function is called") {
-        check(writer.weak_actor_ptr_serialized);
-      }
-    }
-  }
-}
-
 } // WITH_FIXTURE(fixture)
-
-TEST_INIT() {
-  caf::init_global_meta_objects<caf::id_block::json_write_test>();
-}

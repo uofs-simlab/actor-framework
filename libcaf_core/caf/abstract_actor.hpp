@@ -15,6 +15,7 @@
 #include "caf/mailbox_element.hpp"
 #include "caf/message_id.hpp"
 #include "caf/node_id.hpp"
+#include "caf/spawn_options.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -130,6 +131,10 @@ public:
   /// Returns the logical actor address.
   actor_addr address() const noexcept;
 
+  /// Returns the actor currently associated to the calling thread or `nullptr`
+  /// if none is associated.
+  static abstract_actor* current() noexcept;
+
   // -- messaging --------------------------------------------------------------
 
   /// Enqueues a new message wrapped in a `mailbox_element` to the actor.
@@ -155,55 +160,80 @@ public:
 
   /// @cond
 
-  /// Indicates that the actor system shall not wait for this actor to
-  /// finish execution on shutdown.
-  static constexpr int is_hidden_flag = 0b0000'0000'0001;
-
-  /// Indicates that the actor is registered at the actor system.
-  static constexpr int is_registered_flag = 0b0000'0000'0010;
-
-  /// Indicates that the actor has been initialized.
-  static constexpr int is_initialized_flag = 0b0000'0000'0100;
-
-  /// Indicates that the actor uses blocking message handlers.
-  static constexpr int is_blocking_flag = 0b0000'0000'1000;
+  // bits  1 to  8: spawn options
+  // bits  9 to 16: lifetime and status flags
+  // bits 17 to 24: type flags
+  // bits 25 to 32: reserved
 
   /// Indicates that the actor runs in its own thread.
-  static constexpr int is_detached_flag = 0b0000'0001'0000;
+  static constexpr int is_detached_flag
+    = static_cast<int>(spawn_options::detach_flag);
+
+  /// Indicates that the actor system shall not wait for this actor to
+  /// finish execution on shutdown.
+  static constexpr int is_hidden_flag
+    = static_cast<int>(spawn_options::hide_flag);
+
+  /// Indicates that the actor is registered at the actor system.
+  static constexpr int is_registered_flag = 0x00'00'01'00;
+
+  /// Indicates that the actor has been initialized.
+  static constexpr int is_initialized_flag = 0x00'00'02'00;
+
+  /// Indicates that the actor uses blocking message handlers.
+  static constexpr int is_blocking_flag = 0x00'00'04'00;
 
   /// Indicates that the actor collects metrics.
-  static constexpr int collects_metrics_flag = 0b0000'0010'0000;
+  static constexpr int collects_metrics_flag = 0x00'00'08'00;
 
   /// Indicates that the actor has terminated and waits for its destructor to
   /// run.
-  static constexpr int is_terminated_flag = 0b0000'1000'0000;
+  static constexpr int is_terminated_flag = 0x00'00'10'00;
 
   /// Indicates that the actor is currently shutting down and thus may no longer
   /// set a new behavior.
-  static constexpr int is_shutting_down_flag = 0b0001'0000'0000;
+  static constexpr int is_shutting_down_flag = 0x00'00'20'00;
 
   /// Indicates that the actor is currently inactive.
-  static constexpr int is_inactive_flag = 0b0010'0000'0000;
+  static constexpr int is_inactive_flag = 0x00'00'40'00;
 
-  void setf(int flag) {
+  /// Indicates that the actor inherits from `local_actor`.
+  static constexpr int is_local_actor_flag = 0x00'01'00'00;
+
+  /// Indicates that the actor inherits from `scheduled_actor`.
+  static constexpr int is_scheduled_actor_flag = 0x00'02'00'00;
+
+  /// Identifies the implementation type of a scoped actor.
+  static constexpr int is_scoped_actor_impl_flag = 0x00'04'00'00;
+
+  void setf(int flag) noexcept {
     auto x = flags();
     flags(x | flag);
   }
 
-  void unsetf(int flag) {
+  void unsetf(int flag) noexcept {
     auto x = flags();
     flags(x & ~flag);
   }
 
-  bool getf(int flag) const {
+  bool getf(int flag) const noexcept {
     return (flags() & flag) != 0;
   }
 
-  /// Sets `is_registered_flag` and calls `system().registry().inc_running()`.
-  void register_at_system();
+  /// Checks whether this actor inherits from `local_actor`.
+  bool is_local_actor() const noexcept {
+    return getf(is_local_actor_flag);
+  }
 
-  /// Unsets `is_registered_flag` and calls `system().registry().dec_running()`.
-  void unregister_from_system();
+  /// Checks whether this actor inherits from `scheduled_actor`.
+  bool is_scheduled_actor() const noexcept {
+    return getf(is_scheduled_actor_flag);
+  }
+
+  /// Checks whether this actor is a scoped actor implementation.
+  bool is_scoped_actor_impl() const noexcept {
+    return getf(is_scoped_actor_impl_flag);
+  }
 
   /// Calls `fun` with exclusive access to an actor's state.
   template <class F>
@@ -276,6 +306,9 @@ protected:
 
   // -- constructors, destructors, and assignment operators --------------------
 
+  /// @note calls `detail::current_actor(this)`; re-setting the current actor
+  ///       needs to be done by the outer scope (usually taken care of by
+  ///       `detail::make_actor_util`)
   explicit abstract_actor(actor_config& cfg);
 
   // -- attachables ------------------------------------------------------------

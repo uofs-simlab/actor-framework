@@ -59,7 +59,7 @@ using server_actor = caf::typed_actor<server_trait>;
 #define ADD_TYPE_ID(type) CAF_ADD_TYPE_ID(typed_event_based_actor_test, type)
 
 CAF_BEGIN_TYPE_ID_BLOCK(typed_event_based_actor_test,
-                        caf::first_custom_type_id + 110)
+                        caf::first_custom_type_id + 220, 10)
   ADD_TYPE_ID((my_request))
   ADD_TYPE_ID((int_actor))
   ADD_TYPE_ID((float_actor))
@@ -92,13 +92,17 @@ server_actor::behavior_type typed_server3(server_actor::pointer self,
 
 void client(event_based_actor* self, const actor& parent,
             const server_actor& serv) {
-  self->request(serv, infinite, my_request{0, 0}).then([=](bool val1) {
-    test::runnable::current().check_eq(val1, true);
-    self->request(serv, infinite, my_request{10, 20}).then([=](bool val2) {
-      test::runnable::current().check_eq(val2, false);
-      self->mail(ok_atom_v).send(parent);
+  self->mail(my_request{0, 0})
+    .request(serv, infinite)
+    .then([self, parent, serv](bool val1) {
+      test::runnable::current().check_eq(val1, true);
+      self->mail(my_request{10, 20})
+        .request(serv, infinite)
+        .then([self, parent](bool val2) {
+          test::runnable::current().check_eq(val2, false);
+          self->mail(ok_atom_v).send(parent);
+        });
     });
-  });
 }
 
 // -- test skipping of messages intentionally + using become() -----------------
@@ -176,8 +180,8 @@ string_actor::behavior_type string_delegator(string_actor::pointer self,
                                              string_actor next) {
   self->link_to(next);
   return {
-    [=](std::string& str) -> delegated<std::string> {
-      return self->delegate(next, std::move(str));
+    [self, next](std::string str) -> delegated<std::string> {
+      return self->mail(std::move(str)).delegate(next);
     },
   };
 }
@@ -204,9 +208,7 @@ maybe_string_delegator(maybe_string_actor::pointer self,
                        const maybe_string_actor& x) {
   self->link_to(x);
   return {
-    [=](std::string& s) -> delegated<ok_atom, std::string> {
-      return self->delegate(x, std::move(s));
-    },
+    [self, x](std::string s) { return self->mail(std::move(s)).delegate(x); },
   };
 }
 
@@ -229,23 +231,20 @@ TEST("spawning a typed actor and sending messages") {
     inject().with(my_request{42, 42}).from(self).to(ts);
     expect<bool>().with(true).from(ts).to(self);
     log::test::debug("client and server communicate using request/then");
-    check_eq(sys.registry().running(), 2u);
+    check_eq(sys.running_actors_count(), 2u);
     auto c1 = sys.spawn(client, self, ts);
     dispatch_message();
     dispatch_message();
     dispatch_message();
     dispatch_message();
     expect<ok_atom>().with(ok_atom_v).from(c1).to(self);
-    check_eq(sys.registry().running(), 2u);
+    check_eq(sys.running_actors_count(), 2u);
   };
   SECTION("run test series with typed_server1") {
     test_typed_spawn(sys.spawn(typed_server1));
-    sys.registry().await_running_count_equal(1);
   }
   SECTION("run test series with typed_server2") {
     test_typed_spawn(sys.spawn(typed_server2));
-    sys.registry().await_running_count_equal(1, 1s);
-    require_ne(sys.registry().running(), 0u);
   }
   SECTION("run test series with typed_server3") {
     auto serv3 = sys.spawn(typed_server3, "hi there", self);
@@ -254,7 +253,7 @@ TEST("spawning a typed actor and sending messages") {
   }
 }
 
-TEST("chainging the behavior at runtime and skipping messages") {
+TEST("changing the behavior at runtime and skipping messages") {
   auto et = sys.spawn(actor_from_state<event_testee_state>);
   typed_actor<result<std::string>(get_state_atom)> sub_et = et;
   SECTION("et->message_types() returns an interface description") {
@@ -329,26 +328,26 @@ int_actor::behavior_type int_fun() {
 
 behavior foo(event_based_actor* self) {
   return {
-    [=](int i, int_actor server) {
-      self->delegate(server, i);
+    [self](int i, int_actor server) {
       self->quit();
+      return self->mail(i).delegate(server);
     },
   };
 }
 
 behavior foo2(event_based_actor* self) {
   return {
-    [=](int i, int_actor server) {
-      self->delegate(server, i);
+    [self](int i, int_actor server) {
       caf::log::test::debug("self->quit");
       self->quit();
+      return self->mail(i).delegate(server);
     },
   };
 }
 
 float_actor::behavior_type float_fun(float_actor::pointer self) {
   return {
-    [=](float a) {
+    [self](float a) {
       test::runnable::current().check_eq(a, test::approx{1.0f});
       self->quit(exit_reason::user_shutdown);
     },
@@ -359,7 +358,7 @@ int_actor::behavior_type foo3(int_actor::pointer self) {
   auto b = self->spawn<linked>(float_fun);
   self->mail(1.0f).send(b);
   return {
-    [=](int) { return 0; },
+    [](int) { return 0; },
   };
 }
 
@@ -394,17 +393,17 @@ TEST("check signature") {
   using bar_type = typed_actor<result<void>(ok_atom)>;
   auto foo_action = [](foo_type::pointer ptr) -> foo_type::behavior_type {
     return {
-      [=](put_atom) -> foo_result_type {
+      [ptr](put_atom) -> foo_result_type {
         ptr->quit();
         return {ok_atom_v};
       },
     };
   };
-  auto bar_action = [=](bar_type::pointer ptr) -> bar_type::behavior_type {
+  auto bar_action = [foo_action](bar_type::pointer ptr) {
     auto foo = ptr->spawn<linked>(foo_action);
     ptr->mail(put_atom_v).send(foo);
-    return {
-      [=](ok_atom) { ptr->quit(); },
+    return bar_type::behavior_type{
+      [ptr](ok_atom) { ptr->quit(); },
     };
   };
   auto x = sys.spawn(bar_action);
@@ -438,7 +437,7 @@ SCENARIO("state classes may use typed pointers") {
   GIVEN("a state class for a statically typed actor type") {
     using foo_type = typed_actor<result<int32_t>(get_atom)>;
     struct foo_state {
-      foo_state(foo_type::pointer_view selfptr) : self(selfptr) {
+      explicit foo_state(foo_type::pointer_view selfptr) : self(selfptr) {
         foo_type hdl{self};
         test::runnable::current().check_eq(selfptr,
                                            actor_cast<abstract_actor*>(hdl));

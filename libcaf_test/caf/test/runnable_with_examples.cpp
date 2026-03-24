@@ -6,6 +6,8 @@
 
 #include "caf/string_algorithms.hpp"
 
+#include <algorithm>
+
 namespace {
 
 void trim_all(std::vector<std::string_view>& elements) {
@@ -46,7 +48,7 @@ runnable_with_examples::examples_setter::operator=(std::string_view str) {
   auto is_valid_line = [](std::string_view line) {
     return line.size() > 2 && line.front() == '|' && line.back() == '|';
   };
-  if (!std::all_of(lines.begin(), lines.end(), is_valid_line))
+  if (!std::ranges::all_of(lines, is_valid_line))
     CAF_RAISE_ERROR(std::logic_error, "invalid examples table: syntax error");
   // Strip the leading and trailing pipes.
   for (auto& line : lines)
@@ -56,7 +58,7 @@ runnable_with_examples::examples_setter::operator=(std::string_view str) {
   std::vector<std::string_view> names;
   split(names, lines.front(), '|');
   trim_all(names);
-  if (!std::all_of(names.begin(), names.end(), is_non_empty))
+  if (!std::ranges::all_of(names, is_non_empty))
     CAF_RAISE_ERROR(std::logic_error,
                     "invalid examples table: empty column names");
   if (has_duplicates(names))
@@ -78,42 +80,43 @@ runnable_with_examples::examples_setter::operator=(std::string_view str) {
   return *this;
 }
 
-void runnable_with_examples::run() {
-  if (ctx_->example_parameters.empty()) {
-    if (auto guard = ctx_->get<outline>(-1, description_, loc_)->commit()) {
+void runnable_with_examples::run_next_test_branch_init() {
+  auto& ctx = test_context();
+  if (ctx.example_parameters.empty()) {
+    if (auto guard
+        = ctx.get<outline>(-1, test_description(), test_location())->commit()) {
       // By placing a dummy scenario on the unwind stack, we render all blocks
       // inactive. We are only interested in the assignment to
       // example_parameters.
-      outline dummy{ctx_.get(), -2, description_, loc_};
-      ctx_->unwind_stack.push_back(&dummy);
-      call_do_run();
-      if (ctx_->example_parameters.empty())
+      outline dummy{&ctx, -2, test_description(), test_location()};
+      ctx.unwind_stack.push_back(&dummy);
+      run_next_test_branch_impl();
+      if (ctx.example_parameters.empty())
         CAF_RAISE_ERROR(std::logic_error,
                         "failed to run outline: no examples found");
     } else {
       CAF_RAISE_ERROR(std::logic_error,
                       "failed to select the root block for the outline");
     }
-    ctx_->unwind_stack.clear();
+    ctx.unwind_stack.clear();
     // Create all descriptions for the examples.
-    for (size_t index = 0; index < ctx_->example_parameters.size(); ++index)
-      ctx_->example_names.emplace_back(
-        detail::format("{} #{}", description_, index + 1));
+    for (size_t index = 0; index < ctx.example_parameters.size(); ++index)
+      ctx.example_names.emplace_back(
+        detail::format("{} #{}", test_description(), index + 1));
     // Create all root steps ahead of time.
-    for (size_t index = 0; index < ctx_->example_parameters.size(); ++index) {
-      auto& ptr = ctx_->steps[std::make_pair(0, index)];
-      ptr = std::make_unique<outline>(ctx_.get(), 0, ctx_->example_names[index],
-                                      loc_);
+    for (size_t index = 0; index < ctx.example_parameters.size(); ++index) {
+      auto& ptr = ctx.steps[std::make_pair(0, index)];
+      ptr = std::make_unique<outline>(&ctx, 0, ctx.example_names[index],
+                                      test_location());
     }
   }
-  ctx_->parameters = ctx_->example_parameters[ctx_->example_id];
-  auto& ptr = ctx_->steps[std::make_pair(0, ctx_->example_id)];
-  auto guard = detail::scope_guard{[this, &ptr]() noexcept {
-    if (!ptr->can_run()
-        && ctx_->example_id + 1 < ctx_->example_parameters.size())
-      ++ctx_->example_id;
+  ctx.parameters = ctx.example_parameters[ctx.example_id];
+  auto& ptr = ctx.steps[std::make_pair(0, ctx.example_id)];
+  auto guard = detail::scope_guard{[&ctx, &ptr]() noexcept {
+    if (!ptr->can_run() && ctx.example_id + 1 < ctx.example_parameters.size()) {
+      ++ctx.example_id;
+    }
   }};
-  super::run();
 }
 
 } // namespace caf::test

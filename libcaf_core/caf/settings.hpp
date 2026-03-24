@@ -85,7 +85,7 @@ expected<T> get_as(const settings& xs, std::string_view name) {
   if (auto ptr = get_if(&xs, name))
     return get_as<T>(*ptr);
   else
-    return {sec::no_such_key};
+    return expected<T>{unexpect, sec::no_such_key};
 }
 
 /// @private
@@ -99,7 +99,7 @@ CAF_CORE_EXPORT config_value& put_impl(settings& dict, std::string_view name,
 template <class T>
 config_value& put(settings& xs, std::string_view key, T&& value) {
   config_value tmp;
-  if (auto err = tmp.assign(std::forward<T>(value)); err)
+  if (auto err = tmp.assign(std::forward<T>(value)); err.valid())
     tmp = none;
   return put_impl(xs, key, tmp);
 }
@@ -114,7 +114,7 @@ void put_missing(settings& xs, std::string_view key, T&& value) {
   if (get_if(&xs, key) != nullptr)
     return;
   config_value tmp;
-  if (auto err = tmp.assign(std::forward<T>(value)); !err)
+  if (auto err = tmp.assign(std::forward<T>(value)); err.empty())
     put_impl(xs, key, tmp);
 }
 

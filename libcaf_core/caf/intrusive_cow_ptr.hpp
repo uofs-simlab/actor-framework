@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "caf/caf_deprecated.hpp"
 #include "caf/detail/comparable.hpp"
 #include "caf/intrusive_ptr.hpp"
 
@@ -68,6 +69,7 @@ public:
   }
 
   template <class Y>
+  // cppcheck-suppress noExplicitConstructor
   intrusive_cow_ptr(intrusive_cow_ptr<Y> other) noexcept
     : ptr_(other.detach(), false) {
     // nop
@@ -77,8 +79,18 @@ public:
     // nop
   }
 
-  explicit intrusive_cow_ptr(pointer ptr, bool add_ref = true) noexcept
-    : ptr_(ptr, add_ref) {
+  CAF_DEPRECATED("construct using add_ref or adopt_ref instead")
+  explicit intrusive_cow_ptr(pointer ptr,
+                             bool increase_ref_count = true) noexcept
+    : ptr_(ptr, increase_ref_count) {
+    // nop
+  }
+
+  intrusive_cow_ptr(pointer ptr, add_ref_t) noexcept : ptr_(ptr, add_ref) {
+    // nop
+  }
+
+  intrusive_cow_ptr(pointer ptr, adopt_ref_t) noexcept : ptr_(ptr, adopt_ref) {
     // nop
   }
 
@@ -121,9 +133,24 @@ public:
     ptr_.swap(other.ptr_);
   }
 
+  void reset() noexcept {
+    ptr_.reset();
+  }
+
   /// Replaces the managed object.
-  void reset(pointer p = nullptr, bool add_ref = true) noexcept {
-    ptr_.reset(p, add_ref);
+  CAF_DEPRECATED("use 'reset(ptr, add_ref)' or 'reset(ptr, adopt_ref)' instead")
+  void reset(pointer ptr, bool inc_ref_count = true) noexcept {
+    ptr_.reset(ptr, inc_ref_count);
+  }
+
+  /// Replaces the managed object.
+  void reset(pointer ptr, add_ref_t) noexcept {
+    ptr_.reset(ptr, add_ref);
+  }
+
+  /// Replaces the managed object.
+  void reset(pointer ptr, adopt_ref_t) noexcept {
+    ptr_.reset(ptr, adopt_ref);
   }
 
   /// Returns the raw pointer without modifying reference

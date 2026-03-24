@@ -4,12 +4,15 @@
 
 #include "caf/blocking_actor.hpp"
 
-#include "caf/actor_registry.hpp"
 #include "caf/actor_system.hpp"
+#include "caf/adopt_ref.hpp"
 #include "caf/anon_mail.hpp"
+#include "caf/detail/actor_system_access.hpp"
 #include "caf/detail/assert.hpp"
+#include "caf/detail/current_actor.hpp"
 #include "caf/detail/default_invoke_result_visitor.hpp"
 #include "caf/detail/invoke_result_visitor.hpp"
+#include "caf/detail/mailbox_factory.hpp"
 #include "caf/detail/private_thread.hpp"
 #include "caf/detail/set_thread_name.hpp"
 #include "caf/detail/sync_request_bouncer.hpp"
@@ -45,7 +48,11 @@ bool blocking_actor::accept_one_cond::post() {
 
 blocking_actor::blocking_actor(actor_config& cfg)
   : super(cfg.add_flag(local_actor::is_blocking_flag)) {
-  // nop
+  if (auto* factory = cfg.mbox_factory) {
+    mailbox_.reset(factory->make(this), caf::adopt_ref);
+  } else {
+    mailbox_.reset(new detail::default_mailbox, caf::adopt_ref);
+  }
 }
 
 blocking_actor::~blocking_actor() {
@@ -59,18 +66,18 @@ bool blocking_actor::enqueue(mailbox_element_ptr ptr, scheduler*) {
   CAF_LOG_SEND_EVENT(ptr);
   auto mid = ptr->mid;
   auto src = ptr->sender;
-  auto collects_metrics = getf(abstract_actor::collects_metrics_flag);
-  if (collects_metrics) {
+  if (auto* mailbox_size = metrics_.mailbox_size) {
     ptr->set_enqueue_time();
-    metrics_.mailbox_size->inc();
+    mailbox_size->inc();
   }
   // returns false if mailbox has been closed
   switch (mailbox().push_back(std::move(ptr))) {
     case intrusive::inbox_result::queue_closed: {
       CAF_LOG_REJECT_EVENT();
-      home_system().base_metrics().rejected_messages->inc();
-      if (collects_metrics)
-        metrics_.mailbox_size->dec();
+      detail::actor_system_access{home_system()}.message_rejected(this);
+      if (auto* mailbox_size = metrics_.mailbox_size) {
+        mailbox_size->dec();
+      }
       if (mid.is_request()) {
         detail::sync_request_bouncer srb;
         srb(src, mid);
@@ -101,19 +108,19 @@ namespace {
 class blocking_actor_runner : public resumable {
 public:
   explicit blocking_actor_runner(blocking_actor* self,
-                                 detail::private_thread* thread, bool hidden)
-    : self_(self), thread_(thread), hidden_(hidden) {
+                                 detail::private_thread* thread)
+    : self_(self), thread_(thread) {
     intrusive_ptr_add_ref(self->ctrl());
   }
 
-  resumable::subtype_t subtype() const noexcept final {
-    return resumable::function_object;
-  }
-
-  resumable::resume_result resume(scheduler* ctx, size_t) override {
-    CAF_PUSH_AID_FROM_PTR(self_);
+  void resume(scheduler* ctx, uint64_t event_id) override {
+    detail::current_actor_guard ctx_guard{self_};
+    if (event_id == resumable::dispose_event_id) {
+      self_->cleanup(make_error(exit_reason::user_shutdown), ctx);
+      return;
+    }
     self_->context(ctx);
-    self_->initialize();
+    self_->initialize(ctx);
     error rsn;
 #ifdef CAF_ENABLE_EXCEPTIONS
     try {
@@ -127,16 +134,10 @@ public:
     self_->act();
     rsn = self_->fail_state();
 #endif
-    self_->cleanup(std::move(rsn), ctx);
-    [[maybe_unused]] auto id = self_->id();
     auto& sys = self_->system();
-    intrusive_ptr_release(self_->ctrl());
     sys.release_private_thread(thread_);
-    if (!hidden_) {
-      [[maybe_unused]] auto count = sys.registry().dec_running();
-      log::system::debug("actor {} decreased running count to {}", id, count);
-    }
-    return resumable::done;
+    self_->cleanup(std::move(rsn), ctx);
+    intrusive_ptr_release(self_->ctrl());
   }
 
   void ref_resumable() const noexcept final {
@@ -150,26 +151,23 @@ public:
 private:
   blocking_actor* self_;
   detail::private_thread* thread_;
-  bool hidden_;
 };
 
 } // namespace
 
-void blocking_actor::launch(scheduler*, bool, bool hide) {
-  CAF_PUSH_AID_FROM_PTR(this);
-  auto lg = log::core::trace("hide = {}", hide);
-  CAF_ASSERT(getf(is_blocking_flag));
-  // Try to acquire a thread before incrementing the running count, since this
-  // may throw.
-  auto& sys = home_system();
-  auto thread = sys.acquire_private_thread();
-  // Note: must *not* call register_at_system() to stop actor cleanup from
-  // decrementing the count before releasing the thread.
-  if (!hide) {
-    [[maybe_unused]] auto count = sys.registry().inc_running();
-    log::system::debug("actor {} increased running count to {}", id(), count);
-  }
-  thread->resume(new blocking_actor_runner(this, thread, hide));
+bool blocking_actor::initialize(scheduler*) {
+  return true;
+}
+
+bool blocking_actor::launch_delayed() {
+  return false;
+}
+
+void blocking_actor::launch(detail::private_thread* worker, scheduler*) {
+  CAF_ASSERT(worker != nullptr);
+  detail::current_actor_guard ctx_guard{this};
+  auto lg = log::core::trace("");
+  worker->resume(new blocking_actor_runner(this, worker));
 }
 
 blocking_actor::receive_while_helper
@@ -183,8 +181,7 @@ blocking_actor::receive_while(const bool& ref) {
 }
 
 void blocking_actor::await_all_other_actors_done() {
-  system().registry().await_running_count_equal(getf(is_registered_flag) ? 1
-                                                                         : 0);
+  system().await_running_actors_count_equal(getf(is_registered_flag) ? 1 : 0);
 }
 
 void blocking_actor::act() {
@@ -357,7 +354,7 @@ size_t blocking_actor::attach_functor(const strong_actor_ptr& ptr) {
 }
 
 void blocking_actor::on_cleanup(const error& reason) {
-  close_mailbox(reason);
+  close_mailbox();
   on_exit();
   return super::on_cleanup(reason);
 }
@@ -367,17 +364,17 @@ void blocking_actor::unstash() {
     mailbox().push_front(mailbox_element_ptr{stashed});
 }
 
-void blocking_actor::close_mailbox(const error& reason) {
-  if (!mailbox_.closed()) {
+void blocking_actor::close_mailbox() {
+  if (!mailbox_->closed()) {
     unstash();
-    auto dropped = mailbox_.close(reason);
+    auto dropped = mailbox_->close();
     if (dropped > 0 && metrics_.mailbox_size)
       metrics_.mailbox_size->dec(static_cast<int64_t>(dropped));
   }
 }
 
 void blocking_actor::force_close_mailbox() {
-  close_mailbox(make_error(exit_reason::unreachable));
+  close_mailbox();
 }
 
 void blocking_actor::do_unstash(mailbox_element_ptr ptr) {

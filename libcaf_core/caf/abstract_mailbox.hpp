@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "caf/caf_deprecated.hpp"
 #include "caf/detail/core_export.hpp"
 #include "caf/fwd.hpp"
 #include "caf/intrusive/inbox_result.hpp"
@@ -54,30 +55,38 @@ public:
   /// Closes the mailbox and discards all pending messages.
   /// @returns The number of dropped messages.
   /// @note Only the owning actor is allowed to call this function.
-  /// @note @p reason is ignored since CAF 1.10.0. A closed mailbox will always
-  ///       report @c sec::request_receiver_down.
-  virtual size_t close(const error& reason) = 0;
+  virtual size_t close() = 0;
+
+  CAF_DEPRECATED("use close() instead")
+  size_t close(const error&) {
+    return close();
+  }
 
   /// Returns the number of pending messages.
   /// @note Only the owning actor is allowed to call this function.
   virtual size_t size() = 0;
 
   /// Increases the reference count by one.
-  virtual void ref_mailbox() noexcept = 0;
+  virtual void ref_mailbox() const noexcept = 0;
 
   /// Decreases the reference count by one and deletes this instance if the
   /// reference count drops to zero.
-  virtual void deref_mailbox() noexcept = 0;
+  virtual void deref_mailbox() const noexcept = 0;
 
   /// Checks whether the mailbox is empty.
   bool empty() {
     return size() == 0;
   }
-
-  /// @private
-  /// @note Only used by the legacy test framework. Remove when dropping support
-  ///       for it.
-  virtual mailbox_element* peek(message_id id) = 0;
 };
+
+inline void intrusive_ptr_add_ref(const abstract_mailbox* ptr) noexcept {
+  ptr->ref_mailbox();
+}
+
+inline void intrusive_ptr_release(const abstract_mailbox* ptr) noexcept {
+  ptr->deref_mailbox();
+}
+
+using abstract_mailbox_ptr = intrusive_ptr<abstract_mailbox>;
 
 } // namespace caf

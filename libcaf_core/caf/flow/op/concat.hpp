@@ -51,7 +51,9 @@ public:
       return;
     ++key_;
     using fwd_impl = forwarder<T, concat_sub, size_t>;
-    auto fwd = parent_->add_child(std::in_place_type<fwd_impl>, this, key_);
+    auto fwd = parent_->add_child(std::in_place_type<fwd_impl>,
+                                  intrusive_ptr<concat_sub>{this, add_ref},
+                                  key_);
     what.pimpl()->subscribe(fwd->as_observer());
   }
 
@@ -122,7 +124,7 @@ public:
     }
     // Otherwise, we're done.
     ++key_;
-    if (!err_)
+    if (err_.empty())
       out_.on_complete();
     else
       out_.on_error(err_);

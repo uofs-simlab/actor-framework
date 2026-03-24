@@ -31,10 +31,10 @@ public:
       : buf_(std::move(buf)),
         ctx_(std::move(ctx)),
         do_wakeup_(std::move(do_wakeup)) {
-      buf_->set_consumer(this);
+      buf_->set_consumer({this, add_ref});
     }
 
-    ~impl() {
+    ~impl() override {
       if (buf_) {
         buf_->cancel();
         do_wakeup_.dispose();
@@ -67,14 +67,14 @@ public:
           return read_result::try_again_later;
         } else {
           CAF_ASSERT(n == 0);
-          return abort_reason_ ? read_result::abort : read_result::stop;
+          return abort_reason_.valid() ? read_result::abort : read_result::stop;
         }
       } else {
-        return abort_reason_ ? read_result::abort : read_result::stop;
+        return abort_reason_.valid() ? read_result::abort : read_result::stop;
       }
     }
 
-    const error& abort_reason() const noexcept {
+    const error& abort_reason() const {
       return abort_reason_;
     }
 
@@ -163,7 +163,7 @@ public:
     }
   }
 
-  error abort_reason() const noexcept {
+  error abort_reason() const {
     if (impl_)
       return impl_->abort_reason();
     else

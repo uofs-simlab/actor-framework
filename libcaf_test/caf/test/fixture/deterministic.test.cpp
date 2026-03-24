@@ -42,7 +42,8 @@ bool operator==(my_int lhs, int rhs) noexcept {
 
 } // namespace
 
-CAF_BEGIN_TYPE_ID_BLOCK(deterministic_fixture_test, caf::first_custom_type_id)
+CAF_BEGIN_TYPE_ID_BLOCK(deterministic_fixture_test,
+                        caf::first_custom_type_id + 230, 10)
 
   CAF_ADD_TYPE_ID(deterministic_fixture_test, (my_int))
 
@@ -551,6 +552,21 @@ SCENARIO("the deterministic fixture allows setting the actor clock at will") {
       check(*a3);
     }
   }
+}
+
+TEST("scoped actors use the default mailbox") {
+  caf::scoped_actor self{sys};
+  auto dummy = sys.spawn([] {
+    return caf::behavior{
+      [](int val) { return val * 2; },
+    };
+  });
+  self->mail(1).send(dummy);
+  expect<int>().with(1).from(self).to(dummy);
+  self->receive([this](int val) { check_eq(val, 2); },
+                caf::after(1ms) >> [this] { fail("timeout"); });
+  self->receive([this](int) { fail("unexpected message"); },
+                caf::after(1ms) >> [this] { check(true); });
 }
 
 #ifdef CAF_ENABLE_EXCEPTIONS

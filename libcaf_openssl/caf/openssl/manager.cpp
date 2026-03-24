@@ -4,6 +4,9 @@
 
 #include "caf/openssl/manager.hpp"
 
+#include "caf/config.hpp"
+#include "caf/version.hpp"
+
 CAF_PUSH_WARNINGS
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -22,6 +25,7 @@ CAF_POP_WARNINGS
 #include "caf/log/openssl.hpp"
 #include "caf/raise_error.hpp"
 #include "caf/scoped_actor.hpp"
+#include "caf/version.hpp"
 
 #include <mutex>
 #include <vector>
@@ -167,16 +171,17 @@ void manager::add_module_options(actor_system_config& cfg) {
 actor_system_module* manager::make(actor_system& sys) {
   if (!sys.has_middleman())
     CAF_RAISE_ERROR("Cannot start OpenSSL module without middleman.");
-  auto ptr = &sys.middleman().backend();
-  if (dynamic_cast<io::network::default_multiplexer*>(ptr) == nullptr)
+#ifdef CAF_ENABLE_RTTI
+  auto& backend = sys.middleman().backend();
+  if (dynamic_cast<io::network::default_multiplexer*>(&backend) == nullptr) {
     CAF_RAISE_ERROR("Cannot start OpenSSL module without default backend.");
+  }
+#endif
   return new manager(sys);
 }
 
 void manager::check_abi_compatibility(version::abi_token token) {
-  if (static_cast<int>(token) != CAF_VERSION_MAJOR) {
-    CAF_CRITICAL("CAF ABI token mismatch");
-  }
+  version::check_abi_compatibility(token);
 }
 
 void manager::init_global_meta_objects() {

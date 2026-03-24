@@ -26,7 +26,7 @@ public:
     CAF_ASSERT(max_connections_ > 0);
   }
 
-  ~accept_handler_impl() {
+  ~accept_handler_impl() override {
     on_conn_close_.dispose();
     if (monitor_callback_)
       monitor_callback_.dispose();
@@ -37,14 +37,10 @@ public:
   error start(net::socket_manager* owner) override {
     auto lg = log::net::trace("");
     owner_ = owner;
-    if (auto err = acceptor_->start(owner)) {
-      log::net::debug("failed to start the acceptor: {}", err);
-      return err;
-    }
     self_ref_ = owner->as_disposable();
     if (!monitored_actors_.empty()) {
       monitor_callback_ = make_action([this] { owner_->shutdown(); });
-      auto ctx = async::execution_context_ptr{owner_->mpx_ptr()};
+      auto ctx = async::execution_context_ptr{owner_->mpx_ptr(), add_ref};
       for (auto& hdl : monitored_actors_) {
         CAF_ASSERT(hdl);
         hdl->get()->attach_functor([ctx, cb = monitor_callback_] {
@@ -54,6 +50,10 @@ public:
       }
     }
     on_conn_close_ = make_action([this] { connection_closed(); });
+    if (auto err = acceptor_->start(owner, on_conn_close_); err.valid()) {
+      log::net::debug("failed to start the acceptor: {}", err);
+      return err;
+    }
     owner->register_reading();
     return none;
   }
@@ -66,16 +66,26 @@ public:
     auto lg = log::net::trace("");
     CAF_ASSERT(owner_ != nullptr);
     if (open_connections_.size() == max_connections_) {
+      log::net::debug("stop accepting new connections on socket {}: "
+                      "reached maximum number of connections",
+                      handle().id);
       owner_->deregister_reading();
       return;
     }
     if (auto conn = acceptor_->try_accept()) {
       auto& child = *conn;
       open_connections_.push_back(child->as_disposable());
-      if (open_connections_.size() == max_connections_)
+      if (open_connections_.size() == max_connections_) {
+        log::net::debug("stop accepting new connections on socket {}: "
+                        "reached maximum number of connections",
+                        handle().id);
         owner_->deregister_reading();
-      child->add_cleanup_listener(on_conn_close_);
-      if (auto err = child->start()) {
+      }
+      // Note: the acceptor is responsible for ensuring on_conn_close_ is called
+      // when the connection is fully closed. For most protocols, this happens
+      // when the socket manager cleans up. For HTTP, this also requires all
+      // outstanding http::request objects to be destroyed.
+      if (auto err = child->start(); err.valid()) {
         on_error(err);
       }
     } else if (conn.error() == sec::unavailable_or_would_block) {
@@ -120,10 +130,14 @@ private:
     auto& conns = open_connections_;
     auto new_end = std::remove_if(conns.begin(), conns.end(),
                                   [](auto& ptr) { return ptr.disposed(); });
-    if (new_end == conns.end())
+    if (new_end == conns.end()) {
       return;
-    if (open_connections_.size() == max_connections_)
+    }
+    if (open_connections_.size() == max_connections_) {
+      log::net::debug("resume accepting new connections on socket {}",
+                      handle().id);
       owner_->register_reading();
+    }
     conns.erase(new_end, conns.end());
   }
 

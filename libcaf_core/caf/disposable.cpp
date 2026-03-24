@@ -4,7 +4,7 @@
 
 #include "caf/disposable.hpp"
 
-#include "caf/make_counted.hpp"
+#include "caf/ref_counted.hpp"
 
 #include <algorithm>
 
@@ -17,7 +17,7 @@ disposable::impl::~impl() {
 }
 
 disposable disposable::impl::as_disposable() noexcept {
-  return disposable{intrusive_ptr<impl>{this}};
+  return disposable{intrusive_ptr<impl>{this, add_ref}};
 }
 
 // -- factories ----------------------------------------------------------------
@@ -28,34 +28,27 @@ class composite_impl : public ref_counted, public disposable::impl {
 public:
   using disposable_list = std::vector<disposable>;
 
-  composite_impl(disposable_list entries) : entries_(std::move(entries)) {
+  explicit composite_impl(disposable_list entries)
+    : entries_(std::move(entries)) {
     // nop
   }
 
-  void dispose() {
+  void dispose() override {
     for (auto& entry : entries_)
       entry.dispose();
   }
 
-  bool disposed() const noexcept {
+  bool disposed() const noexcept override {
     auto is_disposed = [](const disposable& entry) { return entry.disposed(); };
-    return std::all_of(entries_.begin(), entries_.end(), is_disposed);
+    return std::ranges::all_of(entries_, is_disposed);
   }
 
-  void ref_disposable() const noexcept {
+  void ref_disposable() const noexcept override {
     ref();
   }
 
-  void deref_disposable() const noexcept {
+  void deref_disposable() const noexcept override {
     deref();
-  }
-
-  friend void intrusive_ptr_add_ref(const composite_impl* ptr) noexcept {
-    ptr->ref();
-  }
-
-  friend void intrusive_ptr_release(const composite_impl* ptr) noexcept {
-    ptr->deref();
   }
 
 private:
@@ -67,8 +60,7 @@ private:
 disposable disposable::make_composite(std::vector<disposable> entries) {
   if (entries.empty())
     return {};
-  else
-    return disposable{make_counted<composite_impl>(std::move(entries))};
+  return {new composite_impl(std::move(entries)), adopt_ref};
 }
 
 namespace {
@@ -79,28 +71,20 @@ public:
     // nop
   }
 
-  void dispose() {
+  void dispose() override {
     flag_ = true;
   }
 
-  bool disposed() const noexcept {
+  bool disposed() const noexcept override {
     return flag_.load();
   }
 
-  void ref_disposable() const noexcept {
+  void ref_disposable() const noexcept override {
     ref();
   }
 
-  void deref_disposable() const noexcept {
+  void deref_disposable() const noexcept override {
     deref();
-  }
-
-  friend void intrusive_ptr_add_ref(const flag_impl* ptr) noexcept {
-    ptr->ref();
-  }
-
-  friend void intrusive_ptr_release(const flag_impl* ptr) noexcept {
-    ptr->deref();
   }
 
 private:
@@ -110,7 +94,7 @@ private:
 } // namespace
 
 disposable disposable::make_flag() {
-  return disposable{make_counted<flag_impl>()};
+  return {new flag_impl, adopt_ref};
 }
 
 // -- utility ------------------------------------------------------------------
