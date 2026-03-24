@@ -624,11 +624,11 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	   30000,40000,50000
+	   1,30000,40000,50000
     };
 
 
-    int num_actors = actor_counts[actor_counts.size()];
+    int num_actors = actor_counts[actor_counts.size()-1];
 
         // Generate deterministic random pool
         MatrixPool pool = create_matrix_pool_random(
