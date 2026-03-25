@@ -380,7 +380,7 @@ mem_ptr<T> global_argument(const in<T>& arg, CUstream stream, int access) {
   if (arg.is_scalar()) {
     return caf::intrusive_ptr<mem_ref<T>>{
       new mem_ref<T>(arg.getscalar(), access, id_, 0, getContext(), stream),
-      caf::adopt_ref};
+      caf::add_ref};
   }
   size_t bytes = arg.size() * sizeof(T);
   CUdeviceptr dev_ptr;
@@ -390,7 +390,7 @@ mem_ptr<T> global_argument(const in<T>& arg, CUstream stream, int access) {
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
   return caf::intrusive_ptr<mem_ref<T>>{
     new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream),
-    caf::adopt_ref};
+    caf::add_ref};
 }
 
 // allocate a read/write input buffer on the GPU
@@ -399,7 +399,7 @@ mem_ptr<T> global_argument(const in_out<T>& arg, CUstream stream, int access) {
   if (arg.is_scalar()) {
     return caf::intrusive_ptr<mem_ref<T>>{
       new mem_ref<T>(arg.getscalar(), access, id_, 0, getContext(), stream),
-      caf::adopt_ref};
+      caf::add_ref};
   }
   size_t bytes = arg.size() * sizeof(T);
   CUdeviceptr dev_ptr;
@@ -409,7 +409,7 @@ mem_ptr<T> global_argument(const in_out<T>& arg, CUstream stream, int access) {
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
   return caf::intrusive_ptr<mem_ref<T>>{
     new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream),
-    caf::adopt_ref};
+    caf::add_ref};
 }
 
 // allocate an output buffer on the GPU
@@ -422,7 +422,7 @@ mem_ptr<T> scratch_argument(const out<T>& arg, CUstream stream, int access) {
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
   return caf::intrusive_ptr<mem_ref<T>>{
     new mem_ref<T>(size, dev_ptr, access, id_, 0, getContext(), stream),
-    caf::adopt_ref};
+    caf::add_ref};
 }  
 
 // === Kernel launch core ===
