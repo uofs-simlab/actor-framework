@@ -12,7 +12,8 @@ mem_ptr<T> scheduler::transfer_mem_ref(const mem_ptr<T>& src,
                                        device_ptr target_device) {
   if (src->is_scalar()) {
     return mem_ptr<T>(new mem_ref<T>(src->host_scalar_ptr()[0], src->access(),
-                                     target_device->getId(), 0, nullptr));
+                                     target_device->getId(), 0, nullptr),
+                      caf::add_ref);
   }
 
   auto host_data = src->copy_to_host();
@@ -25,7 +26,8 @@ mem_ptr<T> scheduler::transfer_mem_ref(const mem_ptr<T>& src,
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
 
   return mem_ptr<T>(new mem_ref<T>(src->size(), new_mem, src->access(),
-                                   target_device->getId(), 0, nullptr));
+                                   target_device->getId(), 0, nullptr),
+                    caf::add_ref);
 }
 
 // ---------------------- single_device_scheduler ----------------------

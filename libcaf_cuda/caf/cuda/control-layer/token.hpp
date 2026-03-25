@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <caf/intrusive_ptr.hpp>
+#include <caf/adopt_ref.hpp>
 #include <caf/ref_counted.hpp>
 #include "caf/cuda/global_export.hpp"
 #include <iostream>

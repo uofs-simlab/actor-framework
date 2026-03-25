@@ -22,7 +22,8 @@ token_ptr make_launch_token(program_ptr prog,
                          memory_usage,
                          std::move(id),
                          reply_to,
-                         dependency));
+                         dependency),
+        caf::add_ref);
 }
 
 response_token_ptr make_launch_response_token(actor receiver,
@@ -38,13 +39,15 @@ response_token_ptr make_launch_response_token(actor receiver,
                                   device_number,
                                   stream_id,
                                   reclaim_value,
-                                  reclaim_runtime));
+                                  reclaim_runtime),
+        caf::add_ref);
 }
 
 
 behavior_token_ptr make_behavior_token(std::string name)
 {
-    return behavior_token_ptr(new behavior_token(std::move(name)));
+    return behavior_token_ptr(new behavior_token(std::move(name)),
+                              caf::add_ref);
 }
 
 
@@ -53,15 +56,19 @@ token_ptr make_memory_token(int size,
                             caf::actor replyActor,
                             int dependency)
 {
-    return token_ptr(
-        new memory_transfer_token(size, direction, replyActor, dependency));
+    return token_ptr(new memory_transfer_token(size, direction, replyActor,
+                                               dependency),
+                     caf::add_ref);
 }
 
 response_token_ptr make_memory_response_token(actor receiver,
                                      const memory_transfer_token& orig,
 				     int device_number,
 				     int stream_id) {
-    return response_token_ptr(new memory_response_token(receiver, orig,device_number,stream_id));
+    return response_token_ptr(new memory_response_token(receiver, orig,
+                                                        device_number,
+                                                        stream_id),
+                              caf::add_ref);
 }
 
 response_token_ptr make_transfer_token(caf::actor receiver,
@@ -73,7 +80,8 @@ response_token_ptr make_transfer_token(caf::actor receiver,
         new transfer_token(receiver,
                            orig,
                            device_number,
-                           stream_id));
+                           stream_id),
+        caf::add_ref);
 }
 
 
@@ -83,11 +91,14 @@ response_token_ptr make_transfer_token(caf::actor receiver,
  mem_ptr<int> make_mem_ptr(size_t num_elements = 16) {
     if (num_elements == 1) {
         // scalar test
-        return mem_ptr<int>(new mem_ref<int>(42, /*access=*/0));
+        return mem_ptr<int>(new mem_ref<int>(42, /*access=*/0),
+                            caf::add_ref);
     } else {
         // create a device-like mem_ref with scalar backing for simplicity
         // normally this would allocate GPU memory, here just fake values
-        auto ptr = mem_ptr<int>(new mem_ref<int>(0, /*CUdeviceptr*/0, /*access=*/0));
+        auto ptr = mem_ptr<int>(new mem_ref<int>(0, /*CUdeviceptr*/0,
+                                                 /*access=*/0),
+                                caf::add_ref);
         return ptr;
     }
 }

@@ -601,7 +601,8 @@ extern "C" __global__ void scalar_kernel(int a, float b, double c) {
 void test_mem_ref_scalar_host() {
   std::cout << "\n=== test_mem_ref_scalar_host ===\n";
   // Direct scalar constructor
-  auto ptr = intrusive_ptr<mem_ref<int>>(new mem_ref<int>(123, IN_OUT, 0, 0,nullptr ,nullptr));
+  auto ptr = intrusive_ptr<mem_ref<int>>(
+    new mem_ref<int>(123, IN_OUT, 0, 0, nullptr, nullptr), caf::add_ref);
   assert(ptr->is_scalar() && "should report scalar");
   assert(ptr->host_scalar_ptr() && *ptr->host_scalar_ptr() == 123);
   auto host_copy = ptr->copy_to_host();
