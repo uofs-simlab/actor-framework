@@ -810,6 +810,7 @@ void caf_main(caf::actor_system& sys) {
 
 
   run_mmul_random_scaling_tests(sys,man_config);
+  run_mmul_uniform_scaling_tests(sys,man_config);
 
 
 
