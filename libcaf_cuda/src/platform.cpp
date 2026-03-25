@@ -29,6 +29,9 @@ platform::platform() {
     check(cuDeviceGetName(name, sizeof(name), cuda_device), "cuDeviceGetName");
     device_names[i] = name;
 
+//Use this if cuCtxCreate throws a compiler error
+//    check(cuCtxCreate(&contexts_[i],nullptr ,CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, cuda_device), "cuCtxCreate");
+
     check(cuCtxCreate(&contexts_[i], CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, cuda_device), "cuCtxCreate");
     devices_[i] = make_counted<device>(cuda_device, contexts_[i], name, i);
   }
