@@ -302,7 +302,7 @@ caf::behavior mmul_actor_fun_scheduler2(caf::stateful_actor<mmul_state>* self,
 
 	int device = stream % caf::cuda::manager::get().get_num_devices();
 
-	self->mail("subscribe",self).send(scheduler_actor);
+	//self->mail("subscribe",self).send(scheduler_actor);
 
 	self->mail(N).send(self);
 
@@ -312,6 +312,7 @@ caf::behavior mmul_actor_fun_scheduler2(caf::stateful_actor<mmul_state>* self,
 		[=](std::vector<int> costs) {
 			//do nothing this is an overhead test 
 		
+			//std::cout << "N=" << N <<  "\n";
 		
 		},
 		[=](int N) {
@@ -411,7 +412,9 @@ caf::behavior scheduler_actor_fun(caf::stateful_actor<scheduler_actor_state>* se
 	self->state().num_devices = caf::cuda::manager::get().get_num_devices();
 	self->state().costs.resize(self->state().num_devices);
 
-	self->mail("publish").urgent().delay(std::chrono::milliseconds(5)).send(self);
+	int time = 50;
+
+	self->mail("publish").urgent().delay(std::chrono::milliseconds(time)).send(self);
 
 	return {
 
@@ -435,6 +438,7 @@ caf::behavior scheduler_actor_fun(caf::stateful_actor<scheduler_actor_state>* se
 				auto& subs = self->state().subscribers;
 
 				if (command == "subscribe") {
+					//std::cout << "Thank you for subscribing\n";
 					// avoid duplicates
 					if (std::find(subs.begin(), subs.end(), actor) == subs.end()) {
 						subs.push_back(actor);
@@ -453,12 +457,13 @@ caf::behavior scheduler_actor_fun(caf::stateful_actor<scheduler_actor_state>* se
 
 			[=](std::string command) {
 				if (command == "publish") {
+					//std::cout << "size = " << self->state().subscribers.size() << "\n";
 					for (caf::actor a : self->state().subscribers) {
 
 						self -> mail(self->state().costs).urgent().send(a);
 
 					}
-					self->mail("publish").urgent().delay(std::chrono::milliseconds(5)).send(self);
+					self->mail("publish").urgent().delay(std::chrono::milliseconds(time)).send(self);
 				}
 
 			}	
@@ -520,6 +525,9 @@ caf::behavior supervisor_actor_fun(
         [=](std::string cmd) {
             if (cmd != "spawn") return;
 
+	     std::chrono::steady_clock::time_point cmd_start_time = std::chrono::steady_clock::now();
+	    
+
             self->state().completed = 0;
             self->state().wave_start_time = std::chrono::steady_clock::now();
 
@@ -539,7 +547,7 @@ caf::behavior supervisor_actor_fun(
                 caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
 		if (use_scheduler) {
-			self->spawn(mmul_actor_fun_scheduler2, 
+			caf::actor a = 	self->spawn(mmul_actor_fun_scheduler2, 
 					self,
 					scheduler_actor,
 				       	program, 
@@ -548,6 +556,9 @@ caf::behavior supervisor_actor_fun(
 					N,
                             caf::cuda::create_in_arg(A),
                             caf::cuda::create_in_arg(B));
+
+
+		 self->mail("subscribe",a).send(scheduler_actor);
 		}
 		else {
 			self->spawn(mmul_actor_fun, self, program, dims,i,N,
@@ -555,7 +566,21 @@ caf::behavior supervisor_actor_fun(
                             caf::cuda::create_in_arg(B));
 		}
             }
-        },
+        
+	
+
+    std::chrono::steady_clock::time_point cmd_end_time = std::chrono::steady_clock::now();
+
+      std::chrono::duration<double> total_time =
+                        cmd_end_time - cmd_start_time;
+
+                    std::cout << "\n===== SUPERVISOR TOTAL TIME spawn =====\n";
+                    std::cout << "Total runtime: "
+                              << total_time.count() << " s\n";
+
+
+	
+	},
 
         // -------------------- COMPLETION TRACKING --------------------
         [=](int done) {
@@ -624,7 +649,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	   1,30000,40000,50000
+	  30000,40000,50000
     };
 
 
