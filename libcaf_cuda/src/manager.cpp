@@ -16,7 +16,7 @@ void manager::stop() {}
 
 void manager::init(actor_system_config&) {
   CHECK_CUDA(cuInit(0));
-  platform_ = platform::create();
+  platform_ = make_counted<platform>();
   CUcontext ctx = nullptr;
   cuCtxGetCurrent(&ctx);
 };
@@ -132,7 +132,7 @@ program_ptr manager::create_program(const char * kernel,
 		throw std::runtime_error("Program failed to compile\n");
 	
 	}
-	program_ptr prog = make_counted<program>(name, ptx);
+	program_ptr prog = make_counted<program>(name, ptx, platform_);
 	return prog;
 }
 //this actually doesnt even work do not use 
@@ -167,7 +167,7 @@ program_ptr manager::create_program_from_ptx(const std::string& filename,
 
    // 🔒 Guard the actual JIT as well — this is the critical part!
   std::lock_guard<std::mutex> guard(*file_mutex);
-  program_ptr prog = make_counted<program>(kernel_name, ptx);
+  program_ptr prog = make_counted<program>(kernel_name, ptx, platform_);
   return prog;
 }
 
@@ -186,7 +186,7 @@ program_ptr manager::create_program_from_cubin(const std::string& filename,
                           std::istreambuf_iterator<char>());
 
    // Reuse the same constructor as PTX (program class doesn't care)
-  program_ptr prog = make_counted<program>(kernel_name, std::move(cubin));
+  program_ptr prog = make_counted<program>(kernel_name, std::move(cubin), platform_);
   return prog;
 }
 
@@ -204,7 +204,7 @@ program_ptr manager::create_program_from_cubin(const std::string& filename,
                           std::istreambuf_iterator<char>());
 
    // Reuse the same constructor as PTX (program class doesn't care)
-  program_ptr prog = make_counted<program>(kernel_name, std::move(cubin));
+  program_ptr prog = make_counted<program>(kernel_name, std::move(cubin), platform_);
   return prog;
 }
 
@@ -223,7 +223,7 @@ program_ptr manager::create_program_from_fatbin(const std::string& filename,
                           std::istreambuf_iterator<char>());
 
    // Reuse the same constructor as PTX (program class doesn't care)
-  program_ptr prog = make_counted<program>(kernel_name, std::move(cubin),true);
+  program_ptr prog = make_counted<program>(kernel_name, std::move(cubin), platform_, true);
   return prog;
 }
 

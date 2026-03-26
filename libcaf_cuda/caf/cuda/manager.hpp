@@ -191,7 +191,7 @@ public:
 
   int get_num_devices();
 
-
+  platform_ptr get_platform() { return platform_; }
 
   caf::actor get_scheduler_actor();
 

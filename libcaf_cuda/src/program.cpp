@@ -2,17 +2,16 @@
 
 namespace caf::cuda {
 
-program::program(std::string name, std::vector<char> binary, bool is_fatbin)
-    : name_(std::move(name)), binary_(std::move(binary)), hashValue(hasher(name_)) {
+program::program(std::string name, std::vector<char> binary, platform_ptr platform,
+                 bool is_fatbin)
+    : name_(std::move(name)), binary_(std::move(binary)),
+      platform_(std::move(platform)), hashValue(hasher(name_)) {
   load_kernels(is_fatbin);
 }
 
 void program::load_kernels(bool is_fatbin) {
-  // Create a platform instance to enumerate devices
-  auto plat = platform::create();
-
-  // Load kernel on all available devices
-  for (const auto& dev : plat->devices()) {
+  // Use the platform to enumerate devices
+  for (const auto& dev : platform_->devices()) {
     CUcontext ctx = dev->getContext();
     CHECK_CUDA(cuCtxPushCurrent(ctx));
 

@@ -817,7 +817,7 @@ void test_add_scalar_to_buffer(actor_system& sys) {
 
 void test_main([[maybe_unused]] actor_system& sys) {
     std::cout << "\n===== Running CUDA CAF Tests =====\n";
-    platform_ptr plat = platform::create();
+    platform_ptr plat = sys.cuda_manager().get_platform();
     device_ptr dev = sys.cuda_manager().find_device(0);
     std::cout << "  -> Manager initialized with context: " << dev->getContext(0) << "\n";
     try {

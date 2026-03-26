@@ -34,6 +34,7 @@ public:
            int actor_id,
            Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<command_t>(std::move(program),
                                               std::move(dims),
                                               actor_id,
@@ -51,6 +52,7 @@ public:
            int shared_memory,
            Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<command_t>(std::move(program),
                                               std::move(dims),
                                               actor_id,
@@ -70,6 +72,7 @@ public:
            int device_number,
            Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<command_t>(std::move(program),
                                               std::move(dims),
                                               actor_id,
@@ -94,6 +97,7 @@ public:
          const response_token_ptr& token,
          Us&&... xs)
   {
+    if (!platform_) platform_ = program->get_platform();
     return run(std::move(program),
                std::move(dims),
                /* actor_id = */ token ->getStreamId(),
@@ -115,6 +119,7 @@ public:
                  int actor_id,
                  Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<base_command_t>(std::move(program),
                                                    std::move(dims),
                                                    actor_id,
@@ -132,6 +137,7 @@ public:
                  int shared_memory,
                  Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<base_command_t>(std::move(program),
                                                    std::move(dims),
                                                    actor_id,
@@ -151,6 +157,7 @@ public:
                  int device_number,
                  Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<base_command_t>(std::move(program),
                                                    std::move(dims),
                                                    actor_id,
@@ -173,6 +180,7 @@ public:
                const response_token_ptr& token,
                Us&&... xs)
     {
+      if (!platform_) platform_ = program->get_platform();
     	return run_async(std::move(program),
                      std::move(dims),
                      /* actor_id = */ token -> getStreamId(),
@@ -194,8 +202,10 @@ public:
                                       int stream_id,
                                       T arg)
     {
+        if (!platform_)
+            throw std::runtime_error("command_runner: platform not set; call run() before transfer_memory()");
         // stack-allocate memory_command and execute transfer
-        memory_command<T> cmd(device_number, stream_id, std::move(arg));
+        memory_command<T> cmd(platform_, device_number, stream_id, std::move(arg));
         return cmd.enqueue();
     }
 
@@ -218,12 +228,12 @@ public:
   // Destroy streams for a given actor ID
   // -------------------------------
   void release_stream_for_actor(int actor_id) {
-      auto plat = platform::create();
-      plat->release_streams_for_actor(actor_id);
+      if (platform_)
+          platform_->release_streams_for_actor(actor_id);
   }
 
-
-
+private:
+  platform_ptr platform_;
 
 
 

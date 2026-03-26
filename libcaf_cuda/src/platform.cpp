@@ -3,14 +3,6 @@
 
 namespace caf::cuda {
 
-platform_ptr platform::create() {
-  static platform_ptr instance;
-  if (!instance) {
-    instance = make_counted<platform>();
-  }
-  return instance;
-}
-
 //constructor
 platform::platform() {
   int device_count = 0;

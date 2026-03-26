@@ -46,7 +46,7 @@ public:
         kernel_args(std::make_tuple(std::forward<Us>(xs)...)),
         shared_memory_(0)
   {
-      dev_ = platform::create()->schedule(actor_id);
+      dev_ = program_->get_platform()->schedule(actor_id);
       static_assert(sizeof...(Us) == sizeof...(Ts), "Argument count mismatch");
   }
 
@@ -65,7 +65,7 @@ public:
         kernel_args(std::make_tuple(std::forward<Us>(xs)...)),
         shared_memory_(shared_memory)
   {
-      dev_ = platform::create()->schedule(actor_id);
+      dev_ = program_->get_platform()->schedule(actor_id);
       static_assert(sizeof...(Us) == sizeof...(Ts), "Argument count mismatch");
   }
 
@@ -86,9 +86,9 @@ public:
         shared_memory_(shared_memory)
   {
       if (device_number == -1)
-          dev_ = platform::create()->schedule(actor_id);
+          dev_ = program_->get_platform()->schedule(actor_id);
       else
-          dev_ = platform::create()->schedule(actor_id, device_number);
+          dev_ = program_->get_platform()->schedule(actor_id, device_number);
 
       static_assert(sizeof...(Us) == sizeof...(Ts), "Argument count mismatch");
   }

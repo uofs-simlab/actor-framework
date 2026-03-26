@@ -25,8 +25,6 @@ public:
   template <class T, class... Ts>
   friend intrusive_ptr<T> caf::make_counted(Ts&&...);
 
-  static platform_ptr create(); //singleton method that creates or gets platform
-
 
   const std::string& name() const; 
   const std::string& vendor() const;

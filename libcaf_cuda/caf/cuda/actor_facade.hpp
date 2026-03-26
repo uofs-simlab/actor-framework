@@ -39,10 +39,12 @@ public:
     : caf::event_based_actor(cfg),
       program_(std::move(program)),
       dims_(std::move(dims)) {
+    platform_ = program_->get_platform();
   }
 
   ~actor_facade() override {
-    platform::create()->release_streams_for_actor(this->id());
+    if (platform_)
+      platform_->release_streams_for_actor(this->id());
   }
 
   caf::behavior make_behavior() override {
@@ -99,6 +101,7 @@ private:
   }
 
   program_ptr program_;
+  platform_ptr platform_;
   nd_range dims_;
   int actor_id_;
 };

@@ -23,13 +23,14 @@ public:
   // -------------------------------------------------------------------------
   // Constructor
   // -------------------------------------------------------------------------
-  memory_command(int device_number,
+  memory_command(platform_ptr platform,
+                 int device_number,
                  int stream_id,
                  T arg)
       : stream_id_(stream_id),
         arg_(std::move(arg)) {
 
-    dev_ = platform::create()->schedule(stream_id_, device_number);
+    dev_ = platform->schedule(stream_id_, device_number);
   }
 
   // -------------------------------------------------------------------------

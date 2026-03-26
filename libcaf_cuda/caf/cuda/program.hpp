@@ -17,11 +17,13 @@ namespace caf::cuda {
 class CAF_CUDA_EXPORT program : public caf::ref_counted {
 public:
   /// Construct a program from binary data or PTX.
-  /// Loads the kernel on all devices.
+  /// Loads the kernel on all available devices provided by the platform.
   /// @param name Name of the kernel function.
   /// @param binary Binary data (fatbin or PTX).
+  /// @param platform The platform that owns the GPU devices.
   /// @param is_fatbin Whether the binary is a fatbinary (default: false).
-  program(std::string name, std::vector<char> binary, bool is_fatbin = false);
+  program(std::string name, std::vector<char> binary, platform_ptr platform,
+          bool is_fatbin = false);
 
   /// Returns the CUfunction for a given device.
   /// @throws std::runtime_error if the kernel was not loaded for the device.
@@ -41,6 +43,9 @@ public:
 
     int getHash() const {return hashValue;}
 
+  /// Returns the platform this program was compiled for.
+  platform_ptr get_platform() const { return platform_; }
+
 
 private:
   /// Internal helper to load the kernel modules on all devices.
@@ -49,6 +54,7 @@ private:
   std::string name_;                       ///< Name of the kernel
   std::vector<char> binary_;               ///< The binary or PTX of the program
   std::unordered_map<int, CUfunction> kernels_; ///< Device ID -> CUfunction mapping
+  platform_ptr platform_;                  ///< The platform owning the devices
   mutable std::atomic<size_t> ref_count_{0};
   std::hash<std::string> hasher;
   int hashValue = 0;
