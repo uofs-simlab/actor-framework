@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <stdexcept>
+#include <cuda.h>
 
 #include <caf/intrusive_ptr.hpp>
 #include <caf/actor_system.hpp>
@@ -14,6 +15,11 @@
 #include "caf/cuda/scheduler.hpp"
 
 namespace caf::cuda {
+
+// Forward-declared implementation detail; defined in platform.cpp.
+// Holds a background thread that defers cuModuleUnload calls so that
+// program::~program() never blocks a CAF worker thread.
+class deferred_module_unloader;
 
 //A container that has access to all the devices and a scheduler 
 //to select which device an actor should go onto
@@ -47,6 +53,11 @@ public:
   //returns how many devices are currently on the GPU
   int get_num_devices();
 
+  /// Enqueues a (ctx, module) pair for deferred cleanup on the background
+  /// thread.  The thread will cuCtxSynchronize then cuModuleUnload so that
+  /// ~program() never blocks the calling thread.
+  void defer_module_unload(CUcontext ctx, CUmodule module);
+
   std::string name_;
 
 private:
@@ -58,6 +69,10 @@ private:
   std::vector<device_ptr> devices_;
   std::vector<CUcontext> contexts_;
   std::unique_ptr<scheduler> scheduler_;
+  // Declared last → destroyed first (before devices_/contexts_).
+  // The destructor joins the background thread, draining all pending unloads
+  // before device contexts are torn down.
+  std::unique_ptr<deferred_module_unloader> module_cleanup_;
 };
 
 // Intrusive pointer hooks

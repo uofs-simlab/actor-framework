@@ -1,7 +1,76 @@
 #include "caf/cuda/platform.hpp"
 #include <iostream>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
 
 namespace caf::cuda {
+
+// ---------------------------------------------------------------------------
+// deferred_module_unloader
+//
+// A background thread whose sole job is to wait for GPU work to finish and
+// then call cuModuleUnload.  By doing the synchronisation here rather than on
+// a CAF worker thread, we prevent ~program() from ever blocking the actor
+// scheduler.
+// ---------------------------------------------------------------------------
+class deferred_module_unloader {
+  struct work_item {
+    CUcontext ctx;
+    CUmodule  module;
+  };
+
+  std::mutex              mutex_;
+  std::queue<work_item>   queue_;
+  std::condition_variable cv_;
+  bool                    stop_ = false;
+  std::thread             thread_;
+
+  void run() {
+    while (true) {
+      std::unique_lock<std::mutex> lk(mutex_);
+      cv_.wait(lk, [this] { return !queue_.empty() || stop_; });
+      if (stop_ && queue_.empty()) return;
+      auto item = queue_.front();
+      queue_.pop();
+      lk.unlock();
+
+      // Push the device context onto this thread, synchronise to ensure the
+      // module is no longer in use, then unload it safely.
+      CUresult res = cuCtxPushCurrent(item.ctx);
+      if (res == CUDA_SUCCESS) {
+        // Ignore sync errors: the context may be shutting down gracefully.
+        cuCtxSynchronize();
+        cuModuleUnload(item.module);
+        CUcontext dummy;
+        cuCtxPopCurrent(&dummy);
+      }
+      // If cuCtxPushCurrent failed the context (and module) are already gone;
+      // nothing to clean up.
+    }
+  }
+
+public:
+  deferred_module_unloader() : thread_([this] { run(); }) {}
+
+  ~deferred_module_unloader() {
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      stop_ = true;
+    }
+    cv_.notify_one();
+    thread_.join();
+  }
+
+  void enqueue(CUcontext ctx, CUmodule module) {
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      queue_.push({ctx, module});
+    }
+    cv_.notify_one();
+  }
+};
 
 //constructor
 platform::platform() {
@@ -24,10 +93,10 @@ platform::platform() {
 #if CUDA_VERSION >= 13000
     {
       CUctxCreateParams ctx_params = {};
-      check(cuCtxCreate(&contexts_[i], &ctx_params, CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, cuda_device));
+      check(cuCtxCreate(&contexts_[i], &ctx_params, CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, cuda_device));
     }
 #else
-    check(cuCtxCreate(&contexts_[i], CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, cuda_device));
+    check(cuCtxCreate(&contexts_[i], CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, cuda_device));
 #endif
     devices_[i] = make_counted<device>(cuda_device, contexts_[i], name, i);
   }
@@ -51,13 +120,27 @@ platform::platform() {
 
   if (device_count > 0) {
     check(cuCtxSetCurrent(contexts_[0]));
-    
   }
 
+  // Start the background module-cleanup thread after all devices are ready.
+  module_cleanup_ = std::make_unique<deferred_module_unloader>();
 }
 
 
 platform::~platform() {
+  // module_cleanup_ unique_ptr destructs here, joining the background thread
+  // and draining all pending cuModuleUnload calls before devices/contexts are
+  // torn down.  The member ordering in platform.hpp ensures this happens first.
+  module_cleanup_.reset();
+}
+
+void platform::defer_module_unload(CUcontext ctx, CUmodule module) {
+  if (module_cleanup_) {
+    module_cleanup_->enqueue(ctx, module);
+  } else {
+    // Fallback in case cleanup_ was not initialised (should not happen).
+    cuModuleUnload(module);
+  }
 }
 
 const std::string& platform::name() const {

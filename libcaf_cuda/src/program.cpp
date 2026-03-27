@@ -41,8 +41,20 @@ void program::load_kernels(bool is_fatbin) {
 }
 
 program::~program() {
+  // Do NOT call cuModuleUnload here directly: on some hardware (e.g. Maxwell
+  // sm_52) cuModuleUnload implicitly synchronises the context, which would
+  // block the calling thread (a CAF worker) for the entire kernel duration.
+  // Instead we hand each (context, module) pair off to the platform's
+  // background cleanup thread, which does the sync+unload there.
   for (auto& [device_id, module] : modules_) {
-    cuModuleUnload(module);
+    try {
+      CUcontext ctx = platform_->getDevice(device_id)->getContext();
+      platform_->defer_module_unload(ctx, module);
+    } catch (...) {
+      // If we can't find the device, fall back to a direct (possibly blocking)
+      // unload as a last resort rather than leaking the module handle.
+      cuModuleUnload(module);
+    }
   }
 }
 
