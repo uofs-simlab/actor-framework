@@ -140,7 +140,11 @@ size_t StreamPool::num_available() const {
 // has an assigned stream) is a read-only lookup protected by a shared lock,
 // which is cheap and concurrent-friendly.
 DeviceStreamTable::DeviceStreamTable(CUcontext ctx, size_t pool_size)
-    : pool_(ctx, pool_size) {}
+    : pool_(ctx, pool_size) {
+  // Pre-reserve buckets to avoid rehashing and any allocator-related
+  // internal initialization during the first concurrent accesses.
+  table_.reserve(pool_size);
+}
 
 CUstream DeviceStreamTable::get_stream(int actor_id) {
   // Fast read path: shared lock to allow concurrent lookups.
@@ -161,7 +165,15 @@ CUstream DeviceStreamTable::get_stream(int actor_id) {
   }
 
   CUstream s = pool_.acquire();      // Acquire (or reuse) stream from the pool
-  table_[actor_id] = s;              // Cache mapping for fast future lookup
+  // Defensive: ensure stream handle looks valid before inserting.
+  if (!s) {
+    throw std::runtime_error("DeviceStreamTable::get_stream acquired null CUstream");
+  }
+  // Use insert with an explicit pair to exercise a different insertion
+  // codepath than emplace/operator[]. This can avoid some surprising
+  // interactions in some libstdc++ versions when tools report
+  // uninitialised reads inside the hashtable implementation.
+  table_.insert(std::make_pair(actor_id, s));
   return s;
 }
 

@@ -33,8 +33,16 @@ void program::load_kernels(bool is_fatbin) {
 
     CHECK_CUDA(cuCtxPopCurrent(nullptr));
 
-    // Store the function handle per device
+    // Store both the module and function handles per device.
+    // The module must be kept alive (and later unloaded) to keep the function valid.
+    modules_[dev->getId()] = module;
     kernels_[dev->getId()] = kernel;
+  }
+}
+
+program::~program() {
+  for (auto& [device_id, module] : modules_) {
+    cuModuleUnload(module);
   }
 }
 

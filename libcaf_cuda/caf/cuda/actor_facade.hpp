@@ -39,6 +39,7 @@ public:
     : caf::event_based_actor(cfg),
       program_(std::move(program)),
       dims_(std::move(dims)) {
+    actor_id_ = static_cast<int>(this->id());
     platform_ = program_->get_platform();
   }
 

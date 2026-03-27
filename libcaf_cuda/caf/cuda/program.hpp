@@ -25,19 +25,11 @@ public:
   program(std::string name, std::vector<char> binary, platform_ptr platform,
           bool is_fatbin = false);
 
+  ~program();
+
   /// Returns the CUfunction for a given device.
   /// @throws std::runtime_error if the kernel was not loaded for the device.
   CUfunction get_kernel(int device_id);
-
-    friend void intrusive_ptr_release(const program* p) noexcept {
-        if (p->ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-	   //WARNING TURNING THIS ON FOR SOME REASON, CAUSES SEGFAUTLS
-	   //I HAVE NO IDEA WHY 
-	   //TODO FIX THIS 
-	   // std::cout<< "Deleting\n";
-           // delete p;
-	}
-    }
 
     std::string getName() {return name_;}
 
@@ -54,8 +46,8 @@ private:
   std::string name_;                       ///< Name of the kernel
   std::vector<char> binary_;               ///< The binary or PTX of the program
   std::unordered_map<int, CUfunction> kernels_; ///< Device ID -> CUfunction mapping
+  std::unordered_map<int, CUmodule> modules_;   ///< Device ID -> CUmodule mapping (kept for cleanup)
   platform_ptr platform_;                  ///< The platform owning the devices
-  mutable std::atomic<size_t> ref_count_{0};
   std::hash<std::string> hasher;
   int hashValue = 0;
 
