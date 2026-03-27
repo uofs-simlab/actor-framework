@@ -95,6 +95,13 @@ public:
 
   virtual ~base_command() = default;
 
+  /// Returns the device selected for this command (needed by run_async_notify
+  /// to retrieve the stream after launch).
+  device_ptr get_device() const { return dev_; }
+
+  /// Returns the actor_id used for stream selection.
+  int get_actor_id() const { return actor_id; }
+
   // -------------------------------------------------------------------------
   // Unpacks a caf message and calls launch_kernel_mem_ref
   // Returns tuple of mem_ptrs/handles of memory on the gpu

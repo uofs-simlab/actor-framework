@@ -184,6 +184,9 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   
   //atoms 
   CAF_ADD_ATOM(cuda, kernel_done_atom)
+  /// Sent to an actor by cuLaunchHostFunc when its GPU kernel completes.
+  /// Receiving this atom means the stream is idle and copy_to_host() is safe.
+  CAF_ADD_ATOM(cuda, caf::cuda, gpu_done_atom)
   //CAF_ADD_ATOM(cuda, become)
   //CAF_ADD_ATOM(cuda, launch_behavior)
   //CAF_ADD_ATOM(cuda, update_behavior)
