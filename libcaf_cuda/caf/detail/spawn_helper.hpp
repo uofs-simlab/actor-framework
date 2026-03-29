@@ -21,12 +21,11 @@ struct cuda_spawn_helper {
  
   //this operator should spawn in a facade with a program
   actor operator()(actor_system * sys,
-									 actor_config&& cfg,
+									 actor_config&&, // accepted for API compatibility; not forwarded
 									 caf::cuda::program_ptr prog,
 									 caf::cuda::nd_range dims,
     							 Ts&&... xs) const {
   return actor_cast<actor>(impl::create(sys,
-			    															std::move(cfg),              
 			    															prog,
 			    															dims,
 			    															std::forward<Ts>(xs)...));

@@ -136,13 +136,10 @@ public:
                    const std::string& name,
 		               nd_range dims,
                    Ts&&... xs) {
-                   caf::detail::cuda_spawn_helper<false, Ts...> f;
-                   caf::actor_config cfg{caf::no_spawn_options};
-
+    caf::detail::cuda_spawn_helper<false, Ts...> f;
     device_ptr device = find_device(0);
     program_ptr prog = create_program(kernel, name, device);
-
-    return f(&system_, std::move(cfg), std::move(prog),dims,std::forward<Ts>(xs)...);
+    return f(&system_, caf::actor_config{caf::no_spawn_options}, std::move(prog), dims, std::forward<Ts>(xs)...);
   }
 
 
@@ -153,12 +150,9 @@ public:
 		                      nd_range dims,
                           Ts&&... xs) {
     caf::detail::cuda_spawn_helper<false, Ts...> f;
-    caf::actor_config cfg{caf::no_spawn_options};
-
     device_ptr device = find_device(0);
     program_ptr prog = create_program_from_ptx(fileName, kernelName, device);
-
-    return f(&system_, std::move(cfg), std::move(prog),dims,std::forward<Ts>(xs)...);
+    return f(&system_, caf::actor_config{caf::no_spawn_options}, std::move(prog), dims, std::forward<Ts>(xs)...);
   }
 
 
@@ -176,12 +170,9 @@ public:
 		                        nd_range dims,
                             Ts&&... xs) {
     caf::detail::cuda_spawn_helper<false, Ts...> f;
-    caf::actor_config cfg{caf::no_spawn_options};
-
     device_ptr device = find_device(0);
     program_ptr prog = create_program_from_cubin(fileName, kernelName, device);
-
-    return f(&system_, std::move(cfg), std::move(prog),dims,std::forward<Ts>(xs)...);
+    return f(&system_, caf::actor_config{caf::no_spawn_options}, std::move(prog), dims, std::forward<Ts>(xs)...);
   }
 
 
