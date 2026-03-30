@@ -93,10 +93,15 @@ platform::platform() {
 #if CUDA_VERSION >= 13000
     {
       CUctxCreateParams ctx_params = {};
-      check(cuCtxCreate(&contexts_[i], &ctx_params, CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, cuda_device));
+      check(cuCtxCreate(&contexts_[i], 
+                        &ctx_params, 
+                        CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, 
+                        cuda_device));
     }
 #else
-    check(cuCtxCreate(&contexts_[i], CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, cuda_device));
+    check(cuCtxCreate(&contexts_[i], 
+                      CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, 
+                      cuda_device));
 #endif
     devices_[i] = make_counted<device>(cuda_device, contexts_[i], name, i);
   }
