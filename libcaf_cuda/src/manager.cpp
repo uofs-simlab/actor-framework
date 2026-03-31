@@ -103,6 +103,11 @@ caf::actor manager::get_scheduler_actor() {
   return this->scheduler_actors_[0];
 }
 
+void manager::flush_retired_modules() {
+  if (platform_)
+    platform_->flush_retired_modules();
+}
+
 
 
 

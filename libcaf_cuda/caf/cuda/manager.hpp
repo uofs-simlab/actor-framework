@@ -184,6 +184,13 @@ public:
 
   platform_ptr get_platform() { return platform_; }
 
+  /// Immediately synchronises and unloads all CUDA modules that have been
+  /// retired (via ~program()) but not yet cleaned up.  This is optional —
+  /// retired modules are automatically unloaded at platform shutdown.
+  /// Only call this between computation phases where blocking is acceptable;
+  /// never call from inside a CAF actor handler.
+  void flush_retired_modules();
+
   caf::actor get_scheduler_actor();
 
 

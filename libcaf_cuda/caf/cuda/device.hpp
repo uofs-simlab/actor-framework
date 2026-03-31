@@ -187,31 +187,30 @@ public:
 
   //launches a kernel using wrapper types, in, in_out and out as arguments
   //and returns a tuple of mem ref's that hold device memory  
-  	  template <typename... Args>
-	  std::tuple<mem_ptr<raw_t<Args>>...>
-	  launch_kernel_mem_ref(CUfunction kernel,
-                      const nd_range& range,
-                      std::tuple<Args...> args,
-                      int actor_id,
-		      int shared_mem = 0 //in bytes
-		      ) {
+  template <typename... Args>
+	std::tuple<mem_ptr<raw_t<Args>>...>
+	launch_kernel_mem_ref(CUfunction kernel,
+                        const nd_range& range,
+                        std::tuple<Args...> args,
+                        int actor_id,
+		                    int shared_mem = 0) { //in bytes
 
-  // Step 1: Allocate mem_ref<T> for each wrapper type 
-   CUstream stream = get_stream_for_actor(actor_id);
-   auto mem_refs = std::apply([&](auto&&... arg) {
-    return std::make_tuple(make_arg(std::forward<decltype(arg)>(arg), stream)...);
-  }, args);
+    // Step 1: Allocate mem_ref<T> for each wrapper type 
+    CUstream stream = get_stream_for_actor(actor_id);
+    auto mem_refs = std::apply([&](auto&&... arg) {
+      return std::make_tuple(make_arg(std::forward<decltype(arg)>(arg), stream)...);
+    }, args);
 
-  // Step 2: Prepare kernel argument pointers
-  auto kernel_args = prepare_kernel_args(mem_refs);
+    // Step 2: Prepare kernel argument pointers
+    auto kernel_args = prepare_kernel_args(mem_refs);
 
-  // Step 3: Launch kernel
-  CHECK_CUDA(cuCtxPushCurrent(getContext()));
-  launch_kernel_internal(kernel, range, stream, kernel_args.ptrs.data(),shared_mem);
-  CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    // Step 3: Launch kernel
+    CHECK_CUDA(cuCtxPushCurrent(getContext()));
+    launch_kernel_internal(kernel, range, stream, kernel_args.ptrs.data(),shared_mem);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
 
-  // Step 4: Clean up kernel argument pointers
-  cleanup_kernel_args(kernel_args);
+    // Step 4: Clean up kernel argument pointers
+    cleanup_kernel_args(kernel_args);
 
   // Step 5: Return tuple of mem_ref<T>...
   return mem_refs;
@@ -425,12 +424,12 @@ mem_ptr<T> scratch_argument(const out<T>& arg, CUstream stream, int access) {
     caf::add_ref};
 }  
 
-// === Kernel launch core ===
+  // === Kernel launch core ===
   void launch_kernel_internal(CUfunction kernel,
                               const nd_range& range,
                               CUstream stream,
                               void** args,
-			      int shared_mem = 0) {
+			                        int shared_mem = 0) {
     CUresult result = cuLaunchKernel(kernel,
                                      range.getGridDimX(), range.getGridDimY(), range.getGridDimZ(),
                                      range.getBlockDimX(), range.getBlockDimY(), range.getBlockDimZ(),

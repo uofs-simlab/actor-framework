@@ -108,7 +108,8 @@ public:
   // -------------------------------------------------------------------------
   virtual std::tuple<mem_ptr<raw_t<Ts>>...> base_enqueue() {
       CUfunction kernel = program_->get_kernel(dev_->getId());
-      return dev_->launch_kernel_mem_ref(kernel, dims_, kernel_args, actor_id, shared_memory_);
+      return dev_->launch_kernel_mem_ref(kernel, dims_, kernel_args, actor_id, 
+                                         shared_memory_);
   }
 
 protected:
