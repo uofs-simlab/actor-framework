@@ -41,11 +41,11 @@ public:
   scheduler* get_scheduler();
 
   //returns the device that a command should use
-  device_ptr schedule(int actor_id);
+  device_ptr schedule(caf::actor_id actor_id);
   //returns the device that a command should used 
-  device_ptr schedule(int actor_id,int device_number);
+  device_ptr schedule(caf::actor_id actor_id,int device_number);
   //releases a stream for an actor
-  void release_streams_for_actor(int actor_id);
+  void release_streams_for_actor(caf::actor_id actor_id);
 
   //returns how many devices are currently on the GPU
   int get_num_devices();

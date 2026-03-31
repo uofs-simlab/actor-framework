@@ -76,14 +76,14 @@ public:
 
   /// Get the stream for an actor. If the actor has no assigned stream,
   /// allocate one from the pool and assign it.
-  CUstream get_stream(int actor_id);
+  CUstream get_stream(caf::actor_id actor_id);
 
   /// Release the stream assigned to an actor back to the pool and erase the mapping.
-  void release_stream(int actor_id);
+  void release_stream(caf::actor_id actor_id);
 
 private:
   StreamPool pool_;
-  std::unordered_map<int, CUstream> table_; ///< actor_id -> stream
+  std::unordered_map<caf::actor_id, CUstream> table_; ///< actor_id -> stream
   mutable std::shared_mutex table_mutex_;   ///< Allows concurrent reads of table_
 };
 

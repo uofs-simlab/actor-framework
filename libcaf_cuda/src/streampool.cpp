@@ -146,7 +146,7 @@ DeviceStreamTable::DeviceStreamTable(CUcontext ctx, size_t pool_size)
   table_.reserve(pool_size);
 }
 
-CUstream DeviceStreamTable::get_stream(int actor_id) {
+CUstream DeviceStreamTable::get_stream(caf::actor_id actor_id) {
   // Fast read path: shared lock to allow concurrent lookups.
   {
     std::shared_lock<std::shared_mutex> read_lock(table_mutex_);
@@ -177,7 +177,7 @@ CUstream DeviceStreamTable::get_stream(int actor_id) {
   return s;
 }
 
-void DeviceStreamTable::release_stream(int actor_id) {
+void DeviceStreamTable::release_stream(caf::actor_id actor_id) {
   std::unique_lock<std::shared_mutex> write_lock(table_mutex_);
   auto it = table_.find(actor_id);
   if (it != table_.end()) {

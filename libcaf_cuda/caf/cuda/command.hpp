@@ -38,7 +38,7 @@ public:
   template <typename... Us>
   base_command(program_ptr program,
                nd_range dims,
-               int actor_id,
+               caf::actor_id actor_id,
                Us&&... xs)
       : program_(std::move(program)),
         dims_(std::move(dims)),
@@ -56,7 +56,7 @@ public:
   template <typename... Us>
   base_command(program_ptr program,
                nd_range dims,
-               int actor_id,
+               caf::actor_id actor_id,
                int shared_memory,
                Us&&... xs)
       : program_(std::move(program)),
@@ -75,7 +75,7 @@ public:
   template <typename... Us>
   base_command(program_ptr program,
                nd_range dims,
-               int actor_id,
+               caf::actor_id actor_id,
                int shared_memory,
                int device_number,
                Us&&... xs)
@@ -100,7 +100,7 @@ public:
   device_ptr get_device() const { return dev_; }
 
   /// Returns the actor_id used for stream selection.
-  int get_actor_id() const { return actor_id; }
+  caf::actor_id get_actor_id() const { return actor_id; }
 
   // -------------------------------------------------------------------------
   // Unpacks a caf message and calls launch_kernel_mem_ref
@@ -115,7 +115,7 @@ public:
 protected:
   program_ptr program_;
   nd_range dims_;
-  int actor_id;
+  caf::actor_id actor_id;
   device_ptr dev_;
   std::tuple<Ts ...> kernel_args;
   int shared_memory_;

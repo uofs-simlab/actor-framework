@@ -39,7 +39,7 @@ public:
       is_scalar_(false)
   {
     if (memory_ == 0)
-      std::abort(); // unchanged
+      throw std::runtime_error("mem_ref: null GPU memory pointer");
   }
 
   // Scalar constructor (new!)
@@ -97,8 +97,19 @@ public:
   //sets all its attributes to null or -1
   void reset() {
     if (!is_scalar_ && memory_) {
-      CHECK_CUDA(cuMemFree(memory_));
+      // Clear the pointer first to prevent a second attempt on double-free or
+      // re-entry.  cuMemFree failure is not rethrown here because reset() is
+      // called from the destructor, and throwing from a destructor causes
+      // std::terminate().  Log the failure instead.
+      CUdeviceptr mem_to_free = memory_;
       memory_ = 0;
+      CUresult err = cuMemFree(mem_to_free);
+      if (err != CUDA_SUCCESS) {
+        const char* err_str = nullptr;
+        cuGetErrorString(err, &err_str);
+        std::cerr << "mem_ref: cuMemFree failed during cleanup: "
+                  << (err_str ? err_str : "unknown error") << "\n";
+      }
     }
     num_elements_ = 0;
     access_       = -1;

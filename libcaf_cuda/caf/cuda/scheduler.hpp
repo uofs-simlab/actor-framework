@@ -18,12 +18,12 @@ public:
   virtual ~scheduler() = default;
 
   /// Returns the device an actor should run on
-  virtual device_ptr schedule([[maybe_unused]] int actor_id) = 0;
-  virtual device_ptr schedule([[maybe_unused]] int actor_id,
+  virtual device_ptr schedule([[maybe_unused]] caf::actor_id actor_id) = 0;
+  virtual device_ptr schedule([[maybe_unused]] caf::actor_id actor_id,
                               [[maybe_unused]] int device_number) = 0;
 
   /// Assigns the context and stream for the scheduled device
-  virtual void getStreamAndContext(int actor_id, CUcontext* context,
+  virtual void getStreamAndContext(caf::actor_id actor_id, CUcontext* context,
                                    CUstream* stream) = 0;
 
   /// Checks arguments for mem_refs and returns the device of the first mem_ref found
@@ -70,10 +70,10 @@ private:
 class single_device_scheduler : public scheduler {
 public:
   void set_devices(const std::vector<device_ptr>& devices) override;
-  device_ptr schedule([[maybe_unused]] int actor_id) override;
-  device_ptr schedule([[maybe_unused]] int actor_id,
+  device_ptr schedule([[maybe_unused]] caf::actor_id actor_id) override;
+  device_ptr schedule([[maybe_unused]] caf::actor_id actor_id,
                       [[maybe_unused]] int device_number) override;
-  void getStreamAndContext(int actor_id, CUcontext* context,
+  void getStreamAndContext(caf::actor_id actor_id, CUcontext* context,
                            CUstream* stream) override;
 
 private:
@@ -87,10 +87,10 @@ private:
 class multi_device_scheduler : public scheduler {
 public:
   void set_devices(const std::vector<device_ptr>& devices) override;
-  device_ptr schedule([[maybe_unused]] int actor_id) override;
-  device_ptr schedule([[maybe_unused]] int actor_id,
+  device_ptr schedule([[maybe_unused]] caf::actor_id actor_id) override;
+  device_ptr schedule([[maybe_unused]] caf::actor_id actor_id,
                       int device_number) override;
-  void getStreamAndContext(int actor_id, CUcontext* context,
+  void getStreamAndContext(caf::actor_id actor_id, CUcontext* context,
                            CUstream* stream) override;
 
 private:

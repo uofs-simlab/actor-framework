@@ -68,7 +68,7 @@ public:
     : caf::event_based_actor(cfg),
       program_(std::move(program)),
       dims_(std::move(dims)) {
-    actor_id_ = static_cast<int>(this->id());
+    actor_id_ = this->id();
     platform_ = program_->get_platform();
   }
 
@@ -214,7 +214,7 @@ private:
   program_ptr  program_;
   platform_ptr platform_;
   nd_range     dims_;
-  int          actor_id_;
+  caf::actor_id actor_id_;
 
   std::queue<pending_job> pending_;
 };

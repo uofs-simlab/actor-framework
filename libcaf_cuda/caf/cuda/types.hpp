@@ -72,6 +72,7 @@ template <typename T>
 class in_impl {
 private:
   T scalar_;
+  std::vector<T> owned_buf_; // non-empty only when constructed from rvalue vector
   const T* ptr_;
   size_t size_;
   bool is_scalar_;
@@ -82,22 +83,80 @@ private:
       throw std::runtime_error("Use-after-move detected in in_impl");
   }
 
+  // Re-seat ptr_ to this object's own storage after copy/move construction
+  // or assignment.  For non-owning views (const-ref ctor path), copies the
+  // external pointer from the source.
+  void reseat_ptr(const in_impl& src) noexcept {
+    if (is_scalar_)
+      ptr_ = &scalar_;
+    else if (!owned_buf_.empty())
+      ptr_ = owned_buf_.data();
+    else
+      ptr_ = src.ptr_; // non-owning view: copy the external pointer
+  }
+
 public:
   using value_type = T;
 
-  // scalar ctor
+  // scalar ctors
   in_impl()
-    : scalar_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
+    : scalar_{}, owned_buf_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
   explicit in_impl(const T& val)
-    : scalar_{val}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
+    : scalar_{val}, owned_buf_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
-  // zero-copy vector view
+  // zero-copy vector view — caller must ensure the vector outlives this object
   explicit in_impl(const std::vector<T>& buf)
-    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
+    : scalar_{}, owned_buf_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
 
+  // owning rvalue overload — takes ownership of the vector, no dangling pointer
   explicit in_impl(std::vector<T>&& buf)
-    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
+    : scalar_{}, owned_buf_{std::move(buf)}, ptr_{owned_buf_.data()},
+      size_{owned_buf_.size()}, is_scalar_{false} {}
+
+  in_impl(const in_impl& other)
+    : scalar_{other.scalar_},
+      owned_buf_{other.owned_buf_},
+      size_{other.size_},
+      is_scalar_{other.is_scalar_},
+      moved_from_{other.moved_from_} {
+    reseat_ptr(other);
+  }
+
+  in_impl& operator=(const in_impl& other) {
+    if (this != &other) {
+      scalar_     = other.scalar_;
+      owned_buf_  = other.owned_buf_;
+      size_       = other.size_;
+      is_scalar_  = other.is_scalar_;
+      moved_from_ = other.moved_from_;
+      reseat_ptr(other);
+    }
+    return *this;
+  }
+
+  in_impl(in_impl&& other) noexcept
+    : scalar_{std::move(other.scalar_)},
+      owned_buf_{std::move(other.owned_buf_)},
+      size_{other.size_},
+      is_scalar_{other.is_scalar_},
+      moved_from_{other.moved_from_} {
+    reseat_ptr(other);
+    other.moved_from_ = true;
+  }
+
+  in_impl& operator=(in_impl&& other) noexcept {
+    if (this != &other) {
+      scalar_     = std::move(other.scalar_);
+      owned_buf_  = std::move(other.owned_buf_);
+      size_       = other.size_;
+      is_scalar_  = other.is_scalar_;
+      moved_from_ = other.moved_from_;
+      reseat_ptr(other);
+      other.moved_from_ = true;
+    }
+    return *this;
+  }
 
   bool is_scalar() const {
     check_valid();
@@ -201,6 +260,7 @@ template <typename T>
 class in_out_impl {
 private:
   T scalar_;
+  std::vector<T> owned_buf_; // non-empty only when constructed from rvalue vector
   const T* ptr_;
   size_t size_;
   bool is_scalar_;
@@ -211,20 +271,74 @@ private:
       throw std::runtime_error("Use-after-move detected in in_out_impl");
   }
 
+  void reseat_ptr(const in_out_impl& src) noexcept {
+    if (is_scalar_)
+      ptr_ = &scalar_;
+    else if (!owned_buf_.empty())
+      ptr_ = owned_buf_.data();
+    else
+      ptr_ = src.ptr_;
+  }
+
 public:
   using value_type = T;
 
   in_out_impl()
-    : scalar_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
+    : scalar_{}, owned_buf_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
   explicit in_out_impl(const T& val)
-    : scalar_{val}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
+    : scalar_{val}, owned_buf_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
   explicit in_out_impl(const std::vector<T>& buf)
-    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
+    : scalar_{}, owned_buf_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
 
   explicit in_out_impl(std::vector<T>&& buf)
-    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
+    : scalar_{}, owned_buf_{std::move(buf)}, ptr_{owned_buf_.data()},
+      size_{owned_buf_.size()}, is_scalar_{false} {}
+
+  in_out_impl(const in_out_impl& other)
+    : scalar_{other.scalar_},
+      owned_buf_{other.owned_buf_},
+      size_{other.size_},
+      is_scalar_{other.is_scalar_},
+      moved_from_{other.moved_from_} {
+    reseat_ptr(other);
+  }
+
+  in_out_impl& operator=(const in_out_impl& other) {
+    if (this != &other) {
+      scalar_     = other.scalar_;
+      owned_buf_  = other.owned_buf_;
+      size_       = other.size_;
+      is_scalar_  = other.is_scalar_;
+      moved_from_ = other.moved_from_;
+      reseat_ptr(other);
+    }
+    return *this;
+  }
+
+  in_out_impl(in_out_impl&& other) noexcept
+    : scalar_{std::move(other.scalar_)},
+      owned_buf_{std::move(other.owned_buf_)},
+      size_{other.size_},
+      is_scalar_{other.is_scalar_},
+      moved_from_{other.moved_from_} {
+    reseat_ptr(other);
+    other.moved_from_ = true;
+  }
+
+  in_out_impl& operator=(in_out_impl&& other) noexcept {
+    if (this != &other) {
+      scalar_     = std::move(other.scalar_);
+      owned_buf_  = std::move(other.owned_buf_);
+      size_       = other.size_;
+      is_scalar_  = other.is_scalar_;
+      moved_from_ = other.moved_from_;
+      reseat_ptr(other);
+      other.moved_from_ = true;
+    }
+    return *this;
+  }
 
   bool is_scalar() const {
     check_valid();

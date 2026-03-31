@@ -122,18 +122,18 @@ scheduler* platform::get_scheduler() {
   return scheduler_.get();
 }
 
-device_ptr platform::schedule(int actor_id) {
+device_ptr platform::schedule(caf::actor_id actor_id) {
   
 	return scheduler_->schedule(actor_id);
 }
 
-device_ptr platform::schedule(int actor_id,int device_number) {
+device_ptr platform::schedule(caf::actor_id actor_id,int device_number) {
   
 	return scheduler_->schedule(actor_id,device_number);
 }
 
 
-void platform::release_streams_for_actor(int actor_id) {
+void platform::release_streams_for_actor(caf::actor_id actor_id) {
   for (auto& dev : devices_) {
     dev->release_stream_for_actor(actor_id);
   }

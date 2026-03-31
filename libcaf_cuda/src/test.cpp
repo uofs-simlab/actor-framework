@@ -20,7 +20,7 @@ using namespace caf::cuda;
 
 //file of internal tests, testing each class
 
-int test_actor_id = 0;
+caf::actor_id test_actor_id = 0;
 
 void test_platform([[maybe_unused]] actor_system& sys, [[maybe_unused]] platform_ptr plat) {
     std::cout << "\n=== Test Platform ===\n";
@@ -351,7 +351,7 @@ void test_kernel_launch([[maybe_unused]] actor_system& sys, [[maybe_unused]] pla
             CHECK_CUDA(cuCtxGetCurrent(&current_ctx));
             std::cout << "  -> Current context before launch: " << current_ctx << "\n";
             std::cout << "  -> Launching kernel with context: " << ctx << ", kernel: " << prog->get_kernel(0) << ", args: " << out_mem->mem() << "\n";
-            dev->launch_kernel(prog->get_kernel(0), dims, std::make_tuple(out_mem), 0);
+            dev->launch_kernel(prog->get_kernel(0), dims, std::make_tuple(out_mem), caf::actor_id{0});
             std::cout << "  -> Kernel launched\n";
             CHECK_CUDA(cuCtxSynchronize());
             std::cout << "  -> Context synchronized\n";
@@ -619,7 +619,7 @@ void test_extract_kernel_args_scalar(caf::actor_system& sys) {
 
   // First wrap a scalar in an `in<T>` and make a mem_ptr
   in_out<double> in_arg(3.14);
-  auto mem = dev->make_arg(in_arg, /*actor_id=*/0);
+  auto mem = dev->make_arg(in_arg, caf::actor_id{0});
   assert(mem->size() == 1);
   assert(mem->is_scalar() && "current path still allocates a device buffer");
 
@@ -641,7 +641,7 @@ void test_device_make_arg_scalar(caf::actor_system& sys) {
 
   // Wrap raw scalar with in_out (or in) wrapper
   in_out<int> in_arg(77);
-  auto mem = dev->make_arg(in_arg, /*actor_id=*/0);
+  auto mem = dev->make_arg(in_arg, caf::actor_id{0});
   assert(mem->size() == 1);
 
   // Since this is a scalar, no device buffer should be allocated
@@ -670,9 +670,9 @@ void test_scalar_kernel_launch_wrapper_api(caf::actor_system& sys) {
   in<float>  b_arg(4.2f);
   in<double> c_arg(6.28);
 
-  auto a_mem = dev->make_arg(a_arg, 0);
-  auto b_mem = dev->make_arg(b_arg, 0);
-  auto c_mem = dev->make_arg(c_arg, 0);
+  auto a_mem = dev->make_arg(a_arg, caf::actor_id{0});
+  auto b_mem = dev->make_arg(b_arg, caf::actor_id{0});
+  auto c_mem = dev->make_arg(c_arg, caf::actor_id{0});
 
   nd_range range{1,1,1, 1,1,1};
 
@@ -775,8 +775,8 @@ void test_add_scalar_to_buffer(actor_system& sys) {
   in_out<int> buffer_arg = create_in_out_arg(buffer_host); // writable buffer
   in<int> scalar_arg(scalar_value); // scalar is read-only
 
-  mem_ptr<int> buffer_mem = dev->make_arg(buffer_arg, 0);
-  mem_ptr<int> scalar_mem = dev->make_arg(scalar_arg, 0);
+  mem_ptr<int> buffer_mem = dev->make_arg(buffer_arg, caf::actor_id{0});
+  mem_ptr<int> scalar_mem = dev->make_arg(scalar_arg, caf::actor_id{0});
 
   // Configure kernel launch
   nd_range dims{/*grid=*/1,1,1, /*block=*/n,1,1};
@@ -784,7 +784,7 @@ void test_add_scalar_to_buffer(actor_system& sys) {
   // Launch
   try {
     std::cout << "  -> Launching kernel with scalar=" << scalar_value << "\n";
-    dev->launch_kernel(kernel, dims, std::make_tuple(buffer_mem, scalar_mem), 0);
+    dev->launch_kernel(kernel, dims, std::make_tuple(buffer_mem, scalar_mem), caf::actor_id{0});
     std::cout << "  -> Kernel launched\n";
 
     std::vector<int> result = buffer_mem->copy_to_host();

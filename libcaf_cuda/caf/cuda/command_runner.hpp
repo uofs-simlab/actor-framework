@@ -34,7 +34,7 @@ public:
   template <class... Us>
   auto run(program_ptr program,
            nd_range dims,
-           int actor_id,
+           caf::actor_id actor_id,
            Us&&... xs) 
   {
       if (!platform_) platform_ = program->get_platform();
@@ -51,7 +51,7 @@ public:
   template <class... Us>
   auto run(program_ptr program,
            nd_range dims,
-           int actor_id,
+           caf::actor_id actor_id,
            int shared_memory,
            Us&&... xs) 
   {
@@ -70,7 +70,7 @@ public:
   template <class... Us>
   auto run(program_ptr program,
            nd_range dims,
-           int actor_id,
+           caf::actor_id actor_id,
            int shared_memory,
            int device_number,
            Us&&... xs) 
@@ -119,7 +119,7 @@ public:
   template <class... Us>
   auto run_async(program_ptr program,
                  nd_range dims,
-                 int actor_id,
+                 caf::actor_id actor_id,
                  Us&&... xs) 
   {
       if (!platform_) platform_ = program->get_platform();
@@ -136,7 +136,7 @@ public:
   template <class... Us>
   auto run_async(program_ptr program,
                  nd_range dims,
-                 int actor_id,
+                 caf::actor_id actor_id,
                  int shared_memory,
                  Us&&... xs) 
   {
@@ -155,7 +155,7 @@ public:
   template <class... Us>
   auto run_async(program_ptr program,
                  nd_range dims,
-                 int actor_id,
+                 caf::actor_id actor_id,
                  int shared_memory,
                  int device_number,
                  Us&&... xs) 
@@ -220,9 +220,8 @@ public:
                         Us&&... xs)
   {
     if (!platform_) platform_ = program->get_platform();
-    // Re-use the actor ID (lower 32 bits) for stream-pool selection — same
-    // truncation used by the existing run_async() callers.
-    int actor_id = static_cast<int>(recipient.id());
+    // Use the full 64-bit actor ID for stream-pool selection.
+    caf::actor_id actor_id = recipient.id();
 
     auto cmd = caf::make_counted<base_command_t>(program,
                                                  std::move(dims),

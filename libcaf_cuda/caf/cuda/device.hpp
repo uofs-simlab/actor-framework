@@ -101,29 +101,29 @@ public:
 
 
   //returns the CUStream associated with the actor id 
-  CUstream get_stream_for_actor(int actor_id) {
+  CUstream get_stream_for_actor(caf::actor_id actor_id) {
     return stream_table_.get_stream(actor_id);
   }
 
   //releases the CUStream associated with the actor id 
-  void release_stream_for_actor(int actor_id) {
+  void release_stream_for_actor(caf::actor_id actor_id) {
     stream_table_.release_stream(actor_id);
   }
 
 
   // Overloads for make_arg using actor_id
   template <typename T>
-  mem_ptr<T> make_arg(const in<T>& arg, int actor_id) {
+  mem_ptr<T> make_arg(const in<T>& arg, caf::actor_id actor_id) {
     return global_argument(arg, actor_id, IN);
   }
 
   template <typename T>
-  mem_ptr<T> make_arg(const in_out<T>& arg, int actor_id) {
+  mem_ptr<T> make_arg(const in_out<T>& arg, caf::actor_id actor_id) {
     return global_argument(arg, actor_id, IN_OUT);
   }
 
   template <typename T>
-  mem_ptr<T> make_arg(const out<T>& arg, int actor_id) {
+  mem_ptr<T> make_arg(const out<T>& arg, caf::actor_id actor_id) {
     return scratch_argument(arg, actor_id, OUT);
   }
 
@@ -192,7 +192,7 @@ public:
 	launch_kernel_mem_ref(CUfunction kernel,
                         const nd_range& range,
                         std::tuple<Args...> args,
-                        int actor_id,
+                        caf::actor_id actor_id,
 		                    int shared_mem = 0) { //in bytes
 
     // Step 1: Allocate mem_ref<T> for each wrapper type 
@@ -224,7 +224,7 @@ public:
   std::vector<output_buffer> launch_kernel(CUfunction kernel,
                                            const nd_range& range,
                                            std::tuple<Ts...> args,
-                                           int actor_id) {
+                                           caf::actor_id actor_id) {
     CUstream stream = get_stream_for_actor(actor_id);
     CHECK_CUDA(cuCtxPushCurrent(getContext()));
 
