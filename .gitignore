@@ -11,3 +11,10 @@ manual/libcaf_core
 manual/libcaf_io
 manual/libcaf_net
 manual/libcaf_openssl
+caf/
+libcaf_cuda/sc26/runtime-overhead-comparison/main_actors
+libcaf_cuda/sc26/runtime-overhead-comparison/compile.sh
+libcaf_cuda/sc26/runtime-overhead-comparison/main_cuda_native
+libcaf_cuda/sc26/runtime-overhead-comparison/results.txt
+libcaf_cuda/sc26/runtime-overhead-comparison/mmul.cubin
+
