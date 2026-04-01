@@ -53,7 +53,7 @@ chunked_string deep_copy_impl(std::pmr::memory_resource* resource,
 
 event_ptr event::with_message(std::string_view msg, keep_timestamp_t) const {
   // Note: can't use make_counted here because the constructor is private.
-  auto copy = event_ptr{new event, false};
+  auto copy = event_ptr{new event, adopt_ref};
   auto* resource = &copy->resource_;
   copy->level_ = level_;
   copy->component_ = component_;
@@ -82,7 +82,7 @@ event_ptr event::with_message(std::string_view msg) const {
 }
 
 event_ptr event::make(unsigned level, std::string_view component,
-                      const detail::source_location& loc, caf::actor_id aid,
+                      const std::source_location& loc, caf::actor_id aid,
                       std::string_view msg) {
   using chunk_node = chunked_string::node_type;
   auto event = make(level, component, loc, aid);
@@ -94,7 +94,7 @@ event_ptr event::make(unsigned level, std::string_view component,
 }
 
 event_ptr event::make(unsigned level, std::string_view component,
-                      const detail::source_location& loc, caf::actor_id aid) {
+                      const std::source_location& loc, caf::actor_id aid) {
   return make_counted<event>(level, component, loc, aid);
 }
 

@@ -11,13 +11,14 @@ namespace caf::cuda {
 
 class core_usage_behavior : public scheduler_actor_behavior {
 public:
-    explicit core_usage_behavior(scheduler_actor_state& state);
-    void on_enter() override;
-    void schedule() override;
-    void receive(const token_ptr& tok) override;
-    void reclaim(int value /*blocks consumed*/,int memory_returned,int time,int dependency) override; 
-    ~core_usage_behavior() override;  
-    std::string name() const override {return "core_usage\n";}
+  explicit core_usage_behavior(scheduler_actor_state& state);
+  void on_enter() override;
+  void schedule() override;
+  void receive(const token_ptr& tok) override;
+  
+  void reclaim(int blocks_consumed, int memory_returned);
+  ~core_usage_behavior() override;  
+  std::string name() const override {return "core_usage\n";}
 
 protected:
    void process_launch_token(const token_ptr& tok, int stream_id) override;

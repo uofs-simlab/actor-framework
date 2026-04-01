@@ -60,7 +60,7 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,caf::cuda::pr
 				const std::vector<int>& matrixB,
 				int N) {
 
-			caf::cuda::manager& mgr = caf::cuda::manager::get();
+			caf::cuda::manager& mgr = self->system().cuda_manager();
 			int device = 0;
 			int stream = rand();
 
@@ -136,7 +136,8 @@ caf::behavior mmul_actor_fun_scheduler(
 {
 
 
-        caf::cuda::manager& mgr = caf::cuda::manager::get();
+        caf::cuda::manager& mgr = self->system().cuda_manager();
+
 
         caf::actor scheduler = mgr.get_scheduler_actor();
 
@@ -178,7 +179,8 @@ caf::behavior mmul_actor_fun_scheduler(
         int N) {
 
     //    std::cout << "Working\n";
-        caf::cuda::manager& mgr = caf::cuda::manager::get();
+        caf::cuda::manager& mgr = self->system().cuda_manager();
+
 
        
 	/*
@@ -251,7 +253,8 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
     return;
   }
 
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
+  caf::cuda::manager& mgr = self->system().cuda_manager();
+
 
   //change the scheduler to mulitlevle_usage
   anon_mail(
@@ -291,7 +294,8 @@ void run_mmul_test_no_scheduler(caf::actor_system& sys, int matrix_size, int num
     return;
   }
 
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
+	caf::cuda::manager& mgr = self->system().cuda_manager();
+
 
   /*
   //change the scheduler to core_usage

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <caf/actor.hpp>
+#include <caf/anon_mail.hpp>
 #include "caf/cuda/command.hpp"
 #include "caf/cuda/memory_command.hpp"
 #include "caf/cuda/program.hpp"
@@ -8,6 +10,7 @@
 #include "caf/cuda/control-layer/response_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
 #include "caf/cuda/control-layer/memory_response_token.hpp"
+#include "caf/cuda/global.hpp"
 
 namespace caf::cuda {
 
@@ -31,9 +34,10 @@ public:
   template <class... Us>
   auto run(program_ptr program,
            nd_range dims,
-           int actor_id,
+           caf::actor_id actor_id,
            Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<command_t>(std::move(program),
                                               std::move(dims),
                                               actor_id,
@@ -47,10 +51,11 @@ public:
   template <class... Us>
   auto run(program_ptr program,
            nd_range dims,
-           int actor_id,
+           caf::actor_id actor_id,
            int shared_memory,
            Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<command_t>(std::move(program),
                                               std::move(dims),
                                               actor_id,
@@ -65,11 +70,12 @@ public:
   template <class... Us>
   auto run(program_ptr program,
            nd_range dims,
-           int actor_id,
+           caf::actor_id actor_id,
            int shared_memory,
            int device_number,
            Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<command_t>(std::move(program),
                                               std::move(dims),
                                               actor_id,
@@ -94,6 +100,7 @@ public:
          const response_token_ptr& token,
          Us&&... xs)
   {
+    if (!platform_) platform_ = program->get_platform();
     return run(std::move(program),
                std::move(dims),
                /* actor_id = */ token ->getStreamId(),
@@ -112,9 +119,10 @@ public:
   template <class... Us>
   auto run_async(program_ptr program,
                  nd_range dims,
-                 int actor_id,
+                 caf::actor_id actor_id,
                  Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<base_command_t>(std::move(program),
                                                    std::move(dims),
                                                    actor_id,
@@ -128,10 +136,11 @@ public:
   template <class... Us>
   auto run_async(program_ptr program,
                  nd_range dims,
-                 int actor_id,
+                 caf::actor_id actor_id,
                  int shared_memory,
                  Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<base_command_t>(std::move(program),
                                                    std::move(dims),
                                                    actor_id,
@@ -146,11 +155,12 @@ public:
   template <class... Us>
   auto run_async(program_ptr program,
                  nd_range dims,
-                 int actor_id,
+                 caf::actor_id actor_id,
                  int shared_memory,
                  int device_number,
                  Us&&... xs) 
   {
+      if (!platform_) platform_ = program->get_platform();
       auto cmd = caf::make_counted<base_command_t>(std::move(program),
                                                    std::move(dims),
                                                    actor_id,
@@ -173,6 +183,7 @@ public:
                const response_token_ptr& token,
                Us&&... xs)
     {
+      if (!platform_) platform_ = program->get_platform();
     	return run_async(std::move(program),
                      std::move(dims),
                      /* actor_id = */ token -> getStreamId(),
@@ -181,6 +192,76 @@ public:
                       std::forward<Us>(xs)...);
 
     }
+
+  // ---------------------------------------------------------------------------
+  // Actor-native asynchronous run  (cuLaunchHostFunc variant)
+  //
+  // Launches the kernel exactly like run_async(), but instead of the caller
+  // having to poll with a fixed-delay timer, a CUDA host-function callback is
+  // enqueued AFTER the kernel on the same stream.  When the GPU finishes all
+  // work up to that point, the CUDA runtime calls the callback from its own
+  // internal thread.  The callback sends a `gpu_done_atom` message to
+  // `recipient` using caf::anon_mail — no CAF worker thread is ever blocked.
+  //
+  // Usage:
+  //   auto mem_refs = runner.run_async_notify(prog, dim,
+  //       caf::actor_cast<caf::actor>(self_), arg1, arg2);
+  //   result_ptr_ = std::get<1>(mem_refs);
+  //   // ... actor also has a handler: [this](caf::cuda::gpu_done_atom) { ... }
+  //
+  // The mem_ptrs returned here are identical to those from run_async().
+  // copy_to_host() on them is safe inside the gpu_done_atom handler because
+  // the stream is guaranteed idle by then.
+  // ---------------------------------------------------------------------------
+  template <class... Us>
+  auto run_async_notify(program_ptr program,
+                        nd_range dims,
+                        caf::actor recipient,
+                        Us&&... xs)
+  {
+    if (!platform_) platform_ = program->get_platform();
+    // Use the full 64-bit actor ID for stream-pool selection.
+    caf::actor_id actor_id = recipient.id();
+
+    auto cmd = caf::make_counted<base_command_t>(program,
+                                                 std::move(dims),
+                                                 actor_id,
+                                                 std::forward<Us>(xs)...);
+    auto mem_refs = cmd->base_enqueue();
+
+    // Retrieve the same stream that the kernel was launched on.
+    CUstream stream = cmd->get_device()->get_stream_for_actor(actor_id);
+
+    // Heap-allocate a tiny context for the callback.  Deleted inside the
+    // callback once the message has been dispatched.
+    struct cb_data {
+      caf::actor recipient;
+    };
+    auto* d = new cb_data{std::move(recipient)};
+
+    // cuLaunchHostFunc: fires on CUDA's internal thread after all preceding
+    // stream work completes.  Rules: no CUDA API calls allowed inside cb.
+    // The captureless lambda decays to a plain CUhostFn function pointer.
+    CUresult res = cuLaunchHostFunc(
+      stream,
+      [](void* userdata) {
+        auto* d = static_cast<cb_data*>(userdata);
+        // Notify the actor — anon_mail is thread-safe from any OS thread.
+        caf::anon_mail(caf::cuda::gpu_done_atom_v).send(d->recipient);
+        delete d;
+      },
+      d);
+
+    if (res != CUDA_SUCCESS) {
+      // Callback registration failed — clean up and throw so the caller
+      // knows.  The kernel is already running; the existing deferred-unload
+      // path will still clean up the module safely.
+      delete d;
+      check(res);
+    }
+
+    return mem_refs;
+  }
 
 
 
@@ -194,8 +275,10 @@ public:
                                       int stream_id,
                                       T arg)
     {
+        if (!platform_)
+            throw std::runtime_error("command_runner: platform not set; call run() before transfer_memory()");
         // stack-allocate memory_command and execute transfer
-        memory_command<T> cmd(device_number, stream_id, std::move(arg));
+        memory_command<T> cmd(platform_, device_number, stream_id, std::move(arg));
         return cmd.enqueue();
     }
 
@@ -218,12 +301,12 @@ public:
   // Destroy streams for a given actor ID
   // -------------------------------
   void release_stream_for_actor(int actor_id) {
-      auto plat = platform::create();
-      plat->release_streams_for_actor(actor_id);
+      if (platform_)
+          platform_->release_streams_for_actor(actor_id);
   }
 
-
-
+private:
+  platform_ptr platform_;
 
 
 

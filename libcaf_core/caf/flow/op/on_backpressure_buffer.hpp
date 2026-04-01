@@ -47,7 +47,7 @@ public:
       return;
     demand_ += new_demand;
     if (demand_ == new_demand && !buffer_.empty()) {
-      parent_->delay_fn([strong_this = intrusive_ptr{this}] { //
+      parent_->delay_fn([strong_this = intrusive_ptr{this, add_ref}] { //
         strong_this->on_request();
       });
     }
@@ -142,7 +142,7 @@ private:
     }
     if (out_ && src_error_) {
       CAF_ASSERT(!sub_);
-      if (*src_error_)
+      if (src_error_->valid())
         out_.on_error(*src_error_);
       else
         out_.on_complete();

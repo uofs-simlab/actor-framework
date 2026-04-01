@@ -9,11 +9,12 @@
 #include "caf/actor_control_block.hpp"
 #include "caf/actor_registry.hpp"
 #include "caf/actor_system.hpp"
+#include "caf/add_ref.hpp"
 #include "caf/config.hpp"
 #include "caf/default_attachable.hpp"
 #include "caf/detail/assert.hpp"
+#include "caf/detail/current_actor.hpp"
 #include "caf/log/core.hpp"
-#include "caf/log/system.hpp"
 #include "caf/mailbox_element.hpp"
 #include "caf/system_messages.hpp"
 
@@ -25,7 +26,7 @@ namespace caf {
 // -- constructors, destructors, and assignment operators ----------------------
 
 abstract_actor::abstract_actor(actor_config& cfg) : flags_(cfg.flags) {
-  // nop
+  detail::current_actor(this);
 }
 
 abstract_actor::~abstract_actor() {
@@ -106,7 +107,7 @@ void abstract_actor::unlink_from(const actor_addr& other) {
     return;
   }
   default_attachable::observe_token tk{other, default_attachable::link};
-  exclusive_critical_section([&] { detach_impl(tk, true); });
+  exclusive_critical_section([&] { detach_impl(attachable::token{tk}, true); });
 }
 
 // -- properties ---------------------------------------------------------------
@@ -133,13 +134,17 @@ actor_control_block* abstract_actor::ctrl() const {
 }
 
 actor_addr abstract_actor::address() const noexcept {
-  return actor_addr{actor_control_block::from(this)};
+  return actor_addr{actor_control_block::from(this), add_ref};
+}
+
+abstract_actor* abstract_actor::current() noexcept {
+  return detail::current_actor();
 }
 
 // -- callbacks ----------------------------------------------------------------
 
 void abstract_actor::on_unreachable() {
-  CAF_PUSH_AID_FROM_PTR(this);
+  detail::current_actor_guard ctx_guard{this};
   cleanup(make_error(exit_reason::unreachable), nullptr);
 }
 
@@ -165,30 +170,15 @@ bool abstract_actor::cleanup(error&& reason, scheduler* sched) {
   });
   if (!do_cleanup)
     return false;
-  log::core::debug("cleanup: id = {}, node = {}, fail-state = {}", id(), node(),
-                   fail_state_);
+  log::core::debug("actor {} cleans up with reason {}", id(), fail_state_);
   // send exit messages
   for (attachable* i = head.get(); i != nullptr; i = i->next.get())
     i->actor_exited(fail_state_, sched);
-  unregister_from_system();
+  if (getf(is_registered_flag)) {
+    home_system().dec_running_actors_count(id());
+  }
   on_cleanup(fail_state_);
   return true;
-}
-
-void abstract_actor::register_at_system() {
-  if (getf(is_registered_flag))
-    return;
-  setf(is_registered_flag);
-  [[maybe_unused]] auto count = home_system().registry().inc_running();
-  log::system::debug("actor {} increased running count to {}", id(), count);
-}
-
-void abstract_actor::unregister_from_system() {
-  if (!getf(is_registered_flag))
-    return;
-  unsetf(is_registered_flag);
-  [[maybe_unused]] auto count = home_system().registry().dec_running();
-  log::system::debug("actor {} decreased running count to {}", id(), count);
 }
 
 void abstract_actor::add_link(abstract_actor* x) {
@@ -218,7 +208,7 @@ void abstract_actor::remove_link(abstract_actor* x) {
   default_attachable::observe_token tk{x->address(), default_attachable::link};
   joined_exclusive_critical_section(this, x, [&] {
     x->remove_backlink(this);
-    detach_impl(tk, true);
+    detach_impl(attachable::token{tk}, true);
   });
 }
 
@@ -234,7 +224,7 @@ bool abstract_actor::add_backlink(abstract_actor* x) {
   if (getf(is_terminated_flag)) {
     fail_state = fail_state_;
     send_exit_immediately = true;
-  } else if (detach_impl(tk, true, true) == 0) {
+  } else if (detach_impl(attachable::token{tk}, true, true) == 0) {
     attach_impl(tmp);
     success = true;
   }
@@ -250,7 +240,7 @@ bool abstract_actor::remove_backlink(abstract_actor* x) {
   // Called in an exclusive critical section.
   auto lg = log::core::trace("x = {}", x);
   default_attachable::observe_token tk{x->address(), default_attachable::link};
-  return detach_impl(tk, true) > 0;
+  return detach_impl(attachable::token{tk}, true) > 0;
 }
 
 } // namespace caf

@@ -14,10 +14,6 @@
 //
 // CAF_ENABLE_RUNTIME_CHECKS:
 //   - check requirements at runtime
-//
-// CAF_LOG_LEVEL:
-//   - denotes the amount of logging, ranging from error messages only (0)
-//     to complete traces (4)
 
 // This compiler-specific block defines:
 // - CAF_PUSH_WARNINGS/CAF_POP_WARNINGS to surround "noisy" header includes
@@ -173,6 +169,14 @@
 #  define CAF_CYGWIN
 #elif defined(WIN32) || defined(_WIN32)
 #  define CAF_WINDOWS
+#elif defined(__cppcheck__) // Defined by scripts/cppcheck.sh.
+#  define CAF_POSIX
+#  define CAF_PUSH_WARNINGS
+#  define CAF_PUSH_UNUSED_LABEL_WARNING
+#  define CAF_PUSH_DEPRECATED_WARNING
+#  define CAF_PUSH_INVALID_OFFSETOF_WARNING
+#  define CAF_PUSH_STRINGOP_OVERREAD_WARNING
+#  define CAF_POP_WARNINGS
 #else
 #  error Platform and/or compiler not supported
 #endif

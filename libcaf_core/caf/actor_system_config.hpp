@@ -30,13 +30,20 @@ class CAF_CORE_EXPORT actor_system_config {
 public:
   // -- friends ----------------------------------------------------------------
 
-  friend class actor_system;
-
   friend class detail::actor_system_config_access;
 
   // -- member types -----------------------------------------------------------
 
+  using console_printer_factory_ptr
+    = unique_callback_ptr<std::unique_ptr<console_printer>()>;
+
   using opt_group = config_option_adder;
+
+#ifdef CAF_ENABLE_EXCEPTIONS
+  /// Function object for handling exit messages.
+  using exception_handler_type
+    = std::function<error(scheduled_actor*, std::exception_ptr&)>;
+#endif // CAF_ENABLE_EXCEPTIONS
 
   // -- constructors, destructors, and assignment operators --------------------
 
@@ -59,13 +66,17 @@ public:
   /// values.
   virtual settings dump_content() const;
 
+  /// Returns the maximum throughput for messages, i.e., the maximum number of
+  /// messages that an actor is allowed to consume per run.
+  size_t max_throughput() const noexcept;
+
+  // -- modifiers --------------------------------------------------------------
+
   /// Sets a config by using its name `config_name` to `config_value`.
   template <class T>
   actor_system_config& set(std::string_view name, T&& value) {
     return set_impl(name, config_value{std::forward<T>(value)});
   }
-
-  // -- modifiers --------------------------------------------------------------
 
   /// Parses `args` as tuple of strings containing CLI options and `config` as
   /// configuration file.
@@ -83,6 +94,24 @@ public:
   /// via `config_file_path` and `config_file_path_alternative` unless the user
   /// provides a config file path on the command line.
   error parse(int argc, char** argv);
+
+  /// Sets the factory for creating the console printer of the actor system.
+  /// @param factory the factory to create the console printer.
+  actor_system_config&
+  console_printer_factory(console_printer_factory_ptr factory);
+
+  /// Sets the factory for creating the console printer of the actor system.
+  /// @param factory the factory to create the console printer.
+  template <class Factory>
+  actor_system_config& console_printer_factory(Factory&& factory)
+    requires std::is_convertible_v<decltype(factory()),
+                                   std::unique_ptr<console_printer>>
+  {
+    using impl = callback_impl<std::decay_t<Factory>,
+                               std::unique_ptr<console_printer>()>;
+    return console_printer_factory(
+      std::make_unique<impl>(std::forward<Factory>(factory)));
+  }
 
   /// Allows other nodes to spawn actors created by `fun`
   /// dynamically by using `name` as identifier.
@@ -139,9 +168,19 @@ public:
   /// Adds a hook type to the scheduler.
   template <class Hook, class... Ts>
   actor_system_config& add_thread_hook(Ts&&... ts) {
-    add_thread_hook(std::make_unique<Hook>(std::forward<Ts>(ts)...));
+    add_thread_hook_impl(std::make_unique<Hook>(std::forward<Ts>(ts)...));
     return *this;
   }
+
+#ifdef CAF_ENABLE_EXCEPTIONS
+  /// Sets the default exception handler for scheduled actors. This handler gets
+  /// passed down to all scheduled actors as the default exception handler but
+  /// can still be overridden by the actor.
+  void exception_handler(exception_handler_type fun);
+
+  /// Returns the default exception handler for scheduled actors.
+  const exception_handler_type& exception_handler() const noexcept;
+#endif // CAF_ENABLE_EXCEPTIONS
 
   // -- parser and CLI state ---------------------------------------------------
 
@@ -242,35 +281,15 @@ protected:
   config_option_set custom_options_;
 
 private:
-  // -- module factories -------------------------------------------------------
+  // -- utility functions ------------------------------------------------------
 
   using module_factory_fn = actor_system_module* (*) (actor_system&);
 
   void add_module_factory(module_factory_fn new_factory);
 
-  std::span<module_factory_fn> module_factories();
-
-  // -- actor factories --------------------------------------------------------
-
-  actor_factory* get_actor_factory(std::string_view name);
-
-  // -- thread hooks -----------------------------------------------------------
-
-  void add_thread_hook(std::unique_ptr<thread_hook> ptr);
-
-  std::span<std::unique_ptr<thread_hook>> thread_hooks();
-
-  // -- mailbox factory --------------------------------------------------------
-
-  void mailbox_factory(std::unique_ptr<detail::mailbox_factory> factory);
-
-  detail::mailbox_factory* mailbox_factory();
-
-  // -- internal bookkeeping ---------------------------------------------------
+  actor_system_config& add_thread_hook_impl(std::unique_ptr<thread_hook> ptr);
 
   void set_remainder(std::vector<std::string> args);
-
-  // -- utility functions ------------------------------------------------------
 
   actor_system_config& set_impl(std::string_view name, config_value value);
 

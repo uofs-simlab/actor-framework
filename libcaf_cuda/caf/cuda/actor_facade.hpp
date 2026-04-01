@@ -1,283 +1,222 @@
 #pragma once
 
-#include <stdexcept>
 #include <functional>
-#include <tuple>
 #include <queue>
-#include <utility>
-#include <type_traits>
 
-#include <caf/local_actor.hpp>
 #include <caf/actor.hpp>
+#include <caf/actor_cast.hpp>
+#include <caf/actor_config.hpp>
+#include <caf/actor_system.hpp>
+#include <caf/anon_mail.hpp>
+#include <caf/event_based_actor.hpp>
 #include <caf/response_promise.hpp>
-#include <caf/scheduler.hpp>
-#include <caf/resumable.hpp>
 
-#include "caf/cuda/nd_range.hpp"
-#include "caf/cuda/global.hpp"
-#include "caf/cuda/program.hpp"
+#include <cuda.h>
+
 #include "caf/cuda/command.hpp"
+#include "caf/cuda/global.hpp"
+#include "caf/cuda/helpers.hpp"
 #include "caf/cuda/platform.hpp"
-#include <random>
-#include <climits>
-#include <thread>
+#include "caf/cuda/program.hpp"
+
 
 namespace caf::cuda {
 
-//An actor that acts as a gateway to the gpu 
-//you can send it messages that is of the parameters of the kernel
-//you wish to launch
-//and it will reply with an output_buffer
+// ---------------------------------------------------------------------------
+// actor_facade
+//
+// A CAF actor that wraps a single GPU kernel.  Callers send typed messages;
+// the facade launches the kernel via the run_async_notify() pattern so that
+// the CAF worker thread is NEVER blocked:
+//
+//   1. On message receipt  → launch kernel (base_enqueue), register a
+//      cuLaunchHostFunc callback on the same CUDA stream, store
+//      (collector_fn, response_promise) in a FIFO queue, return immediately.
+//   2. On gpu_done_atom    → pop the head of the queue, copy results to host,
+//      deliver the response_promise.
+//
+// Because all kernels for a given actor share one CUDA stream (keyed by
+// actor_id_), the GPU executes them in order and the gpu_done_atom messages
+// therefore arrive in the same FIFO order.
+//
+// NOTE (L-3 fix): actor_config&& has been removed from create().  The
+// caf::actor_system::spawn<T>() overload used internally always constructs
+// a fresh config with default options; there is no public CAF API to forward
+// an externally-built actor_config into spawn<>.  Callers that need
+// non-default spawn options should use the actor_system API directly.
+// ---------------------------------------------------------------------------
 template <bool PassConfig, class... Ts>
-class actor_facade : public caf::local_actor, public caf::resumable {
+class actor_facade : public event_based_actor {
 public:
-
-  //Factory methods to create the actor
-  static caf::actor create(
-    caf::actor_system& sys,
-    caf::actor_config&& actor_conf,
-    program_ptr program,
-    nd_range dims,
-    Ts&&... xs
-  ) {
-    return caf::make_actor<actor_facade<PassConfig, std::decay_t<Ts>...>, caf::actor>(
-      sys.next_actor_id(),
-      sys.node(),
-      &sys,
-      std::move(actor_conf),
-      std::move(program),
-      std::move(dims),
-      std::forward<Ts>(xs)...);
+  static caf::actor create(caf::actor_system& sys,
+                           program_ptr program,
+                           nd_range dims,
+                           Ts&&...) {
+    return caf::actor_cast<caf::actor>(
+      sys.spawn<actor_facade>(std::move(program), std::move(dims)));
   }
 
-  static caf::actor create(
-    caf::actor_system* sys,
-    caf::actor_config&& actor_conf,
-    program_ptr program,
-    nd_range dims,
-    Ts&&... xs
-  ) {
-    return caf::make_actor<actor_facade<PassConfig, std::decay_t<Ts>...>, caf::actor>(
-      sys->next_actor_id(),
-      sys->node(),
-      sys,
-      std::move(actor_conf),
-      std::move(program),
-      std::move(dims),
-      std::forward<Ts>(xs)...);
+  static caf::actor create(caf::actor_system* sys,
+                           program_ptr program,
+                           nd_range dims,
+                           Ts&&...) {
+    return caf::actor_cast<caf::actor>(
+      sys->spawn<actor_facade>(std::move(program), std::move(dims)));
   }
 
-  //constructor
-  actor_facade(caf::actor_config&& cfg, program_ptr prog, nd_range nd, Ts&&... xs)
-    : local_actor(cfg),
-      config_(std::move(cfg)),
-      program_(std::move(prog)),
-      dims_(nd) {
+  actor_facade(caf::actor_config& cfg, program_ptr program, nd_range dims)
+    : caf::event_based_actor(cfg),
+      program_(std::move(program)),
+      dims_(std::move(dims)) {
+    actor_id_ = this->id();
+    platform_ = program_->get_platform();
   }
 
-  //deconstructor
-  ~actor_facade() {
-    auto plat = platform::create();
-    plat->release_streams_for_actor(actor_id);
+  ~actor_facade() override {
+    if (platform_)
+      platform_->release_streams_for_actor(this->id());
   }
 
-  //creates a command and enqueues the kernel to be launched
-  void create_command(program_ptr program, Ts&&... xs) {
-    using command_t = command<caf::actor, Ts...>;
-    auto rp = make_response_promise();
-    auto cmd = make_counted<command_t>(
-      program,
-      dims_,
-      actor_id,
-      std::forward<Ts>(xs)...);
-    rp.deliver(cmd->enqueue());
-    //anon_mail(kernel_done_atom_v).send(caf::actor_cast<caf::actor>(this));
-  }
+  caf::behavior make_behavior() override {
+    return {
+      // ── GPU completion ────────────────────────────────────────────────────
+      // Fires from the CUDA host-function callback (via anon_mail) once the
+      // kernel stream is idle.  Safe to call copy_to_host() here because
+      // the stream is guaranteed idle at this point.
+      [this](gpu_done_atom) {
+        if (pending_.empty())
+          return;
+        pending_job job = std::move(pending_.front());
+        pending_.pop();
+        try {
+          job.rp.deliver(job.collector());
+        } catch (const std::exception& ex) {
+          job.rp.deliver(
+            caf::make_error(caf::sec::runtime_error, ex.what()));
+        }
+      },
 
-  //does the same thing as create_command
-  void run_kernel(Ts&... xs) {
-    create_command(program_, std::forward<Ts>(xs)...);
+      // ── Kernel launch request ─────────────────────────────────────────────
+      // Matches the typed argument list (wrapped or raw), launches the kernel
+      // asynchronously, and returns a response_promise so the handler returns
+      // to CAF immediately without blocking the worker thread.
+      [this](const caf::message& msg) -> caf::result<result_vec> {
+        auto rp = this->make_response_promise<result_vec>();
+        try {
+          if (!enqueue_async(msg, rp))
+            rp.deliver(caf::make_error(caf::sec::unexpected_message,
+                                       "actor_facade received unsupported arguments"));
+        } catch (const std::exception& ex) {
+          rp.deliver(caf::make_error(caf::sec::runtime_error, ex.what()));
+        }
+        return rp;
+      },
+    };
   }
 
 private:
-  caf::actor_config config_;
-  program_ptr program_;
-  nd_range dims_;
-  std::queue<mailbox_element_ptr> mailbox_;
-  std::atomic<int> pending_promises_ = 0;
-  std::atomic<bool> shutdown_requested_ = false;
-  int actor_id = generate_id();
-  std::atomic_flag resuming_flag_ = ATOMIC_FLAG_INIT;
-  caf::actor self_ =   caf::actor_cast<caf::actor>(this);
+  // ── Pending job ───────────────────────────────────────────────────────────
+  // Holds the type-erased result-collection function and the promise that
+  // will carry the output back to the original sender.
+  using result_vec = std::vector<output_buffer>;
+  using promise_t  = caf::typed_response_promise<result_vec>;
 
-  //creates an id for the actor facade, used for stream allocation and 
-  //deallocation
-  int generate_id() {
-      return random_number();	  
-  }
+  struct pending_job {
+    std::function<result_vec()> collector;
+    promise_t                   rp;
+  };
 
-  //helper method that is used to handle an incoming message
-  bool handle_message(const message& msg) {
-    if (!msg.types().empty() && msg.types()[0] == caf::type_id_v<caf::actor>) {
-      auto sender = msg.get_as<caf::actor>(0);
-      if (msg.match_elements<caf::actor, Ts...>()) {
-        return unpack_and_run_wrapped(sender, msg, std::index_sequence_for<Ts...>{});
-      }
-      if (msg.match_elements<caf::actor, raw_t<Ts>...>()) {
-        return unpack_and_run(sender, msg, std::index_sequence_for<Ts...>{});
-      }
+  // ── Core async launch ─────────────────────────────────────────────────────
+  // Instantiated for each concrete set of argument types Us... (derived from
+  // the incoming message).  Launches the kernel, registers the completion
+  // callback, and pushes the job onto the FIFO queue.
+  template <class... Us>
+  void enqueue_impl(promise_t& rp, Us&&... xs) {
+    using cmd_t = base_command<caf::actor, std::decay_t<Us>...>;
+    auto cmd = caf::make_counted<cmd_t>(program_, dims_, actor_id_,
+                                        std::forward<Us>(xs)...);
+
+    // Launch kernel asynchronously — returns immediately without waiting for
+    // stream synchronisation.
+    auto mem_refs = cmd->base_enqueue();
+
+    // Retrieve the stream the kernel was enqueued on so the host-function
+    // callback is placed on the same stream (FIFO ordering guaranteed).
+    device_ptr dev    = cmd->get_device();
+    CUstream   stream = dev->get_stream_for_actor(actor_id_);
+
+    // Type-erase the result collection so we can store it in the queue
+    // independent of the concrete mem_ref tuple type.
+    auto collector = [dev, mem_refs]() mutable -> std::vector<output_buffer> {
+      return dev->collect_output_buffers(mem_refs);
+    };
+
+    // Register a CUDA host-function callback.  cuLaunchHostFunc guarantees
+    // that the callback fires only after all preceding work on the stream
+    // (i.e. the kernel) has completed.  The callback itself runs on CUDA's
+    // internal thread — no CUDA API calls are permitted inside it.
+    struct cb_data { caf::actor self; };
+    auto* d = new cb_data{caf::actor_cast<caf::actor>(this)};
+
+    CUresult res = cuLaunchHostFunc(
+      stream,
+      [](void* userdata) {
+        auto* d = static_cast<cb_data*>(userdata);
+        caf::anon_mail(gpu_done_atom_v).send(d->self);
+        delete d;
+      },
+      d);
+
+    if (res != CUDA_SUCCESS) {
+      delete d;
+      check(res); // throws std::runtime_error
     }
 
-    if (!msg.types().empty()) { 
-	    return unpack_and_run_wrapped_async(msg, std::index_sequence_for<Ts...>{});
-    }
-    std::cout << "[WARNING], message format not recognized by actor facade, dropping message\n";
-    
-     return false;
+    pending_.push({std::move(collector), std::move(rp)});
   }
 
-  //unpacks a message and launches the kernel
+  // ── Message-dispatch helpers ──────────────────────────────────────────────
+
   template <std::size_t... Is>
-  bool unpack_and_run_wrapped(caf::actor sender, const message& msg, std::index_sequence<Is...>) {
-    auto wrapped = std::make_tuple(msg.get_as<Ts>(Is + 1)...);
-    run_kernel(std::get<Is>(wrapped)...);
-    return true;
+  void enqueue_wrapped(promise_t& rp, const caf::message& msg,
+                       size_t offset, std::index_sequence<Is...>) {
+    enqueue_impl(rp, msg.get_as<Ts>(Is + offset)...);
   }
 
-  //unpacks a message and launches a kernel
   template <std::size_t... Is>
-  bool unpack_and_run(caf::actor sender, const message& msg, std::index_sequence<Is...>) {
-    auto unpacked = std::make_tuple(msg.get_as<raw_t<Ts>>(Is + 1)...);
-    auto wrapped = std::make_tuple(Ts(std::get<Is>(unpacked))...);
-    run_kernel(std::get<Is>(wrapped)...);
-    return true;
+  void enqueue_raw(promise_t& rp, const caf::message& msg,
+                   size_t offset, std::index_sequence<Is...>) {
+    enqueue_impl(rp, Ts{msg.get_as<raw_t<Ts>>(Is + offset)}...);
   }
 
-
-  //unpacks a message and launches a kernel
-  template <std::size_t... Is>
-  bool unpack_and_run_wrapped_async(const message& msg, std::index_sequence<Is...>) {
-    auto wrapped = std::make_tuple(msg.get_as<Ts>(Is)...);
-    run_kernel(std::get<Is>(wrapped)...);
-    return true;
-  }
-
-
-
-
-  subtype_t subtype() const noexcept override {
-    return subtype_t(0);
-  }
-
-  //handles scheduling for caf, will return based on what work needs to be done
- resumable::resume_result resume(::caf::scheduler* sched, size_t max_throughput) override {
-  if (resuming_flag_.test_and_set(std::memory_order_acquire)) {
-    return resumable::resume_later;
-  }
-
-  //ensure the lock is released on exit of this method 
-  auto clear_flag = caf::detail::scope_guard([this] noexcept {
-    resuming_flag_.clear(std::memory_order_release);
-  });
-
-  size_t processed = 0;
-
-  while (!mailbox_.empty() && processed < max_throughput) {
-    auto msg = std::move(mailbox_.front());
-    mailbox_.pop();
-
-    if (!msg || !msg->content().ptr()) {
-      std::cout << "[Thread " << std::this_thread::get_id()
-                << "] Dropping message with no content\n";
-      continue;
-    }
-
-    pending_promises_++;
-    current_mailbox_element(msg.get());
-
-    if (msg->content().match_elements<kernel_done_atom>()) {
-      if (--pending_promises_ == 0 && shutdown_requested_) {
-        quit(exit_reason::user_shutdown);
-        return resumable::done;
-      }
-      current_mailbox_element(nullptr);
-      ++processed;
-      continue;
-    }
-
-    //check for exit message if yes begin the shutdown process
-    if (msg->content().match_elements<exit_msg>()) {
-      auto exit = msg->content().get_as<exit_msg>(0);
-      shutdown_requested_ = true;
-      if (--pending_promises_ == 0) {
-        quit(static_cast<exit_reason>(exit.reason.code()));
-        return resumable::done;
-      } else {
-        current_mailbox_element(nullptr);
-        return resumable::resume_later;
-      }
-    }
-
-    //process the message and begin launching the kernel
-    handle_message(msg->content());
-    //pending_promises_--;
-    current_mailbox_element(nullptr);
-    ++processed;
-  }
-
-  // If there's still more work, return resume_later
-  if (!mailbox_.empty())
-    return resumable::resume_later;
-
-  return shutdown_requested_ ? resumable::resume_later : resumable::done;
-}
-
-  void ref_resumable() const noexcept override  {}
-
-  void deref_resumable() const noexcept override  {}
-
-  //add a message to its mailbox and enqueue the actor on the scheduler
-  bool enqueue(mailbox_element_ptr what, ::caf::scheduler* sched) override {
-    if (!what || shutdown_requested_)
-      return false;
-
-    bool was_empty = mailbox_.empty();
-    mailbox_.push(std::move(what));
-    if (was_empty && sched) {
-      sched->schedule(this);
+  // Returns false if the message did not match any expected type pattern.
+  bool enqueue_async(const caf::message& msg, promise_t& rp) {
+    auto indices = std::index_sequence_for<Ts...>{};
+    if (msg.match_elements<Ts...>()) {
+      enqueue_wrapped(rp, msg, 0, indices);
       return true;
     }
-
+    if (msg.match_elements<raw_t<Ts>...>()) {
+      enqueue_raw(rp, msg, 0, indices);
+      return true;
+    }
+    if (msg.match_elements<caf::actor, Ts...>()) {
+      enqueue_wrapped(rp, msg, 1, indices);
+      return true;
+    }
+    if (msg.match_elements<caf::actor, raw_t<Ts>...>()) {
+      enqueue_raw(rp, msg, 1, indices);
+      return true;
+    }
     return false;
   }
 
-  //schedule the actor on startup
-  void launch(::caf::scheduler* sched, bool lazy, [[maybe_unused]] bool interruptible) override {
-    if (!lazy && sched) {
-      sched->schedule(this);
-    }
-  }
+  program_ptr  program_;
+  platform_ptr platform_;
+  nd_range     dims_;
+  caf::actor_id actor_id_;
 
-  void do_unstash(mailbox_element_ptr what) override {
-    if (what) {
-      mailbox_.push(std::move(what));
-    }
-  }
-
-  //close the mailbox when done
-  void force_close_mailbox() override  {
-    while (!mailbox_.empty()) {
-      mailbox_.pop();
-    }
-  }
-
-
-  //helper method to be executed when an exit message is received 
-  void quit(exit_reason reason) {
-   self_ = nullptr; 
-   force_close_mailbox();
-    current_mailbox_element(nullptr);
-  }
+  std::queue<pending_job> pending_;
 };
 
 } // namespace caf::cuda

@@ -23,19 +23,16 @@ message_data::message_data(type_id_list types) noexcept
 }
 
 message_data::~message_data() noexcept {
-  // Note: no need to perform bound checks or nullptr checks here, because
-  //       we verify the type IDs while constructing the message.
-  auto gmos = global_meta_objects();
   auto ptr = storage();
   if (constructed_elements_ == types_.size()) {
     for (auto id : types_) {
-      auto& meta = gmos[id];
+      auto& meta = global_meta_object(id);
       meta.destroy(ptr);
       ptr += meta.padded_size;
     }
   } else {
     for (size_t index = 0; index < constructed_elements_; ++index) {
-      auto& meta = gmos[types_[index]];
+      auto& meta = global_meta_object(types_[index]);
       meta.destroy(ptr);
       ptr += meta.padded_size;
     }
@@ -53,7 +50,7 @@ message_data* message_data::copy() const {
   auto vptr = malloc(total_size);
   if (vptr == nullptr)
     CAF_RAISE_ERROR(std::bad_alloc, "bad_alloc");
-  intrusive_ptr<message_data> ptr{new (vptr) message_data(types_), false};
+  intrusive_ptr<message_data> ptr{new (vptr) message_data(types_), adopt_ref};
   auto src = storage();
   auto dst = ptr->storage();
   for (auto id : types_) {
@@ -75,7 +72,7 @@ message_data::make_uninitialized(type_id_list types) {
   auto vptr = malloc(total_size);
   if (vptr == nullptr)
     CAF_RAISE_ERROR(std::bad_alloc, "bad_alloc");
-  return {new (vptr) message_data(types), false};
+  return {new (vptr) message_data(types), adopt_ref};
 }
 
 std::byte* message_data::at(size_t index) noexcept {

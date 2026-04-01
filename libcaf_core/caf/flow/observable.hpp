@@ -17,9 +17,12 @@
 #include "caf/flow/fwd.hpp"
 #include "caf/flow/observable_decl.hpp"
 #include "caf/flow/observer.hpp"
+#include "caf/flow/op/auto_connect.hpp"
 #include "caf/flow/op/base.hpp"
 #include "caf/flow/op/buffer.hpp"
+#include "caf/flow/op/cache.hpp"
 #include "caf/flow/op/concat.hpp"
+#include "caf/flow/op/connectable.hpp"
 #include "caf/flow/op/debounce.hpp"
 #include "caf/flow/op/fail.hpp"
 #include "caf/flow/op/from_resource.hpp"
@@ -31,6 +34,7 @@
 #include "caf/flow/op/on_error_resume_next.hpp"
 #include "caf/flow/op/prefix_and_tail.hpp"
 #include "caf/flow/op/publish.hpp"
+#include "caf/flow/op/ref_count.hpp"
 #include "caf/flow/op/retry.hpp"
 #include "caf/flow/op/sample.hpp"
 #include "caf/flow/op/throttle_first.hpp"
@@ -65,7 +69,7 @@ public:
   using output_type = T;
 
   /// The pointer-to-implementation type.
-  using pimpl_type = intrusive_ptr<op::publish<T>>;
+  using pimpl_type = intrusive_ptr<op::connectable<T>>;
 
   explicit connectable(pimpl_type pimpl) noexcept : pimpl_(std::move(pimpl)) {
     // nop
@@ -84,23 +88,14 @@ public:
 
   /// Returns an @ref observable that automatically connects to this
   /// `connectable` when reaching `subscriber_threshold` subscriptions.
-  observable<T> auto_connect(size_t subscriber_threshold = 1) & {
-    auto ptr = make_counted<op::publish<T>>(parent(), pimpl_);
-    ptr->auto_connect_threshold(subscriber_threshold);
-    return observable<T>{ptr};
-  }
-
-  /// Similar to the `lvalue` overload, but converts this `connectable` directly
-  /// if possible, thus saving one hop on the pipeline.
-  observable<T> auto_connect(size_t subscriber_threshold = 1) && {
-    if (pimpl_->unique() && !pimpl_->connected()) {
-      pimpl_->auto_connect_threshold(subscriber_threshold);
-      return observable<T>{std::move(pimpl_)};
-    } else {
-      auto ptr = make_counted<op::publish<T>>(parent(), pimpl_);
-      ptr->auto_connect_threshold(subscriber_threshold);
-      return observable<T>{ptr};
+  /// @note Connects immediately if `subscriber_threshold` is 0.
+  observable<T> auto_connect(size_t subscriber_threshold = 1) {
+    auto ptr = make_counted<op::auto_connect<T>>(pimpl_->parent(),
+                                                 subscriber_threshold, pimpl_);
+    if (subscriber_threshold == 0) {
+      ptr->state().connect([](auto&) {});
     }
+    return observable<T>{std::move(ptr)};
   }
 
   /// Returns an @ref observable that automatically connects to this
@@ -109,26 +104,17 @@ public:
   /// subscription.
   /// @note The threshold only applies to the initial connect, not to any
   ///       re-connects.
-  observable<T> ref_count(size_t subscriber_threshold = 1) & {
-    auto ptr = make_counted<op::publish<T>>(parent(), pimpl_);
-    ptr->auto_connect_threshold(subscriber_threshold);
-    ptr->auto_disconnect(true);
-    return observable<T>{ptr};
-  }
-
-  /// Similar to the `lvalue` overload, but converts this `connectable` directly
-  /// if possible, thus saving one hop on the pipeline.
-  observable<T> ref_count(size_t subscriber_threshold = 1) && {
-    if (pimpl_->unique() && !pimpl_->connected()) {
-      pimpl_->auto_connect_threshold(subscriber_threshold);
-      pimpl_->auto_disconnect(true);
-      return observable<T>{std::move(pimpl_)};
-    } else {
-      auto ptr = make_counted<op::publish<T>>(parent(), pimpl_);
-      ptr->auto_connect_threshold(subscriber_threshold);
-      ptr->auto_disconnect(true);
-      return observable<T>{ptr};
+  /// @note Produces an error if `subscriber_threshold` is 0.
+  observable<T> ref_count(size_t subscriber_threshold = 1) {
+    if (subscriber_threshold == 0) {
+      auto err = make_error(sec::invalid_argument,
+                            "connectable<T>::ref_count(0) is not allowed");
+      auto ptr = make_counted<op::fail<T>>(pimpl_->parent(), std::move(err));
+      return observable<T>{std::move(ptr)};
     }
+    auto ptr = make_counted<op::ref_count<T>>(pimpl_->parent(),
+                                              subscriber_threshold, pimpl_);
+    return observable<T>{std::move(ptr)};
   }
 
   /// Connects to the source @ref observable, thus starting to emit items.
@@ -142,9 +128,9 @@ public:
     return fn(std::move(*this));
   }
 
-  template <class... Ts>
-  disposable subscribe(Ts&&... xs) {
-    return as_observable().subscribe(std::forward<Ts>(xs)...);
+  template <class Subscriber>
+  disposable subscribe(Subscriber&& arg) {
+    return as_observable().subscribe(std::forward<Subscriber>(arg));
   }
 
   observable<T> as_observable() const& {
@@ -267,6 +253,11 @@ public:
 
   auto buffer(size_t count, timespan period) && {
     return materialize().buffer(count, period);
+  }
+
+  /// @copydoc observable::cache
+  auto cache() && {
+    return materialize().cache();
   }
 
   /// @copydoc observable::on_error_resume_next
@@ -846,6 +837,12 @@ observable<cow_vector<T>> observable<T>::buffer(size_t count, timespan period) {
                                  period);
   return pptr->add_child_hdl(std::in_place_type<impl_t>, count, *this,
                              std::move(obs));
+}
+
+template <class T>
+observable<T> observable<T>::cache() {
+  using impl_t = op::cache<T>;
+  return parent()->add_child_hdl(std::in_place_type<impl_t>, pimpl());
 }
 
 template <class T>

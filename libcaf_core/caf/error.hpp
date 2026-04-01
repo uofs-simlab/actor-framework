@@ -4,9 +4,9 @@
 
 #pragma once
 
+#include "caf/caf_deprecated.hpp"
 #include "caf/detail/comparable.hpp"
 #include "caf/detail/core_export.hpp"
-#include "caf/error_code.hpp"
 #include "caf/error_code_enum.hpp"
 #include "caf/fwd.hpp"
 #include "caf/message.hpp"
@@ -68,6 +68,7 @@ public:
 
   error() noexcept = default;
 
+  // cppcheck-suppress noExplicitConstructor
   error(none_t) noexcept;
 
   error(error&&) noexcept = default;
@@ -79,6 +80,7 @@ public:
   error& operator=(const error&);
 
   template <error_code_enum Enum>
+  // cppcheck-suppress noExplicitConstructor
   error(Enum code) : error(static_cast<uint8_t>(code), type_id_v<Enum>) {
     // nop
   }
@@ -96,21 +98,11 @@ public:
     // nop
   }
 
-  template <error_code_enum Enum>
-  error(error_code<Enum> code) : error(to_integer(code), type_id_v<Enum>) {
-    // nop
-  }
-
   template <error_code_enum E>
   error& operator=(E error_value) {
     error tmp{error_value};
     std::swap(data_, tmp.data_);
     return *this;
-  }
-
-  template <error_code_enum E>
-  error& operator=(error_code<E> code) {
-    return *this = code.value();
   }
 
   // -- properties -------------------------------------------------------------
@@ -140,18 +132,25 @@ public:
   std::string_view what() const noexcept;
 
   /// Returns `*this != none`.
+  CAF_DEPRECATED("use valid() instead")
   explicit operator bool() const noexcept {
     return data_ != nullptr;
   }
 
   /// Returns `*this == none`.
+  CAF_DEPRECATED("use empty() instead")
   bool operator!() const noexcept {
     return data_ == nullptr;
   }
 
   /// Returns whether this error was default-constructed.
-  bool empty() const noexcept {
+  [[nodiscard]] bool empty() const noexcept {
     return data_ == nullptr;
+  }
+
+  /// Returns whether this error is not default-constructed.
+  [[nodiscard]] bool valid() const noexcept {
+    return data_ != nullptr;
   }
 
   int compare(const error&) const noexcept;
@@ -161,6 +160,7 @@ public:
   /// Returns a copy of `this` if `!empty()` or else returns a new error from
   /// given arguments.
   template <class Enum, class... Ts>
+  CAF_DEPRECATED("use expected<T> instead for chainable error handling")
   error or_else(Enum code, Ts&&... args) const& {
     if (!empty())
       return *this;
@@ -173,6 +173,7 @@ public:
   /// Returns a copy of `this` if `!empty()` or else returns a new error from
   /// given arguments.
   template <class Enum, class... Ts>
+  CAF_DEPRECATED("use expected<T> instead for chainable error handling")
   error or_else(Enum code, Ts&&... args) && {
     if (!empty())
       return std::move(*this);
@@ -193,11 +194,13 @@ public:
 
   /// @cond
 
+  CAF_DEPRECATED("use expected<T> instead for chainable error handling")
   static error eval() {
     return error{};
   }
 
   template <class F, class... Fs>
+  CAF_DEPRECATED("use expected<T> instead for chainable error handling")
   static error eval(F&& f, Fs&&... fs) {
     auto x = f();
     return x ? x : eval(std::forward<Fs>(fs)...);
@@ -241,20 +244,21 @@ error make_error(Enum code, T&& x, Ts&&... xs) {
 
 /// @relates error
 inline bool operator==(const error& x, none_t) {
-  return !x;
+  return x.empty();
 }
 
 /// @relates error
 inline bool operator==(none_t, const error& x) {
-  return !x;
+  return x.empty();
 }
 
 /// @relates error
 template <error_code_enum Enum>
 bool operator==(const error& x, Enum y) {
   auto code = static_cast<uint8_t>(y);
-  return code == 0 ? !x
-                   : x && x.code() == code && x.category() == type_id_v<Enum>;
+  return code == 0
+           ? x.empty()
+           : x.valid() && x.code() == code && x.category() == type_id_v<Enum>;
 }
 
 /// @relates error
@@ -265,12 +269,12 @@ bool operator==(Enum x, const error& y) {
 
 /// @relates error
 inline bool operator!=(const error& x, none_t) {
-  return static_cast<bool>(x);
+  return x.valid();
 }
 
 /// @relates error
 inline bool operator!=(none_t, const error& x) {
-  return static_cast<bool>(x);
+  return x.valid();
 }
 
 /// @relates error

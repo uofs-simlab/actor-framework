@@ -12,7 +12,7 @@ multilevel_usage_behavior::multilevel_usage_behavior(scheduler_actor_state& stat
 multilevel_usage_behavior::~multilevel_usage_behavior() {}
 
 void multilevel_usage_behavior::init_state() {
-    device_ = manager::get().find_device(state_.device_number);
+    device_ = state_.self->system().cuda_manager().find_device(state_.device_number);
     heuristic.emplace(device_);
     total_SM = device_->num_sms() * 16;
     available_SM = total_SM;
@@ -20,7 +20,7 @@ void multilevel_usage_behavior::init_state() {
     num_streams = state_.num_streams;
     low_threshold = total_SM / 6;
     transfer_threshold = total_SM / 2;
-    num_devices = manager::get().get_num_devices();
+    num_devices = state_.self->system().cuda_manager().get_num_devices();
 }
 
 void multilevel_usage_behavior::on_enter() {
@@ -182,9 +182,8 @@ void multilevel_usage_behavior::schedule() {
 }
 
 void multilevel_usage_behavior::reclaim(int blocks_consumed,
-                                       int memory_returned,
-                                       int time,
-                                       int dependency_number) {
+                                        int memory_returned,
+                                        int dependency_number) {
     // update available resources
     available_SM += blocks_consumed;
     available_memory += memory_returned;

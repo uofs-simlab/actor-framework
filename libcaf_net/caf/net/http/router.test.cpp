@@ -12,7 +12,8 @@
 #include "caf/net/socket.hpp"
 #include "caf/net/socket_manager.hpp"
 
-#include "caf/detail/source_location.hpp"
+#include <memory>
+#include <source_location>
 
 using namespace caf;
 using namespace std::literals;
@@ -72,6 +73,18 @@ public:
     if (response) {
       response.set_error(what);
     }
+  }
+
+  error begin_chunked_message(const net::http::request_header&) override {
+    return error{};
+  }
+
+  error consume_chunk(const_byte_span) override {
+    return error{};
+  }
+
+  error end_chunked_message() override {
+    return error{};
   }
 
   void prepare_send() override {
@@ -146,7 +159,7 @@ struct fixture {
   std::thread mpx_thread;
   std::string req;
   http::request_header hdr;
-  http::router rt;
+  std::unique_ptr<http::router> rt = http::router::make({});
   std::vector<config_value> args;
 };
 
@@ -157,7 +170,7 @@ WITH_FIXTURE(fixture) {
 SCENARIO("routes must have one 'arg' entry per argument") {
   auto set_get_request
     = [this](std::string path,
-             detail::source_location loc = detail::source_location::current()) {
+             std::source_location loc = std::source_location::current()) {
         req = "GET " + path + " HTTP/1.1\r\n"
               + "Host: localhost:8090\r\n"
                 "User-Agent: AwesomeLib/1.0\r\n"
@@ -167,7 +180,7 @@ SCENARIO("routes must have one 'arg' entry per argument") {
       };
   auto set_post_request
     = [this](std::string path,
-             detail::source_location loc = detail::source_location::current()) {
+             std::source_location loc = std::source_location::current()) {
         req = "POST " + path + " HTTP/1.1\r\n"
               + "Host: localhost:8090\r\n"
                 "User-Agent: AwesomeLib/1.0\r\n"
@@ -179,9 +192,11 @@ SCENARIO("routes must have one 'arg' entry per argument") {
     WHEN("evaluating the factory call") {
       THEN("the factory produces an error") {
         auto res1 = make_route("/", [](responder&, int) {});
-        check_eq(res1, sec::invalid_argument);
+        check_eq(res1,
+                 caf::unexpected<error>{std::in_place, sec::invalid_argument});
         auto res2 = make_route("/<arg>", [](responder&, int, int) {});
-        check_eq(res2, sec::invalid_argument);
+        check_eq(res2,
+                 caf::unexpected<error>{std::in_place, sec::invalid_argument});
       }
     }
   }
@@ -189,9 +204,11 @@ SCENARIO("routes must have one 'arg' entry per argument") {
     WHEN("evaluating the factory call") {
       THEN("the factory produces an error") {
         auto res1 = make_route("/<arg>/<arg>", [](responder&) {});
-        check_eq(res1, sec::invalid_argument);
+        check_eq(res1,
+                 caf::unexpected<error>{std::in_place, sec::invalid_argument});
         auto res2 = make_route("/<arg>/<arg>", [](responder&, int) {});
-        check_eq(res2, sec::invalid_argument);
+        check_eq(res2,
+                 caf::unexpected<error>{std::in_place, sec::invalid_argument});
       }
     }
   }
@@ -201,33 +218,33 @@ SCENARIO("routes must have one 'arg' entry per argument") {
         if (auto res = make_route("/", [](responder&) {});
             check(res.has_value())) {
           set_get_request("/");
-          check((*res)->exec(hdr, {}, &rt));
+          check((*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
         }
         if (auto res = make_route("/foo/bar", http::method::get,
                                   [](responder&) {});
             check(res.has_value())) {
           set_get_request("/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo/bar/baz");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_post_request("/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo/bar");
-          check((*res)->exec(hdr, {}, &rt));
+          check((*res)->exec(hdr, {}, rt.get()));
         }
         if (auto res = make_route(
               "/<arg>", [this](responder&, int x) { args = make_args(x); });
             check(res.has_value())) {
           set_get_request("/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/42");
-          if (check((*res)->exec(hdr, {}, &rt)))
+          if (check((*res)->exec(hdr, {}, rt.get())))
             check_eq(args, make_args(42));
         }
         if (auto res
@@ -235,11 +252,11 @@ SCENARIO("routes must have one 'arg' entry per argument") {
                          [this](responder&, int x) { args = make_args(x); });
             check(res.has_value())) {
           set_get_request("/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo/123/bar");
-          if (check((*res)->exec(hdr, {}, &rt)))
+          if (check((*res)->exec(hdr, {}, rt.get())))
             check_eq(args, make_args(123));
         }
         if (auto res = make_route("/foo/<arg>/bar",
@@ -248,11 +265,11 @@ SCENARIO("routes must have one 'arg' entry per argument") {
                                   });
             check(res.has_value())) {
           set_get_request("/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo/my-arg/bar");
-          if (check((*res)->exec(hdr, {}, &rt)))
+          if (check((*res)->exec(hdr, {}, rt.get())))
             check_eq(args, make_args("my-arg"s));
         }
         if (auto res = make_route("/<arg>/<arg>/<arg>",
@@ -261,11 +278,11 @@ SCENARIO("routes must have one 'arg' entry per argument") {
                                   });
             check(res.has_value())) {
           set_get_request("/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("/1/true/3?foo=bar");
-          if (check((*res)->exec(hdr, {}, &rt)))
+          if (check((*res)->exec(hdr, {}, rt.get())))
             check_eq(args, make_args(1, true, 3));
         }
       }
@@ -275,35 +292,35 @@ SCENARIO("routes must have one 'arg' entry per argument") {
         if (auto res = make_route("/", [](responder&) {});
             check(res.has_value())) {
           set_get_request("http://example.com");
-          check((*res)->exec(hdr, {}, &rt));
+          check((*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/");
-          check((*res)->exec(hdr, {}, &rt));
+          check((*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
         }
         if (auto res = make_route("/foo/bar", http::method::get,
                                   [](responder&) {});
             check(res.has_value())) {
           set_get_request("http://example.com/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo/bar/baz");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_post_request("http://example.com/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo/bar");
-          check((*res)->exec(hdr, {}, &rt));
+          check((*res)->exec(hdr, {}, rt.get()));
         }
         if (auto res = make_route(
               "/<arg>", [this](responder&, int x) { args = make_args(x); });
             check(res.has_value())) {
           set_get_request("http://example.com/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/42");
-          if (check((*res)->exec(hdr, {}, &rt)))
+          if (check((*res)->exec(hdr, {}, rt.get())))
             check_eq(args, make_args(42));
         }
         if (auto res
@@ -311,11 +328,11 @@ SCENARIO("routes must have one 'arg' entry per argument") {
                          [this](responder&, int x) { args = make_args(x); });
             check(res.has_value())) {
           set_get_request("http://example.com/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo/123/bar");
-          if (check((*res)->exec(hdr, {}, &rt)))
+          if (check((*res)->exec(hdr, {}, rt.get())))
             check_eq(args, make_args(123));
         }
         if (auto res = make_route("/foo/<arg>/bar",
@@ -324,11 +341,11 @@ SCENARIO("routes must have one 'arg' entry per argument") {
                                   });
             check(res.has_value())) {
           set_get_request("http://example.com/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo/my-arg/bar");
-          if (check((*res)->exec(hdr, {}, &rt)))
+          if (check((*res)->exec(hdr, {}, rt.get())))
             check_eq(args, make_args("my-arg"s));
         }
         if (auto res = make_route("/<arg>/<arg>/<arg>",
@@ -337,11 +354,11 @@ SCENARIO("routes must have one 'arg' entry per argument") {
                                   });
             check(res.has_value())) {
           set_get_request("http://example.com/");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/foo/bar");
-          check(!(*res)->exec(hdr, {}, &rt));
+          check(!(*res)->exec(hdr, {}, rt.get()));
           set_get_request("http://example.com/1/true/3?foo=bar");
-          if (check((*res)->exec(hdr, {}, &rt)))
+          if (check((*res)->exec(hdr, {}, rt.get())))
             check_eq(args, make_args(1, true, 3));
         }
       }
@@ -352,7 +369,7 @@ SCENARIO("routes must have one 'arg' entry per argument") {
 SCENARIO("catch-all routes match any path") {
   auto set_get_request
     = [this](std::string path,
-             detail::source_location loc = detail::source_location::current()) {
+             std::source_location loc = std::source_location::current()) {
         req = "GET " + path + " HTTP/1.1\r\n"
               + "Host: localhost:8090\r\n"
                 "User-Agent: AwesomeLib/1.0\r\n"
@@ -362,7 +379,7 @@ SCENARIO("catch-all routes match any path") {
       };
   auto set_post_request
     = [this](std::string path,
-             detail::source_location loc = detail::source_location::current()) {
+             std::source_location loc = std::source_location::current()) {
         req = "POST " + path + " HTTP/1.1\r\n"
               + "Host: localhost:8090\r\n"
                 "User-Agent: AwesomeLib/1.0\r\n"
@@ -375,9 +392,9 @@ SCENARIO("catch-all routes match any path") {
       THEN("the factory produces a valid callback") {
         if (auto res = make_route([](responder&) {}); check(res.has_value())) {
           set_get_request("/foo");
-          check((*res)->exec(hdr, {}, &rt));
+          check((*res)->exec(hdr, {}, rt.get()));
           set_post_request("/foo/bar");
-          check((*res)->exec(hdr, {}, &rt));
+          check((*res)->exec(hdr, {}, rt.get()));
         }
       }
     }
@@ -470,6 +487,71 @@ SCENARIO("router converts responders to asynchronous request objects") {
         buf.resize(10);
         auto n = net::read(fd1, buf);
         check_eq(n, 0);
+      }
+    }
+  }
+}
+
+SCENARIO("router handles chunked HTTP requests") {
+  GIVEN("an HTTP router with a POST route") {
+    auto http_route
+      = make_route("/upload", http::method::post, [](responder& rp) {
+          auto body = rp.payload();
+          auto body_str = std::string_view{
+            reinterpret_cast<const char*>(body.data()), body.size()};
+          rp.respond(http::status::ok, "text/plain", body_str);
+        });
+    auto default_router
+      = router::make(std::vector<http::route_ptr>{http_route.value()});
+    auto server = net::http::server::make(std::move(default_router));
+    auto transport = net::octet_stream::transport::make(fd2, std::move(server));
+    auto mgr = net::socket_manager::make(mpx.get(), std::move(transport));
+    if (!mpx->start(mgr)) {
+      CAF_RAISE_ERROR(std::logic_error, "failed to start socket manager");
+    }
+    fd2.id = net::invalid_socket_id;
+    WHEN("receiving a chunked POST request") {
+      auto req_headers = "POST /upload HTTP/1.1\r\n"
+                         "Host: localhost:8090\r\n"
+                         "Transfer-Encoding: chunked\r\n"
+                         "\r\n"sv;
+      auto req_body = "D\r\n"
+                      "Hello, world!\r\n"
+                      "11\r\n"
+                      "Developer Network\r\n"
+                      "0\r\n\r\n"sv;
+      net::write(fd1, as_bytes(std::span{req_headers}));
+      net::write(fd1, as_bytes(std::span{req_body}));
+      THEN("the router aggregates chunks and routes the complete body") {
+        // Expected response body is the concatenated chunks
+        std::string_view expected_response = "HTTP/1.1 200 OK\r\n"
+                                             "Content-Type: text/plain\r\n"
+                                             "Content-Length: 30\r\n\r\n"
+                                             "Hello, world!Developer Network";
+        byte_buffer buf;
+        buf.resize(expected_response.size());
+        auto n = net::read(fd1, buf);
+        check_eq(n, static_cast<ptrdiff_t>(expected_response.size()));
+        check_eq(to_str(buf), expected_response);
+      }
+    }
+    WHEN("receiving an empty chunked POST request") {
+      auto req_headers = "POST /upload HTTP/1.1\r\n"
+                         "Host: localhost:8090\r\n"
+                         "Transfer-Encoding: chunked\r\n"
+                         "\r\n"sv;
+      auto req_body = "0\r\n\r\n"sv;
+      net::write(fd1, as_bytes(std::span{req_headers}));
+      net::write(fd1, as_bytes(std::span{req_body}));
+      THEN("the router handles empty chunked body correctly") {
+        std::string_view expected_response = "HTTP/1.1 200 OK\r\n"
+                                             "Content-Type: text/plain\r\n"
+                                             "Content-Length: 0\r\n\r\n";
+        byte_buffer buf;
+        buf.resize(expected_response.size());
+        auto n = net::read(fd1, buf);
+        check_eq(n, static_cast<ptrdiff_t>(expected_response.size()));
+        check_eq(to_str(buf), expected_response);
       }
     }
   }

@@ -1,8 +1,8 @@
 .make-release-steps.bash
 .push-doxygen-steps.bash
-Makefile
 bin/*
 build/*
+.devcontainer/build
 doxygen-log.txt
 html/*
 manual/examples

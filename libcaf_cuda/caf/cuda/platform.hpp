@@ -4,6 +4,9 @@
 #include <vector>
 #include <memory>
 #include <stdexcept>
+#include <mutex>
+#include <utility>
+#include <cuda.h>
 
 #include <caf/intrusive_ptr.hpp>
 #include <caf/actor_system.hpp>
@@ -25,8 +28,6 @@ public:
   template <class T, class... Ts>
   friend intrusive_ptr<T> caf::make_counted(Ts&&...);
 
-  static platform_ptr create(); //singleton method that creates or gets platform
-
 
   const std::string& name() const; 
   const std::string& vendor() const;
@@ -40,26 +41,48 @@ public:
   scheduler* get_scheduler();
 
   //returns the device that a command should use
-  device_ptr schedule(int actor_id);
+  device_ptr schedule(caf::actor_id actor_id);
   //returns the device that a command should used 
-  device_ptr schedule(int actor_id,int device_number);
+  device_ptr schedule(caf::actor_id actor_id,int device_number);
   //releases a stream for an actor
-  void release_streams_for_actor(int actor_id);
+  void release_streams_for_actor(caf::actor_id actor_id);
 
   //returns how many devices are currently on the GPU
   int get_num_devices();
 
+  /// Records a (ctx, module) pair for deferred cleanup at platform shutdown.
+  /// No synchronisation or unloading happens here — ~program() returns
+  /// instantly and never blocks a CAF worker thread.
+  void defer_module_unload(CUcontext ctx, CUmodule module);
+
+  /// Immediately synchronises and unloads all retired modules that have been
+  /// accumulated via defer_module_unload().  This is an optional escape valve
+  /// for applications that dynamically load many different kernels during a
+  /// long run and want to reclaim the (small) GPU memory occupied by module
+  /// code without waiting for platform shutdown.
+  ///
+  /// **Warning:** this calls cuCtxSynchronize + cuModuleUnload for every
+  /// retired module, so it will block until all in-flight GPU work completes.
+  /// Only call this from a point where blocking is acceptable (e.g. between
+  /// computation phases, never from inside a CAF actor handler).
+  void flush_retired_modules();
+
+  std::string name_;
 
 private:
   platform();
   ~platform();
 
-  std::string name_;
   std::string vendor_;
   std::string version_;
   std::vector<device_ptr> devices_;
   std::vector<CUcontext> contexts_;
   std::unique_ptr<scheduler> scheduler_;
+  // Retired modules accumulated by defer_module_unload().  Unloaded either
+  // by an explicit flush_retired_modules() call or in ~platform() when
+  // all GPU work is guaranteed complete (cuCtxDestroy handles the rest).
+  std::mutex                                        retired_modules_mutex_;
+  std::vector<std::pair<CUcontext, CUmodule>>        retired_modules_;
 };
 
 // Intrusive pointer hooks

@@ -69,7 +69,7 @@ using native_socket = io::network::native_socket;
 using default_mpx = io::network::default_multiplexer;
 
 struct ssl_policy {
-  ssl_policy(session_ptr session) : session_(std::move(session)) {
+  explicit ssl_policy(session_ptr session) : session_(std::move(session)) {
     // nop
   }
 
@@ -94,8 +94,8 @@ struct ssl_policy {
     if (result == io::network::invalid_native_socket) {
       auto err = io::network::last_socket_error();
       if (!io::network::would_block_or_temporarily_unavailable(err))
-        CAF_LOG_ERROR(
-          "accept failed:" << io::network::socket_error_as_string(err));
+        log::openssl::error("accept failed: {}",
+                            io::network::socket_error_as_string(err));
       return false;
     }
     io::network::child_process_inherit(result, false);
@@ -152,7 +152,7 @@ public:
 
   void flush() override {
     auto lg = log::openssl::trace("");
-    stream_.flush(this);
+    stream_.flush({this, add_ref});
   }
 
   std::string addr() const override {
@@ -177,7 +177,7 @@ public:
     // This schedules the scribe in case SSL still needs to call SSL_connect
     // or SSL_accept. Otherwise, the backend simply removes the socket for
     // write operations after the first "nop write".
-    stream_.force_empty_write(this);
+    stream_.force_empty_write({this, add_ref});
   }
 
   void add_to_loop() override {
@@ -244,12 +244,12 @@ protected:
     auto lg = log::openssl::trace("host = {}, port = {}", host, port);
     auto fd = io::network::new_tcp_connection(host, port);
     if (!fd)
-      return std::move(fd.error());
+      return expected<io::scribe_ptr>{unexpect, std::move(fd.error())};
     io::network::nonblocking(*fd, true);
     auto sssn = make_session(system(), *fd, false);
     if (!sssn) {
       log::system::error("unable to create SSL session for connection");
-      return sec::cannot_connect_to_node;
+      return expected<io::scribe_ptr>{unexpect, sec::cannot_connect_to_node};
     }
     log::openssl::debug(
       "successfully created an SSL session for: host = {}, port = {}", host,
@@ -262,7 +262,7 @@ protected:
     auto lg = log::openssl::trace("port = {}, reuse = {}", port, reuse);
     auto fd = io::network::new_tcp_acceptor_impl(port, addr, reuse);
     if (!fd)
-      return std::move(fd.error());
+      return expected<io::doorman_ptr>{unexpect, std::move(fd.error())};
     return make_counted<doorman_impl>(mpx(), *fd);
   }
 

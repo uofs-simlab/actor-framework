@@ -6,6 +6,7 @@
 
 #include "caf/detail/core_export.hpp"
 #include "caf/fwd.hpp"
+#include "caf/placement_ptr.hpp"
 #include "caf/save_inspector_base.hpp"
 
 #include <concepts>
@@ -22,7 +23,7 @@ public:
 
   // -- constructors, destructors, and assignment operators --------------------
 
-  stringification_inspector(std::string& result);
+  explicit stringification_inspector(std::string& result);
 
   ~stringification_inspector() override;
 
@@ -85,10 +86,6 @@ public:
 
   bool value(long double x);
 
-  bool value(timespan x);
-
-  bool value(timestamp x);
-
   bool value(std::string_view x);
 
   bool value(void* x);
@@ -111,7 +108,19 @@ public:
 
   template <class Rep, class Period>
   bool builtin_inspect(const std::chrono::duration<Rep, Period> x) {
-    return value(std::chrono::duration_cast<timespan>(x));
+    std::string str;
+    detail::print(str, x);
+    append(str);
+    return true;
+  }
+
+  template <class Duration>
+  bool builtin_inspect(
+    const std::chrono::time_point<std::chrono::system_clock, Duration> x) {
+    std::string str;
+    detail::print(str, x);
+    append(str);
+    return true;
   }
 
   template <class T>
@@ -155,6 +164,20 @@ public:
     return true;
   }
 
+  template <class T>
+  bool builtin_inspect(const caf::expected<T>& x) {
+    if (x.has_value()) {
+      if constexpr (std::is_same_v<T, void>) {
+        append("unit");
+      } else {
+        save(*this, detail::as_mutable_ref(*x));
+      }
+    } else {
+      append("!" + to_string(x.error()));
+    }
+    return true;
+  }
+
   // -- fallbacks --------------------------------------------------------------
 
   template <class T>
@@ -171,15 +194,23 @@ public:
     return true;
   }
 
-private:
-  /// Storage for the implementation object.
-  alignas(std::max_align_t) std::byte impl_[64];
-
   void append(std::string_view str);
 
   bool int_value(int64_t x);
 
   bool int_value(uint64_t x);
+
+private:
+  static constexpr size_t impl_storage_size = 64;
+
+  /// Opaque implementation class.
+  class impl;
+
+  /// Pointer to the implementation object.
+  placement_ptr<impl> impl_;
+
+  /// Storage for the implementation object.
+  alignas(std::max_align_t) std::byte impl_storage_[impl_storage_size];
 };
 
 } // namespace caf::detail

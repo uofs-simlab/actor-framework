@@ -11,6 +11,8 @@
 #include "caf/log/test.hpp"
 #include "caf/scoped_actor.hpp"
 
+#include <algorithm>
+
 using namespace caf;
 using namespace std::literals;
 
@@ -27,7 +29,7 @@ std::atomic<size_t> s_dtors;
 
 class worker : public event_based_actor {
 public:
-  worker(actor_config& cfg) : event_based_actor(cfg) {
+  explicit worker(actor_config& cfg) : event_based_actor(cfg) {
     ++s_ctors;
   }
 
@@ -133,13 +135,13 @@ TEST("round_robin_actor_pool") {
 
 TEST("broadcast_actor_pool") {
   scoped_actor self{sys};
+  check_eq(sys.running_actors_count(), 1u);
   auto spawn5 = [&] {
     return actor_pool::make(sys, 5, fixture::spawn_worker,
                             actor_pool::broadcast());
   };
-  check_eq(sys.registry().running(), 1u);
   auto pool = actor_pool::make(sys, 5, spawn5, actor_pool::broadcast());
-  check_eq(sys.registry().running(), 32u);
+  check_eq(sys.running_actors_count(), 32u);
   self->mail(1, 2).send(pool);
   std::vector<int> results;
   int i = 0;
@@ -147,8 +149,7 @@ TEST("broadcast_actor_pool") {
                            after(std::chrono::milliseconds(250)) >>
                              [this] { fail("didn't receive a result"); });
   check_eq(results.size(), 25u);
-  check(std::all_of(results.begin(), results.end(),
-                    [](int res) { return res == 3; }));
+  check(std::ranges::all_of(results, [](int res) { return res == 3; }));
   self->send_exit(pool, exit_reason::user_shutdown);
 }
 

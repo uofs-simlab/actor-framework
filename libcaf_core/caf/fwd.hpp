@@ -4,7 +4,10 @@
 
 #pragma once
 
+#include "caf/detail/build_config.hpp"
 #include "caf/detail/core_export.hpp"
+#include "caf/error_code_enum.hpp"
+#include "caf/typed_actor_pack.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,8 +15,11 @@
 #include <span>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
+
+#ifdef CAF_USE_STD_EXPECTED
+#  include <expected>
+#endif
 
 namespace caf {
 
@@ -28,10 +34,10 @@ template <class> class basic_cow_string;
 template <class> class callback;
 template <class> class cow_vector;
 template <class> class dictionary;
-template <class> class expected;
 template <class> class function_view;
 template <class> class intrusive_cow_ptr;
 template <class> class intrusive_ptr;
+template <class> class placement_ptr;
 template <class> class typed_stream;
 template <class> class weak_intrusive_ptr;
 
@@ -41,6 +47,11 @@ template <class> struct type_id;
 
 template <uint16_t> struct type_by_id;
 template <uint16_t> struct type_name_by_id;
+
+#ifndef CAF_USE_STD_EXPECTED
+template <class> class unexpected;
+template <class> class expected;
+#endif
 
 // -- 2 param templates --------------------------------------------------------
 
@@ -63,13 +74,16 @@ template <class...> class delegated;
 template <class...> class event_based_delayed_response_handle;
 template <class...> class event_based_response_handle;
 template <class...> class result;
-template <class...> class typed_actor;
-template <class...> class typed_actor_pointer;
-template <class...> class typed_actor_view;
-template <class...> class typed_behavior;
-template <class...> class typed_event_based_actor;
 template <class...> class typed_message_view;
 template <class...> class typed_response_promise;
+
+template <class... Ts> requires typed_actor_pack<Ts...> class typed_actor;
+template <class... Ts> requires typed_actor_pack<Ts...> class typed_actor_pointer;
+template <class... Ts> requires typed_actor_pack<Ts...> class typed_actor_view;
+template <class... Ts> requires typed_actor_pack<Ts...> class typed_behavior;
+template <class... Ts> requires typed_actor_pack<Ts...> class typed_event_based_actor;
+
+template <class, class...> class event_based_fan_out_response_handle;
 
 // clang-format on
 
@@ -128,6 +142,7 @@ class message_handler;
 class message_id;
 class node_id;
 class node_id_data;
+class console_printer;
 class proxy_registry;
 class ref_counted;
 class response_promise;
@@ -138,6 +153,7 @@ class serializer;
 class skip_t;
 class skippable_result;
 class stream;
+class thread_hook;
 class type_id_list;
 class uri;
 class uri_builder;
@@ -150,6 +166,8 @@ class stateful_actor;
 
 // -- structs ------------------------------------------------------------------
 
+struct add_ref_t;
+struct adopt_ref_t;
 struct down_msg;
 struct dynamically_typed;
 struct exit_msg;
@@ -169,24 +187,14 @@ struct stream_open_msg;
 struct timeout_msg;
 struct unit_t;
 
-// -- free template functions --------------------------------------------------
-
-template <class T>
-config_option make_config_option(std::string_view category,
-                                 std::string_view name,
-                                 std::string_view description);
-
-template <class T>
-config_option make_config_option(T& storage, std::string_view category,
-                                 std::string_view name,
-                                 std::string_view description);
-
 // -- enums --------------------------------------------------------------------
 
 enum class exit_reason : uint8_t;
 enum class invoke_message_result;
 enum class pec : uint8_t;
 enum class sec : uint8_t;
+enum class spawn_options : int;
+enum class term;
 enum class thread_owner;
 
 // -- aliases ------------------------------------------------------------------
@@ -204,10 +212,30 @@ using ip_subnet = ipv6_subnet;
 using settings = dictionary<config_value>;
 using type_id_t = uint16_t;
 
+#ifdef CAF_USE_STD_EXPECTED
+template <class E>
+using unexpected = std::unexpected<E>;
+
+template <class T>
+using expected = std::expected<T, error>;
+#endif
+
 // -- functions ----------------------------------------------------------------
 
 /// @relates actor_system_config
 CAF_CORE_EXPORT const settings& content(const actor_system_config&);
+
+// -- free template functions --------------------------------------------------
+
+template <class T>
+config_option make_config_option(std::string_view category,
+                                 std::string_view name,
+                                 std::string_view description);
+
+template <class T>
+config_option make_config_option(T& storage, std::string_view category,
+                                 std::string_view name,
+                                 std::string_view description);
 
 // -- hash inspectors ----------------------------------------------------------
 
@@ -271,16 +299,6 @@ using int_gauge_family = metric_family_impl<int_gauge>;
 
 } // namespace telemetry
 
-namespace detail {
-
-struct make_actor_util;
-
-class actor_system_access;
-class actor_system_config_access;
-class mailbox_factory;
-
-} // namespace detail
-
 // -- I/O classes --------------------------------------------------------------
 
 namespace io {
@@ -322,6 +340,14 @@ using event_ptr = intrusive_ptr<event>;
 
 } // namespace log
 
+// -- CUDA classes -------------------------------------------------------------
+
+namespace cuda {
+
+class manager;
+
+} // namespace cuda
+
 // -- OpenSSL classes ----------------------------------------------------------
 
 namespace openssl {
@@ -334,16 +360,22 @@ class manager;
 
 namespace detail {
 
+struct make_actor_util;
+struct meta_object;
+
 class abstract_worker;
 class abstract_worker_hub;
+class actor_system_access;
+class actor_system_config_access;
+class asynchronous_logger;
 class disposer;
 class dynamic_message_data;
+class mailbox_factory;
 class message_data;
 class private_thread;
+class response_promise_state;
 class stream_bridge;
 class stream_bridge_sub;
-
-struct meta_object;
 
 // enable intrusive_cow_ptr<dynamic_message_data> with forward declaration only
 CAF_CORE_EXPORT void intrusive_ptr_add_ref(const dynamic_message_data*);
@@ -361,6 +393,7 @@ using weak_actor_ptr = weak_intrusive_ptr<actor_control_block>;
 
 // -- intrusive pointer aliases ------------------------------------------------
 
+using resumable_ptr = intrusive_ptr<resumable>;
 using strong_actor_ptr = intrusive_ptr<actor_control_block>;
 
 // -- unique pointer aliases ---------------------------------------------------

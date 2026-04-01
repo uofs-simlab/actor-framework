@@ -86,7 +86,7 @@ public:
 
   transport_impl& operator=(const transport_impl&) = delete;
 
-  ~transport_impl() {
+  ~transport_impl() override {
     // nop
   }
 
@@ -149,7 +149,6 @@ public:
       parent_->shutdown();
     } else {
       configure_read(receive_policy::stop());
-      parent_->deregister_reading();
       flags_.shutting_down = true;
     }
   }
@@ -319,7 +318,8 @@ public:
   }
 
   void abort(const error& reason) override {
-    up_->abort(reason);
+    if (up_)
+      up_->abort(reason);
     flags_.shutting_down = true;
   }
 
@@ -340,7 +340,7 @@ protected:
       // Switch to the new protocol and initialize it.
       configure_read(receive_policy::stop());
       up_.reset(next_.release());
-      if (auto err = up_->start(this)) {
+      if (auto err = up_->start(this); err.valid()) {
         up_.reset();
         parent_->deregister();
         parent_->shutdown();
@@ -355,18 +355,24 @@ protected:
       auto delta = bytes.subspan(delta_offset_);
       auto consumed = up_->consume(bytes, delta);
       if (consumed < 0) {
-        // Negative values indicate that the application wants to close the
-        // socket. We still make sure to send any pending data before closing.
-        up_->abort(make_error(caf::sec::runtime_error, "consumed < 0"));
-        parent_->deregister_reading();
+        // Negative values indicate that the upper layer wants to close the
+        // connection. The upper layer has already performed its shutdown logic
+        // (e.g., WebSocket framing sends a close frame and calls
+        // down_->shutdown() before returning). Calling up_->abort() here would
+        // cause protocols like WebSocket to send a duplicate close frame. We
+        // only need to propagate the shutdown to flush the write buffer and
+        // close.
+        shutdown();
         return;
-      } else if (static_cast<size_t>(consumed) > n) {
+      }
+      if (static_cast<size_t>(consumed) > n) {
         // Must not happen. An application cannot handle more data then we pass
         // to it.
         up_->abort(make_error(sec::logic_error, "consumed > buffer.size"));
-        parent_->deregister_reading();
+        shutdown();
         return;
-      } else if (consumed == 0) {
+      }
+      if (consumed == 0) {
         if (next_) {
           // When switching protocol, the new layer has never seen the data, so
           // we might just re-invoke the same data again.
@@ -397,11 +403,17 @@ protected:
 
   /// Calls abort on the upper layer and deregisters the transport from events.
   void fail(const error& reason) {
-    auto lg = log::net::trace("reason = {}", reason);
-    up_->abort(reason);
-    up_.reset();
-    parent_->deregister();
-    parent_->shutdown();
+    // Repeated calls to fail are ignored.
+    if (up_) {
+      log::net::debug("transport failed with reason: {}", reason);
+      up_->abort(reason);
+      up_.reset();
+      // Clear the write buffer since we can't send it anyway - this ensures
+      // finalized() returns true and cleanup() will be called.
+      write_buf_.clear();
+      parent_->deregister();
+      parent_->shutdown();
+    }
   }
 
   // -- member variables -------------------------------------------------------

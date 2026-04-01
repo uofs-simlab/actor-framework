@@ -9,7 +9,7 @@
 #include "caf/binary_deserializer.hpp"
 #include "caf/binary_serializer.hpp"
 #include "caf/default_attachable.hpp"
-#include "caf/detail/glob_match.hpp"
+#include "caf/detail/actor_system_access.hpp"
 #include "caf/disposable.hpp"
 #include "caf/exit_reason.hpp"
 #include "caf/log/core.hpp"
@@ -23,43 +23,14 @@
 #include "caf/telemetry/metric_family.hpp"
 #include "caf/telemetry/metric_family_impl.hpp"
 
+#include <algorithm>
 #include <condition_variable>
 #include <string>
 
 namespace caf {
 
-namespace {
-
-local_actor::metrics_t make_instance_metrics(actor_system& sys,
-                                             local_actor* self,
-                                             std::string_view name) {
-  const auto& includes = sys.metrics_actors_includes();
-  const auto& excludes = sys.metrics_actors_excludes();
-  auto matches = [name](const std::string& glob) {
-    // Note: name.data() is guaranteed to be null-terminated in this case.
-    return detail::glob_match(name.data(), glob.c_str());
-  };
-  if (includes.empty()
-      || std::none_of(includes.begin(), includes.end(), matches)
-      || std::any_of(excludes.begin(), excludes.end(), matches))
-    return {
-      nullptr,
-      nullptr,
-      nullptr,
-    };
-  self->setf(abstract_actor::collects_metrics_flag);
-  const auto& families = sys.actor_metric_families();
-  return {
-    families.processing_time->get_or_add({{"name", name}}),
-    families.mailbox_time->get_or_add({{"name", name}}),
-    families.mailbox_size->get_or_add({{"name", name}}),
-  };
-}
-
-} // namespace
-
 local_actor::local_actor(actor_config& cfg)
-  : abstract_actor(cfg),
+  : abstract_actor(cfg.add_flag(is_local_actor_flag)),
     context_(cfg.sched),
     current_element_(nullptr),
     initial_behavior_fac_(std::move(cfg.init_fun)) {
@@ -71,14 +42,10 @@ local_actor::~local_actor() {
 }
 
 void local_actor::setup_metrics() {
-  auto& sys = home_system();
-  auto nstr = std::string_view{name()};
-  if (sys.collect_running_actors_metrics()) {
-    running_count_
-      = sys.running_actors_metric_family()->get_or_add({{"name", nstr}});
-    running_count_->inc();
+  metrics_ = system().make_actor_metrics(name());
+  if (auto* running_count = metrics_.running_count) {
+    running_count->inc();
   }
-  metrics_ = make_instance_metrics(sys, this, nstr);
 }
 
 auto local_actor::now() const noexcept -> clock_type::time_point {
@@ -92,7 +59,7 @@ disposable local_actor::request_response_timeout(timespan timeout,
     return {};
   auto t = clock().now() + timeout;
   return clock().schedule_message(
-    t, strong_actor_ptr{ctrl()},
+    t, strong_actor_ptr{ctrl(), add_ref},
     make_mailbox_element(nullptr, mid.response_id(),
                          make_error(sec::request_timeout)));
 }
@@ -116,7 +83,7 @@ void local_actor::do_demonitor(const strong_actor_ptr& whom) {
   if (whom) {
     default_attachable::observe_token tk{address(),
                                          default_attachable::monitor};
-    whom->get()->detach(tk);
+    whom->get()->detach(attachable::token{tk});
   }
 }
 
@@ -150,63 +117,27 @@ const char* local_actor::name() const {
   return "user.local-actor";
 }
 
-error local_actor::save_state(serializer&, const unsigned int) {
-  CAF_RAISE_ERROR("local_actor::serialize called");
-}
-
-error local_actor::load_state(deserializer&, const unsigned int) {
-  CAF_RAISE_ERROR("local_actor::deserialize called");
-}
-
 void local_actor::do_delegate_error() {
   auto& sender = current_element_->sender;
   auto& mid = current_element_->mid;
   if (!sender || mid.is_response() || mid.is_answered())
     return;
-  sender->enqueue(make_mailbox_element(ctrl(), mid.response_id(),
+  sender->enqueue(make_mailbox_element({ctrl(), add_ref}, mid.response_id(),
                                        make_error(sec::invalid_delegate)),
                   context());
   mid.mark_as_answered();
 }
 
-void local_actor::initialize() {
-  auto lg = log::core::trace("id = {}, name = {}", id(), name());
-}
-
 void local_actor::on_cleanup([[maybe_unused]] const error& reason) {
   auto lg = log::core::trace("reason = {}", reason);
-  if (running_count_) {
-    running_count_->dec();
+  if (auto* running_count = metrics_.running_count) {
+    running_count->dec();
   }
   on_exit();
   CAF_LOG_TERMINATE_EVENT(this, reason);
 }
 
 // -- send functions -----------------------------------------------------------
-
-void local_actor::do_send(abstract_actor* receiver, message_priority priority,
-                          message&& msg) {
-  if (receiver != nullptr) {
-    auto item = make_mailbox_element(ctrl(), make_message_id(priority),
-                                     std::move(msg));
-    receiver->enqueue(std::move(item), context());
-    return;
-  }
-  system().base_metrics().rejected_messages->inc();
-}
-
-disposable local_actor::do_scheduled_send(strong_actor_ptr receiver,
-                                          message_priority priority,
-                                          actor_clock::time_point timeout,
-                                          message&& msg) {
-  if (receiver != nullptr) {
-    auto item = make_mailbox_element(ctrl(), make_message_id(priority),
-                                     std::move(msg));
-    return clock().schedule_message(timeout, receiver, std::move(item));
-  }
-  system().base_metrics().rejected_messages->inc();
-  return {};
-}
 
 void local_actor::do_anon_send(abstract_actor* receiver,
                                message_priority priority, message&& msg) {
@@ -216,7 +147,7 @@ void local_actor::do_anon_send(abstract_actor* receiver,
                       context());
     return;
   }
-  system().base_metrics().rejected_messages->inc();
+  detail::actor_system_access{system()}.message_rejected(nullptr);
 }
 
 disposable local_actor::do_scheduled_anon_send(strong_actor_ptr receiver,
@@ -228,8 +159,14 @@ disposable local_actor::do_scheduled_anon_send(strong_actor_ptr receiver,
       timeout, receiver,
       make_mailbox_element(nullptr, make_message_id(priority), std::move(msg)));
   }
-  system().base_metrics().rejected_messages->inc();
+  detail::actor_system_access{system()}.message_rejected(nullptr);
   return {};
+}
+
+// -- miscellaneous ------------------------------------------------------------
+
+resumable* local_actor::as_resumable() noexcept {
+  return nullptr;
 }
 
 } // namespace caf

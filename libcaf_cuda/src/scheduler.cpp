@@ -12,7 +12,8 @@ mem_ptr<T> scheduler::transfer_mem_ref(const mem_ptr<T>& src,
                                        device_ptr target_device) {
   if (src->is_scalar()) {
     return mem_ptr<T>(new mem_ref<T>(src->host_scalar_ptr()[0], src->access(),
-                                     target_device->getId(), 0, nullptr));
+                                     target_device->getId(), 0, nullptr),
+                      caf::add_ref);
   }
 
   auto host_data = src->copy_to_host();
@@ -25,7 +26,8 @@ mem_ptr<T> scheduler::transfer_mem_ref(const mem_ptr<T>& src,
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
 
   return mem_ptr<T>(new mem_ref<T>(src->size(), new_mem, src->access(),
-                                   target_device->getId(), 0, nullptr));
+                                   target_device->getId(), 0, nullptr),
+                    caf::add_ref);
 }
 
 // ---------------------- single_device_scheduler ----------------------
@@ -34,14 +36,14 @@ void single_device_scheduler::set_devices(const std::vector<device_ptr>& devices
   devices_ = devices;
 }
 
-device_ptr single_device_scheduler::schedule([[maybe_unused]] int actor_id) {
+device_ptr single_device_scheduler::schedule([[maybe_unused]] caf::actor_id actor_id) {
   if (devices_.empty()) {
     throw std::runtime_error("No devices available");
   }
   return devices_[0];
 }
 
-device_ptr single_device_scheduler::schedule([[maybe_unused]] int actor_id,
+device_ptr single_device_scheduler::schedule([[maybe_unused]] caf::actor_id actor_id,
                                              [[maybe_unused]] int device_number) {
   if (devices_.empty()) {
     throw std::runtime_error("No devices available");
@@ -49,7 +51,7 @@ device_ptr single_device_scheduler::schedule([[maybe_unused]] int actor_id,
   return devices_[0];
 }
 
-void single_device_scheduler::getStreamAndContext(int actor_id, CUcontext* context,
+void single_device_scheduler::getStreamAndContext(caf::actor_id actor_id, CUcontext* context,
                                                   CUstream* stream) {
   auto dev = schedule(actor_id);
   *context = dev->getContext();
@@ -66,7 +68,7 @@ void multi_device_scheduler::set_devices(const std::vector<device_ptr>& devices)
   devices_ = devices;
 }
 
-device_ptr multi_device_scheduler::schedule([[maybe_unused]] int actor_id) {
+device_ptr multi_device_scheduler::schedule([[maybe_unused]] caf::actor_id actor_id) {
   if (devices_.empty()) {
     throw std::runtime_error("No devices available");
   }
@@ -75,7 +77,7 @@ device_ptr multi_device_scheduler::schedule([[maybe_unused]] int actor_id) {
   return devices_[device_index];
 }
 
-device_ptr multi_device_scheduler::schedule([[maybe_unused]] int actor_id,
+device_ptr multi_device_scheduler::schedule([[maybe_unused]] caf::actor_id actor_id,
                                             int device_number) {
   if (devices_.empty()) {
     throw std::runtime_error("No devices available");
@@ -85,7 +87,7 @@ device_ptr multi_device_scheduler::schedule([[maybe_unused]] int actor_id,
   return devices_[device_index];
 }
 
-void multi_device_scheduler::getStreamAndContext(int actor_id, CUcontext* context,
+void multi_device_scheduler::getStreamAndContext(caf::actor_id actor_id, CUcontext* context,
                                                  CUstream* stream) {
   auto dev = schedule(actor_id);
   *context = dev->getContext();

@@ -12,6 +12,7 @@
 #include "caf/detail/beacon.hpp"
 #include "caf/disposable.hpp"
 #include "caf/error.hpp"
+#include "caf/expected.hpp"
 #include "caf/flow/observable.hpp"
 #include "caf/flow/op/cell.hpp"
 #include "caf/sec.hpp"
@@ -54,7 +55,7 @@ public:
       }
     };
     auto cb_action = make_single_shot_action(std::move(cb));
-    if (!cell_->subscribe(ctx_, cb_action))
+    if (!cell_->subscribe({ctx_, add_ref}, cb_action))
       ctx_->schedule(cb_action);
     auto res = std::move(cb_action).as_disposable();
     ctx_->watch(res);
@@ -154,14 +155,14 @@ public:
     std::unique_lock guard{cell_->mtx};
     switch (cell_->value.index()) {
       default:
-        return res_t{sec::broken_promise};
+        return res_t{unexpect, sec::broken_promise};
       case 1:
         if constexpr (std::is_void_v<T>)
           return res_t{};
         else
           return res_t{std::get<T>(cell_->value)};
       case 2:
-        return res_t{std::get<error>(cell_->value)};
+        return res_t{unexpect, std::get<error>(cell_->value)};
     }
   }
 
@@ -174,14 +175,14 @@ public:
     std::unique_lock guard{cell_->mtx};
     switch (cell_->value.index()) {
       default:
-        return res_t{make_error(sec::future_timeout)};
+        return res_t{unexpect, sec::future_timeout};
       case 1:
         if constexpr (std::is_void_v<T>)
           return res_t{};
         else
           return res_t{std::get<T>(cell_->value)};
       case 2:
-        return res_t{std::get<error>(cell_->value)};
+        return res_t{unexpect, std::get<error>(cell_->value)};
     }
   }
 

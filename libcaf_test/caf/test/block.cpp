@@ -12,7 +12,7 @@
 namespace caf::test {
 
 block::block(context* ctx, int id, std::string_view description,
-             const detail::source_location& loc)
+             const std::source_location& loc)
   : ctx_(ctx), id_(id), raw_description_(description), loc_(loc) {
   // nop
 }
@@ -37,45 +37,43 @@ void block::on_leave() {
 
 bool block::can_run() const noexcept {
   auto pred = [](const auto* nested) { return nested->can_run(); };
-  return !executed_ || std::any_of(nested_.begin(), nested_.end(), pred);
+  return !executed_ || std::ranges::any_of(nested_, pred);
 }
 
 section* block::get_section(int, std::string_view,
-                            const detail::source_location& loc) {
+                            const std::source_location& loc) {
   nesting_error::raise_not_allowed(type(), block_type::section, loc);
 }
 
 given* block::get_given(int, std::string_view,
-                        const detail::source_location& loc) {
+                        const std::source_location& loc) {
   nesting_error::raise_not_allowed(type(), block_type::given, loc);
 }
 
 and_given* block::get_and_given(int, std::string_view,
-                                const detail::source_location& loc) {
+                                const std::source_location& loc) {
   nesting_error::raise_not_allowed(type(), block_type::given, loc);
 }
 
-when* block::get_when(int, std::string_view,
-                      const detail::source_location& loc) {
+when* block::get_when(int, std::string_view, const std::source_location& loc) {
   nesting_error::raise_not_allowed(type(), block_type::when, loc);
 }
 
 and_when* block::get_and_when(int, std::string_view,
-                              const detail::source_location& loc) {
+                              const std::source_location& loc) {
   nesting_error::raise_not_allowed(type(), block_type::and_when, loc);
 }
 
-then* block::get_then(int, std::string_view,
-                      const detail::source_location& loc) {
+then* block::get_then(int, std::string_view, const std::source_location& loc) {
   nesting_error::raise_not_allowed(type(), block_type::then, loc);
 }
 
 and_then* block::get_and_then(int, std::string_view,
-                              const detail::source_location& loc) {
+                              const std::source_location& loc) {
   nesting_error::raise_not_allowed(type(), block_type::and_then, loc);
 }
 
-but* block::get_but(int, std::string_view, const detail::source_location& loc) {
+but* block::get_but(int, std::string_view, const std::source_location& loc) {
   nesting_error::raise_not_allowed(type(), block_type::but, loc);
 }
 
@@ -87,7 +85,7 @@ std::unique_ptr<block>& block::get_nested_or_construct(int id) {
 
 namespace {
 
-enum class cpy_state {
+enum class copy_state {
   verbatim,
   start_name,
   read_name,
@@ -109,41 +107,41 @@ void block::lazy_init() {
     return;
   }
   std::string parameter_name;
-  auto state = cpy_state::verbatim;
+  auto state = copy_state::verbatim;
   for (auto c : raw_description_) {
     switch (state) {
-      default: // cpy_state::verbatim:
+      default: // copy_state::verbatim:
         switch (c) {
           case '<':
-            state = cpy_state::start_name;
+            state = copy_state::start_name;
             break;
           default:
             description_ += c;
             break;
         }
         break;
-      case cpy_state::start_name:
+      case copy_state::start_name:
         switch (c) {
           case ' ':
           case '>':
             description_ += '<';
             description_ += c;
-            state = cpy_state::verbatim;
+            state = copy_state::verbatim;
             break;
           default:
             parameter_name.clear();
             parameter_name += c;
-            state = cpy_state::read_name;
+            state = copy_state::read_name;
             break;
         }
         break;
-      case cpy_state::read_name:
+      case copy_state::read_name:
         switch (c) {
           case '>':
             description_ += ctx_->parameter(parameter_name);
             parameter_names_.push_back(std::move(parameter_name));
             parameter_name.clear();
-            state = cpy_state::verbatim;
+            state = copy_state::verbatim;
             break;
           default:
             parameter_name += c;

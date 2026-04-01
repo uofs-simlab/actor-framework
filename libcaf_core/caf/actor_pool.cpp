@@ -7,6 +7,7 @@
 #include "caf/anon_mail.hpp"
 #include "caf/default_attachable.hpp"
 #include "caf/detail/assert.hpp"
+#include "caf/detail/current_actor.hpp"
 #include "caf/detail/sync_request_bouncer.hpp"
 #include "caf/mailbox_element.hpp"
 
@@ -80,10 +81,12 @@ actor_pool::~actor_pool() {
 }
 
 actor actor_pool::make(actor_system& sys, policy pol) {
-  actor_config cfg{&sys.scheduler()};
+  actor_config cfg{no_spawn_options, &sys.scheduler()};
   auto res = make_actor<actor_pool, actor>(sys.next_actor_id(), sys.node(),
                                            &sys, cfg);
   auto ptr = actor_cast<actor_pool*>(res);
+  ptr->setf(abstract_actor::is_registered_flag);
+  sys.inc_running_actors_count(ptr->id());
   ptr->policy_ = std::move(pol);
   return res;
 }
@@ -112,7 +115,7 @@ bool actor_pool::enqueue(mailbox_element_ptr what, scheduler* sched) {
 
 actor_pool::actor_pool(actor_config& cfg)
   : abstract_actor(cfg), planned_reason_(exit_reason::normal) {
-  register_at_system();
+  // nop
 }
 
 const char* actor_pool::name() const {
@@ -120,7 +123,7 @@ const char* actor_pool::name() const {
 }
 
 void actor_pool::on_cleanup([[maybe_unused]] const error& reason) {
-  CAF_PUSH_AID_FROM_PTR(this);
+  detail::current_actor_guard ctx_guard{this};
   CAF_LOG_TERMINATE_EVENT(this, reason);
 }
 
@@ -138,7 +141,6 @@ bool actor_pool::filter(guard_type& guard, const strong_actor_ptr& sender,
       guard.unlock();
       for (auto& w : workers)
         anon_mail(content).send(w);
-      unregister_from_system();
     }
     return true;
   }
@@ -147,7 +149,9 @@ bool actor_pool::filter(guard_type& guard, const strong_actor_ptr& sender,
     const auto& dm = get<0>(view);
     auto last = workers_.end();
     auto i = std::find(workers_.begin(), workers_.end(), dm.source);
-    CAF_LOG_DEBUG_IF(i == last, "received down message for an unknown worker");
+    if (i == last) {
+      log::core::debug("received down message for an unknown worker");
+    }
     if (i != last)
       workers_.erase(i);
     if (workers_.empty()) {
@@ -173,7 +177,7 @@ bool actor_pool::filter(guard_type& guard, const strong_actor_ptr& sender,
     if (i != last) {
       default_attachable::observe_token tk{address(),
                                            default_attachable::monitor};
-      what->detach(tk);
+      what->detach(attachable::token{tk});
       workers_.erase(i);
     }
     return true;
@@ -182,16 +186,16 @@ bool actor_pool::filter(guard_type& guard, const strong_actor_ptr& sender,
     for (auto& worker : workers_) {
       default_attachable::observe_token tk{address(),
                                            default_attachable::monitor};
-      worker->detach(tk);
+      worker->detach(attachable::token{tk});
     }
     workers_.clear();
     return true;
   }
   if (content.match_elements<sys_atom, get_atom>()) {
-    auto cpy = workers_;
+    auto copy = workers_;
     guard.unlock();
     sender->enqueue(
-      make_mailbox_element(nullptr, mid.response_id(), std::move(cpy)), sched);
+      make_mailbox_element(nullptr, mid.response_id(), std::move(copy)), sched);
     return true;
   }
   if (workers_.empty()) {
@@ -210,8 +214,7 @@ bool actor_pool::filter(guard_type& guard, const strong_actor_ptr& sender,
 void actor_pool::quit(scheduler* sched) {
   // we can safely run our cleanup code here without holding
   // workers_mtx_ because abstract_actor has its own lock
-  if (cleanup(planned_reason_, sched))
-    unregister_from_system();
+  cleanup(planned_reason_, sched);
 }
 
 void actor_pool::force_close_mailbox() {

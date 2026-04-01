@@ -5,11 +5,14 @@
 #include "caf/net/lp/with.hpp"
 
 #include "caf/net/lp/framing.hpp"
+#include "caf/net/middleman.hpp"
 #include "caf/net/multiplexer.hpp"
 #include "caf/net/socket_manager.hpp"
 
+#include "caf/actor_system.hpp"
 #include "caf/chunk.hpp"
 #include "caf/detail/connection_acceptor.hpp"
+#include "caf/detail/critical.hpp"
 #include "caf/flow/observable.hpp"
 #include "caf/flow/op/mcast.hpp"
 #include "caf/internal/accept_handler.hpp"
@@ -38,8 +41,9 @@ public:
     // nop
   }
 
-  error start(net::socket_manager* parent) override {
+  error start(net::socket_manager* parent, action on_conn_close) override {
     parent_ = parent;
+    on_conn_close_ = std::move(on_conn_close);
     mcast_ = parent->add_child(std::in_place_type<flow::op::mcast<event_type>>);
     flow::observable<event_type>{mcast_}.subscribe(events_);
     return none;
@@ -58,16 +62,18 @@ public:
 
   expected<net::socket_manager_ptr> try_accept() override {
     if (!mcast_ || !mcast_->has_observers())
-      return make_error(sec::runtime_error, "client has disconnected");
+      return expected<net::socket_manager_ptr>{unexpect, sec::runtime_error,
+                                               "client has disconnected"};
     // Accept a new connection.
     auto conn = accept(acceptor_);
     if (!conn)
-      return conn.error();
+      return expected<net::socket_manager_ptr>{unexpect,
+                                               std::move(conn.error())};
     // Create socket-to-application and application-to-socket buffers.
     auto [s2a_pull, s2a_push] = async::make_spsc_buffer_resource<chunk>();
     auto [a2s_pull, a2s_push] = async::make_spsc_buffer_resource<chunk>();
     // Push buffers to the client.
-    mcast_->push_all(event_type{std::move(s2a_pull), std::move(a2s_push)});
+    mcast_->push(event_type{std::move(s2a_pull), std::move(a2s_push)});
     // Create the flow bridge.
     auto bridge = internal::make_lp_flow_bridge(std::move(a2s_pull),
                                                 std::move(s2a_push));
@@ -77,7 +83,10 @@ public:
                                               std::move(impl));
     transport->max_consecutive_reads(max_consecutive_reads_);
     transport->active_policy().accept();
-    return net::socket_manager::make(parent_->mpx_ptr(), std::move(transport));
+    auto res = net::socket_manager::make(parent_->mpx_ptr(),
+                                         std::move(transport));
+    res->add_cleanup_listener(on_conn_close_);
+    return res;
   }
 
 private:
@@ -94,6 +103,8 @@ private:
   size_t max_message_size_;
 
   size_field_type size_type_;
+
+  action on_conn_close_;
 };
 
 } // namespace
@@ -117,8 +128,9 @@ public:
     auto ptr = net::socket_manager::make(mpx, std::move(handler));
     if (mpx->start(ptr))
       return expected<disposable>{disposable{std::move(ptr)}};
-    return make_error(sec::logic_error,
-                      "failed to register socket manager to net::multiplexer");
+    return expected<disposable>{
+      unexpect, sec::logic_error,
+      "failed to register socket manager to net::multiplexer"};
   }
 
   expected<disposable> start_server_impl(net::ssl::tcp_acceptor& acc) override {
@@ -139,8 +151,9 @@ public:
     auto ptr = socket_manager::make(mpx, std::move(transport));
     if (mpx->start(ptr))
       return expected<disposable>{disposable{std::move(ptr)}};
-    return make_error(sec::logic_error,
-                      "failed to register socket manager to net::multiplexer");
+    return expected<disposable>{
+      unexpect, sec::logic_error,
+      "failed to register socket manager to net::multiplexer"};
   }
 
   expected<disposable> start_client_impl(net::ssl::connection& conn) override {
@@ -152,8 +165,8 @@ public:
   }
 
   expected<disposable> start_client_impl(uri&) override {
-    // Connecting via URI is not supported in the `with` interface.
-    CAF_CRITICAL("Unreachable");
+    detail::critical("connecting via URI is not supported in the `with` "
+                     "interface for the length-prefix framing protocol");
   }
 
   // State for servers.
@@ -204,10 +217,10 @@ void with_t::server::do_monitor(strong_actor_ptr ptr) {
 
 expected<disposable> with_t::server::do_start(push_t push) {
   // Handle an error that could've been created by the DSL during server setup.
-  if (config_->err) {
+  if (config_->err.valid()) {
     if (config_->on_error)
       (*config_->on_error)(config_->err);
-    return config_->err;
+    return expected<disposable>{unexpect, config_->err};
   }
   config_->server_push = std::move(push);
   return config_->start_server();
@@ -240,10 +253,10 @@ with_t::client&& with_t::client::max_retry_count(size_t value) && {
 
 expected<disposable> with_t::client::do_start(pull_t pull, push_t push) {
   // Handle an error that could've been created by the DSL during client setup.
-  if (config_->err) {
+  if (config_->err.valid()) {
     if (config_->on_error)
       (*config_->on_error)(config_->err);
-    return config_->err;
+    return expected<disposable>{unexpect, config_->err};
   }
   config_->client_pull = std::move(pull);
   config_->client_push = std::move(push);
@@ -257,7 +270,7 @@ with_t with(multiplexer* mpx) {
 }
 
 with_t with(actor_system& sys) {
-  return with(multiplexer::from(sys));
+  return with(sys.network_manager().mpx_ptr());
 }
 
 with_t::with_t(multiplexer* mpx) : config_(new config_impl(mpx)) {
@@ -280,7 +293,7 @@ with_t&& with_t::context(ssl::context ctx) && {
 with_t&& with_t::context(expected<ssl::context> ctx) && {
   if (ctx) {
     config_->ctx = std::make_shared<ssl::context>(std::move(*ctx));
-  } else if (ctx.error()) {
+  } else if (ctx.error().valid()) {
     config_->err = std::move(ctx.error());
   }
   return std::move(*this);

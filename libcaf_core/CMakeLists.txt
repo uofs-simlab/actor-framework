@@ -69,6 +69,7 @@ caf_add_component(
     ${CAF_CORE_HEADERS}
   SOURCES
     caf/abstract_actor.cpp
+    caf/abstract_actor.test.cpp
     caf/abstract_blocking_actor.cpp
     caf/abstract_mailbox.cpp
     caf/abstract_scheduled_actor.cpp
@@ -81,9 +82,11 @@ caf_add_component(
     caf/actor_companion.cpp
     caf/actor_companion.test.cpp
     caf/actor_config.cpp
+    caf/actor_config.test.cpp
     caf/actor_control_block.cpp
     caf/actor_factory.test.cpp
     caf/actor_from_state.test.cpp
+    caf/actor_launcher.cpp
     caf/actor_pool.cpp
     caf/actor_pool.test.cpp
     caf/actor_proxy.cpp
@@ -104,6 +107,8 @@ caf_add_component(
     caf/async/consumer_adapter.test.cpp
     caf/async/execution_context.cpp
     caf/async/file.test.cpp
+    caf/async/mock_consumer.test.cpp
+    caf/async/mock_producer.test.cpp
     caf/async/producer.cpp
     caf/async/producer_adapter.test.cpp
     caf/async/promise.test.cpp
@@ -146,10 +151,12 @@ caf_add_component(
     caf/detached_actors.test.cpp
     caf/detail/abstract_worker.cpp
     caf/detail/abstract_worker_hub.cpp
-    caf/detail/actor_system_access.cpp
-    caf/detail/actor_system_config_access.cpp
+    caf/detail/actor_system_impl.cpp
     caf/detail/aligned_alloc.cpp
     caf/detail/assert.cpp
+    caf/detail/asynchronous_actor_clock.cpp
+    caf/detail/asynchronous_actor_clock.test.cpp
+    caf/detail/asynchronous_logger.cpp
     caf/detail/atomic_ref_counted.cpp
     caf/detail/base64.cpp
     caf/detail/base64.test.cpp
@@ -160,24 +167,27 @@ caf_add_component(
     caf/detail/blocking_behavior.cpp
     caf/detail/bounds_checker.test.cpp
     caf/detail/cleanup_and_release.cpp
+    caf/detail/cleanup_and_release.test.cpp
     caf/detail/config_consumer.cpp
     caf/detail/config_consumer.test.cpp
+    caf/detail/counted_disposable.cpp
+    caf/detail/counted_disposable.test.cpp
     caf/detail/critical.cpp
+    caf/detail/current_actor.cpp
     caf/detail/daemons.cpp
     caf/detail/default_mailbox.cpp
     caf/detail/default_mailbox.test.cpp
     caf/detail/default_thread_count.cpp
     caf/detail/format.test.cpp
     caf/detail/get_process_id.cpp
-    caf/detail/glob_match.cpp
     caf/detail/ieee_754.test.cpp
     caf/detail/invoke_result_visitor.cpp
     caf/detail/json.cpp
-    caf/detail/latch.cpp
-    caf/detail/latch.test.cpp
     caf/detail/log_level_map.cpp
     caf/detail/log_level_map.test.cpp
     caf/detail/mailbox_factory.cpp
+    caf/detail/match_wildcard_pattern.cpp
+    caf/detail/match_wildcard_pattern.test.cpp
     caf/detail/mbr_list.test.cpp
     caf/detail/message_builder_element.cpp
     caf/detail/message_data.cpp
@@ -202,6 +212,7 @@ caf_add_component(
     caf/detail/private_thread.cpp
     caf/detail/private_thread_pool.cpp
     caf/detail/private_thread_pool.test.cpp
+    caf/detail/response_promise_state.cpp
     caf/detail/rfc3629.cpp
     caf/detail/rfc3629.test.cpp
     caf/detail/ring_buffer.test.cpp
@@ -224,7 +235,6 @@ caf_add_component(
     caf/event_based_actor.test.cpp
     caf/event_based_mail.test.cpp
     caf/exit_reason.test.cpp
-    caf/expected.test.cpp
     caf/flow/byte.test.cpp
     caf/flow/combine_latest.test.cpp
     caf/flow/concat_map.test.cpp
@@ -238,8 +248,9 @@ caf_add_component(
     caf/flow/observable.test.cpp
     caf/flow/observable_builder.cpp
     caf/flow/observe_on.test.cpp
+    caf/flow/op/auto_connect.test.cpp
     caf/flow/op/buffer.test.cpp
-    caf/flow/op/on_error_resume_next.test.cpp
+    caf/flow/op/cache.test.cpp
     caf/flow/op/cell.test.cpp
     caf/flow/op/concat.test.cpp
     caf/flow/op/debounce.test.cpp
@@ -252,9 +263,11 @@ caf_add_component(
     caf/flow/op/merge.test.cpp
     caf/flow/op/never.test.cpp
     caf/flow/op/on_backpressure_buffer.test.cpp
+    caf/flow/op/on_error_resume_next.test.cpp
     caf/flow/op/prefix_and_tail.test.cpp
     caf/flow/op/publish.test.cpp
     caf/flow/op/pullable.cpp
+    caf/flow/op/ref_count.test.cpp
     caf/flow/op/retry.test.cpp
     caf/flow/op/sample.test.cpp
     caf/flow/op/throttle_first.test.cpp
@@ -268,7 +281,6 @@ caf_add_component(
     caf/flow/string.test.cpp
     caf/flow/subscription.cpp
     caf/forwarding_actor_proxy.cpp
-    caf/function_view.test.cpp
     caf/handles.test.cpp
     caf/hash/fnv.test.cpp
     caf/hash/sha1.cpp
@@ -308,6 +320,7 @@ caf_add_component(
     caf/log/event.cpp
     caf/log/event.test.cpp
     caf/logger.cpp
+    caf/logger.test.cpp
     caf/mail_cache.cpp
     caf/mail_cache.test.cpp
     caf/mailbox_element.cpp
@@ -324,7 +337,6 @@ caf_add_component(
     caf/meta/handler.cpp
     caf/meta/handler.test.cpp
     caf/metaprogramming.test.cpp
-    caf/mixin/requester.test.cpp
     caf/monitor.test.cpp
     caf/mtl.test.cpp
     caf/node_id.cpp
@@ -333,13 +345,11 @@ caf_add_component(
     caf/or_else.test.cpp
     caf/parser_state.cpp
     caf/pec.test.cpp
-    caf/policy/select_all.test.cpp
-    caf/policy/select_any.test.cpp
     caf/proxy_registry.cpp
+    caf/console_printer.cpp
     caf/raise_error.cpp
     caf/ref_counted.cpp
     caf/request_timeout.test.cpp
-    caf/response_handle.test.cpp
     caf/response_promise.cpp
     caf/response_promise.test.cpp
     caf/result.test.cpp
@@ -372,6 +382,7 @@ caf_add_component(
     caf/telemetry/gauge.test.cpp
     caf/telemetry/histogram.test.cpp
     caf/telemetry/importer/process.cpp
+    caf/telemetry/importer/process.test.cpp
     caf/telemetry/label.cpp
     caf/telemetry/label.test.cpp
     caf/telemetry/label_view.cpp
@@ -384,7 +395,9 @@ caf_add_component(
     caf/thread_hook.cpp
     caf/thread_hook.test.cpp
     caf/timestamp.cpp
+    caf/timestamp.test.cpp
     caf/type_id.cpp
+    caf/type_id.test.cpp
     caf/type_id_list.cpp
     caf/type_id_list.test.cpp
     caf/typed_actor.test.cpp
@@ -412,6 +425,11 @@ caf_add_log_component(system)
 # further investigation.
 if(NOT MSVC AND CAF_ENABLE_TESTING)
   target_sources(caf-core-test PRIVATE caf/behavior.test.cpp)
+endif()
+
+# Don't test caf::expected if it's an alias for std::expected.
+if(NOT CAF_USE_STD_EXPECTED AND CAF_ENABLE_TESTING)
+  target_sources(caf-core-test PRIVATE caf/expected.test.cpp)
 endif()
 
 if(NOT CAF_USE_STD_FORMAT)

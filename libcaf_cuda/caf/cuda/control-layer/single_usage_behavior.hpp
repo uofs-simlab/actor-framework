@@ -19,10 +19,7 @@ public:
     void on_enter() override;
     void schedule() override;
     void receive(const token_ptr& tok) override;
-    void reclaim(int blocks_consumed,
-                 int memory_returned,
-                 int time,
-                 int dependency_number) override;
+    void reclaim(int memory_returned);
 
     std::string name() const override { return "single_usage"; }
 

@@ -6,9 +6,11 @@
 #include "caf/io/network/multiplexer.hpp"
 
 #include "caf/actor_system.hpp"
+#include "caf/add_ref.hpp"
 #include "caf/byte_span.hpp"
 #include "caf/config.hpp"
 #include "caf/detail/assert.hpp"
+#include "caf/detail/current_actor.hpp"
 #include "caf/detail/scope_guard.hpp"
 #include "caf/detail/sync_request_bouncer.hpp"
 #include "caf/event_based_actor.hpp"
@@ -18,23 +20,17 @@
 
 namespace caf::io {
 
-bool abstract_broker::enqueue(mailbox_element_ptr ptr, scheduler*) {
-  CAF_PUSH_AID(id());
-  return scheduled_actor::enqueue(std::move(ptr), backend_);
-}
-
-void abstract_broker::launch(scheduler* sched, bool lazy, bool hide) {
-  CAF_PUSH_AID_FROM_PTR(this);
-  CAF_ASSERT(sched != nullptr);
-  CAF_ASSERT(dynamic_cast<network::multiplexer*>(sched) != nullptr);
-  backend_ = static_cast<network::multiplexer*>(sched);
-  auto lg = log::io::trace("lazy = {}, hide = {}", lazy, hide);
-  if (!hide)
-    register_at_system();
-  if (lazy && mailbox().try_block())
-    return;
-  intrusive_ptr_add_ref(ctrl());
-  sched->schedule(this);
+void abstract_broker::launch(caf::detail::private_thread* worker,
+                             scheduler* ctx) {
+  caf::detail::current_actor_guard ctx_guard{this};
+  CAF_ASSERT(ctx != nullptr);
+#ifdef CAF_ENABLE_RTTI
+  CAF_ASSERT(dynamic_cast<network::multiplexer*>(ctx) != nullptr);
+#endif
+  backend_ = static_cast<network::multiplexer*>(ctx);
+  auto lg = log::io::trace("");
+  (void) worker; // Brokers run on the multiplexer.
+  ctx->delay(resumable_ptr{this, add_ref}, resumable::initialization_event_id);
 }
 
 void abstract_broker::on_cleanup(const error& reason) {
@@ -152,7 +148,7 @@ abstract_broker::add_tcp_scribe(const std::string& hostname, uint16_t port) {
   auto eptr = backend().new_tcp_scribe(hostname, port);
   if (eptr)
     return add_servant(std::move(*eptr));
-  return std::move(eptr.error());
+  return expected<connection_handle>{unexpect, std::move(eptr.error())};
 }
 void abstract_broker::move_scribe(scribe_ptr ptr) {
   auto lg = log::io::trace("ptr = {}", ptr);
@@ -180,7 +176,8 @@ abstract_broker::add_tcp_doorman(uint16_t port, const char* in,
     auto p = ptr->port();
     return std::make_pair(add_servant(std::move(ptr)), p);
   }
-  return std::move(eptr.error());
+  return expected<std::pair<accept_handle, uint16_t>>{unexpect,
+                                                      std::move(eptr.error())};
 }
 
 void abstract_broker::add_datagram_servant(datagram_servant_ptr ptr) {
@@ -233,7 +230,7 @@ abstract_broker::add_udp_datagram_servant(const std::string& host,
     add_datagram_servant(std::move(ptr));
     return hdl;
   }
-  return std::move(eptr.error());
+  return expected<datagram_handle>{unexpect, std::move(eptr.error())};
 }
 
 expected<std::pair<datagram_handle, uint16_t>>
@@ -249,7 +246,8 @@ abstract_broker::add_udp_datagram_servant(uint16_t port, const char* in,
     add_datagram_servant(std::move(ptr));
     return std::make_pair(hdl, p);
   }
-  return std::move(eptr.error());
+  return expected<std::pair<datagram_handle, uint16_t>>{
+    unexpect, std::move(eptr.error())};
 }
 
 void abstract_broker::move_datagram_servant(datagram_servant_ptr ptr) {
@@ -333,14 +331,16 @@ void abstract_broker::close_all() {
     datagram_servants_.begin()->second->graceful_shutdown();
 }
 
-resumable::subtype_t abstract_broker::subtype() const noexcept {
-  return io_actor;
+void abstract_broker::resume(scheduler* sched, uint64_t event_id) {
+  CAF_ASSERT(sched != nullptr);
+  // Cleanup (via dispose event) may happen from any context (e.g.,
+  // cleanup_and_release with a dummy scheduler).
+  CAF_ASSERT(sched == backend_ || event_id == resumable::dispose_event_id);
+  scheduled_actor::resume(sched, event_id);
 }
 
-resumable::resume_result abstract_broker::resume(scheduler* sched, size_t mt) {
-  CAF_ASSERT(sched != nullptr);
-  CAF_ASSERT(sched == backend_);
-  return scheduled_actor::resume(sched, mt);
+scheduler* abstract_broker::pinned_scheduler() const noexcept {
+  return backend_;
 }
 
 const char* abstract_broker::name() const {

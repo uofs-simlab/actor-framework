@@ -20,12 +20,12 @@ public:
 
   class client;
 
-  virtual ~upper_layer();
+  ~upper_layer() override;
 };
 
 class CAF_NET_EXPORT upper_layer::server : public upper_layer {
 public:
-  virtual ~server();
+  ~server() override;
 
   /// Consumes an HTTP message.
   /// @param hdr The header fields for the received message.
@@ -36,6 +36,21 @@ public:
   virtual ptrdiff_t consume(const request_header& hdr, const_byte_span payload)
     = 0;
 
+  /// Begins a chunked message.
+  /// @param hdr The header fields for the incoming message.
+  /// @returns An error if the message cannot be started.
+  virtual error begin_chunked_message(const request_header& hdr) = 0;
+
+  /// Consumes a chunk of the message.
+  /// @param payload The payload of the received chunk.
+  /// @returns An error if the chunk cannot be consumed, or an empty error on
+  ///          success.
+  virtual error consume_chunk(const_byte_span payload) = 0;
+
+  /// Ends a chunked message.
+  /// @returns An error if the message cannot be ended.
+  virtual error end_chunked_message() = 0;
+
   /// Initializes the upper layer.
   /// @param down A pointer to the lower layer that remains valid for the
   ///             lifetime of the upper layer.
@@ -44,7 +59,7 @@ public:
 
 class CAF_NET_EXPORT upper_layer::client : public upper_layer {
 public:
-  virtual ~client();
+  ~client() override;
 
   /// Consumes an HTTP message.
   /// @param hdr The header fields for the received message.

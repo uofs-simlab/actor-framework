@@ -7,6 +7,7 @@
 #include "caf/test/fixture/deterministic.hpp"
 #include "caf/test/scenario.hpp"
 
+#include "caf/error_code.hpp"
 #include "caf/event_based_actor.hpp"
 #include "caf/flow/scoped_coordinator.hpp"
 #include "caf/scheduled_actor/flow.hpp"
@@ -29,7 +30,7 @@ SCENARIO("futures can actively wait on a promise") {
   GIVEN("a promise") {
     WHEN("future::get times out") {
       THEN("the client observes the error code sec::future_timeout") {
-        check_eq(fut.get(1ms), make_error(sec::future_timeout));
+        check_eq(fut.get(1ms), error_code{sec::future_timeout});
       }
     }
     WHEN("future::get retrieves an error while waiting") {
@@ -38,7 +39,7 @@ SCENARIO("futures can actively wait on a promise") {
         uut.set_error(sec::runtime_error);
       }};
       THEN("the client observes the error code from set_error") {
-        check_eq(fut.get(), make_error(sec::runtime_error));
+        check_eq(fut.get(), error_code{sec::runtime_error});
       }
       worker.join();
     }
@@ -48,7 +49,7 @@ SCENARIO("futures can actively wait on a promise") {
         uut.set_error(sec::runtime_error);
       }};
       THEN("the client observes the error code from set_error") {
-        check_eq(fut.get(60s), make_error(sec::runtime_error));
+        check_eq(fut.get(60s), error_code{sec::runtime_error});
       }
       worker.join();
     }
@@ -176,15 +177,15 @@ SCENARIO("never setting a value or an error breaks the promises") {
           check(fut.pending());
           {
             // copy ctor
-            promise_t cpy{uut};
+            promise_t copy{uut};
             check(fut.pending());
             // move ctor
-            promise_t mv{std::move(cpy)};
+            promise_t mv{std::move(copy)};
             check(fut.pending());
             {
               // copy assign
-              promise_t cpy2;
-              cpy2 = mv;
+              promise_t copy2;
+              copy2 = mv;
               check(fut.pending());
               // move assign
               promise_t mv2;

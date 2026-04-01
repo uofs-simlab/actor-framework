@@ -19,12 +19,11 @@
 
 
 //helper function to check errors
-void inline check(CUresult result, const char* msg) {
+void inline check(CUresult result) {
     if (result != CUDA_SUCCESS) {
         const char* err_str;
         cuGetErrorString(result, &err_str);
-        std::cerr << "CUDA Driver API Error (" << msg << "): " << err_str << "\n";
-        exit(1);
+        throw std::runtime_error(std::string("CUDA Driver API Error: ") + err_str);
     }
 }
 
@@ -44,7 +43,7 @@ bool inspect(Inspector& f, in<T>& x) {
       if (!f.object(x).fields(f.field("is_scalar", is_scalar), f.field("buffer", buf))) {
         return false;
       }
-      x = in<T>(buf);
+      x = in<T>(std::move(buf));
     }
   } else {
     if (is_scalar) {
@@ -91,7 +90,7 @@ bool inspect(Inspector& f, in_out<T>& x) {
       if (!f.object(x).fields(f.field("is_scalar", is_scalar), f.field("buffer", buf))) {
         return false;
       }
-      x = in_out<T>(buf);
+      x = in_out<T>(std::move(buf));
     }
   } else {
     if (is_scalar) {
@@ -185,6 +184,9 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   
   //atoms 
   CAF_ADD_ATOM(cuda, kernel_done_atom)
+  /// Sent to an actor by cuLaunchHostFunc when its GPU kernel completes.
+  /// Receiving this atom means the stream is idle and copy_to_host() is safe.
+  CAF_ADD_ATOM(cuda, caf::cuda, gpu_done_atom)
   //CAF_ADD_ATOM(cuda, become)
   //CAF_ADD_ATOM(cuda, launch_behavior)
   //CAF_ADD_ATOM(cuda, update_behavior)

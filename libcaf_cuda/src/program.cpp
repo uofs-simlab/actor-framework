@@ -2,17 +2,16 @@
 
 namespace caf::cuda {
 
-program::program(std::string name, std::vector<char> binary, bool is_fatbin)
-    : name_(std::move(name)), binary_(std::move(binary)), hashValue(hasher(name_)) {
+program::program(std::string name, std::vector<char> binary, platform_ptr platform,
+                 bool is_fatbin)
+    : name_(std::move(name)), binary_(std::move(binary)),
+      platform_(std::move(platform)), hashValue(hasher(name_)) {
   load_kernels(is_fatbin);
 }
 
 void program::load_kernels(bool is_fatbin) {
-  // Create a platform instance to enumerate devices
-  auto plat = platform::create();
-
-  // Load kernel on all available devices
-  for (const auto& dev : plat->devices()) {
+  // Use the platform to enumerate devices
+  for (const auto& dev : platform_->devices()) {
     CUcontext ctx = dev->getContext();
     CHECK_CUDA(cuCtxPushCurrent(ctx));
 
@@ -34,8 +33,28 @@ void program::load_kernels(bool is_fatbin) {
 
     CHECK_CUDA(cuCtxPopCurrent(nullptr));
 
-    // Store the function handle per device
+    // Store both the module and function handles per device.
+    // The module must be kept alive (and later unloaded) to keep the function valid.
+    modules_[dev->getId()] = module;
     kernels_[dev->getId()] = kernel;
+  }
+}
+
+program::~program() {
+  // Do NOT call cuModuleUnload here directly: on some hardware (e.g. Maxwell
+  // sm_52) cuModuleUnload implicitly synchronises the context, which would
+  // block the calling thread (a CAF worker) for the entire kernel duration.
+  // Instead we hand each (context, module) pair off to the platform's
+  // background cleanup thread, which does the sync+unload there.
+  for (auto& [device_id, module] : modules_) {
+    try {
+      CUcontext ctx = platform_->getDevice(device_id)->getContext();
+      platform_->defer_module_unload(ctx, module);
+    } catch (...) {
+      // If we can't find the device, fall back to a direct (possibly blocking)
+      // unload as a last resort rather than leaking the module handle.
+      cuModuleUnload(module);
+    }
   }
 }
 

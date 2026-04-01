@@ -9,6 +9,7 @@
 #include "caf/detail/algorithms.hpp"
 #include "caf/expected.hpp"
 
+#include <algorithm>
 #include <map>
 #include <set>
 
@@ -142,7 +143,7 @@ auto config_option_set::parse(settings& config, argument_iterator first,
     if (arg_begin != arg_end) {
       auto arg_size = static_cast<size_t>(std::distance(arg_begin, arg_end));
       config_value val{std::string_view{std::addressof(*arg_begin), arg_size}};
-      if (auto err = opt.sync(val); !err) {
+      if (auto err = opt.sync(val); err.empty()) {
         entry[opt_name] = std::move(val);
         return pec::success;
       } else {
@@ -286,7 +287,7 @@ bool config_option_set::has_category(std::string_view category) const noexcept {
   auto predicate = [category](const config_option& opt) {
     return opt.category() == category;
   };
-  return std::any_of(opts_.begin(), opts_.end(), predicate);
+  return std::ranges::any_of(opts_, predicate);
 }
 
 } // namespace caf

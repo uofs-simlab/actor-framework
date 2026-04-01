@@ -73,8 +73,8 @@ bool deserializer::value(strong_actor_ptr& ptr) {
   }
   if (aid == 0 || !nid) {
     ptr = nullptr;
-  } else if (auto err = load_actor(ptr, sys(), aid, nid)) {
-    set_error(err);
+  } else if (auto err = load_actor(ptr, sys(), aid, nid); err.valid()) {
+    set_error(error{err.value()});
     return false;
   }
   return true;
@@ -85,7 +85,7 @@ bool deserializer::value(weak_actor_ptr& ptr) {
   if (!value(tmp)) {
     return false;
   }
-  ptr.reset(tmp.get());
+  ptr.reset(tmp.get(), add_ref);
   return true;
 }
 

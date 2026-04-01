@@ -300,13 +300,13 @@ struct inspector_access<uri> : inspector_access_base<uri> {
       auto get = [&x] { return to_string(x); };
       auto set = [&x](std::string str) {
         auto err = parse(str, x);
-        return !err;
+        return err.empty();
       };
       return f.apply(get, set);
     } else {
       if constexpr (Inspector::is_loading)
         if (!x.impl_->unique())
-          x.impl_.reset(new uri::impl_type, false);
+          x.impl_.reset(new uri::impl_type, adopt_ref);
       return inspect(f, *x.impl_);
     }
   }

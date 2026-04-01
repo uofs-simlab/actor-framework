@@ -12,6 +12,7 @@
 #include "caf/detail/assert.hpp"
 #include "caf/detail/scope_guard.hpp"
 #include "caf/detail/sync_request_bouncer.hpp"
+#include "caf/event_based_mail.hpp"
 #include "caf/extend.hpp"
 #include "caf/keep_behavior.hpp"
 #include "caf/local_actor.hpp"
@@ -45,12 +46,8 @@ using accept_handler = typed_actor<result<void>(new_connection_msg),
 /// components in the network.
 /// @extends local_actor
 template <class... Sigs>
-class typed_broker
-  // clang-format off
-  : public extend<abstract_broker, typed_broker<Sigs...>>::template
-           with<mixin::requester>,
-    public statically_typed_actor_base {
-  // clang-format on
+class typed_broker : public abstract_broker,
+                     public statically_typed_actor_base {
 public:
   using signatures = type_list<Sigs...>;
 
@@ -58,9 +55,11 @@ public:
 
   using behavior_type = typed_behavior<Sigs...>;
 
-  using super =
-    typename extend<abstract_broker,
-                    typed_broker<Sigs...>>::template with<mixin::requester>;
+  using super = abstract_broker;
+
+  struct trait {
+    using signatures = type_list<Sigs...>;
+  };
 
   /// @cond
 
@@ -71,21 +70,6 @@ public:
 
   /// @endcond
 
-  void initialize() override {
-    auto lg = log::io::trace("");
-    this->init_broker();
-    auto bhvr = make_behavior();
-    if (!bhvr) {
-      log::io::debug("make_behavior() did not return a behavior: alive = {}",
-                     this->alive());
-    }
-    if (bhvr) {
-      // make_behavior() did return a behavior instead of using become()
-      log::io::debug("make_behavior() did return a valid behavior");
-      this->do_become(std::move(bhvr.unbox()), true);
-    }
-  }
-
   template <class F, class... Ts>
   infer_handle_from_fun_t<F> fork(F fun, connection_handle hdl, Ts&&... xs) {
     CAF_ASSERT(this->context() != nullptr);
@@ -95,7 +79,7 @@ public:
     static_assert(
       std::is_convertible<typename impl::actor_hdl, connection_handler>::value,
       "Cannot fork: new broker misses required handlers");
-    actor_config cfg{this->context()};
+    actor_config cfg{no_spawn_options, this->context()};
     detail::init_fun_factory<impl, F> fac;
     cfg.init_fun = fac(std::move(fun), hdl, std::forward<Ts>(xs)...);
     using impl = infer_impl_from_fun_t<F>;
@@ -120,7 +104,7 @@ public:
   connection_handle add_tcp_scribe(network::native_socket fd) {
     static_assert(std::is_convertible_v<actor_hdl, connection_handler>,
                   "Cannot add scribe: broker misses required handlers");
-    return super::add_tcp_scribe(fd);
+    return super::add_scribe(fd);
   }
 
   expected<std::pair<accept_handle, uint16_t>>
@@ -131,10 +115,10 @@ public:
     return super::add_tcp_doorman(port, in, reuse_addr);
   }
 
-  expected<accept_handle> add_tcp_doorman(network::native_socket fd) {
+  accept_handle add_tcp_doorman(network::native_socket fd) {
     static_assert(std::is_convertible_v<actor_hdl, accept_handler>,
                   "Cannot add doorman: broker misses required handlers");
-    return super::add_tcp_doorman(fd);
+    return super::add_doorman(fd);
   }
 
   explicit typed_broker(actor_config& cfg) : super(cfg) {
@@ -158,6 +142,14 @@ public:
     this->bhvr_stack_.pop_back();
   }
 
+  /// Starts a new message.
+  template <class... Args>
+  auto mail(Args&&... args) {
+    return event_based_mail(trait{}, this, std::forward<Args>(args)...);
+  }
+
+  CAF_ADD_DEPRECATED_REQUEST_API
+
 protected:
   virtual behavior_type make_behavior() {
     if (this->initial_behavior_fac_) {
@@ -167,6 +159,12 @@ protected:
         this->do_become(std::move(bhvr), true);
     }
     return behavior_type::make_empty_behavior();
+  }
+
+private:
+  behavior type_erased_initial_behavior() final {
+    this->init_broker();
+    return make_behavior().unbox();
   }
 };
 

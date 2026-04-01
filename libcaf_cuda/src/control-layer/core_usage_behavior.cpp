@@ -16,7 +16,7 @@ core_usage_behavior::~core_usage_behavior(){
 }
 
 void core_usage_behavior::init_state() {
-    device_ = manager::get().find_device(state_.device_number);
+    device_ = state_.self->system().cuda_manager().find_device(state_.device_number);
     heuristic.emplace(device_);
     total_SM = device_->num_sms() * 16;
     available_SM = total_SM;
@@ -29,15 +29,11 @@ void core_usage_behavior::on_enter() {
 	//std::cout << "Hello\n";
 }
 
-void core_usage_behavior::reclaim(int blocks_consumed,
-	       	int memory_returned,
-	       	int time,
-	       	int dependency_number) {
-
-	//std::cout << "blocks is " <<  blocks_consumed << "\n";
+void core_usage_behavior::reclaim(int blocks_consumed, int memory_returned) {
 	available_SM += blocks_consumed;
 	available_memory+= memory_returned;
-	//will eventually do something with the dependency number and stalling or maybe not
+	// will eventually do something with the dependency number and 
+  // stalling or maybe not
 	schedule();
 
 }

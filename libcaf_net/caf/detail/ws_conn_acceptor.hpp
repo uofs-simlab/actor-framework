@@ -31,7 +31,7 @@ using ws_conn_starter_ptr = intrusive_ptr<ws_conn_starter>;
 
 class CAF_NET_EXPORT ws_conn_acceptor : public ref_counted {
 public:
-  virtual ~ws_conn_acceptor();
+  ~ws_conn_acceptor() override;
 
   virtual expected<ws_conn_starter_ptr>
   accept(const net::http::request_header& hdr, net::socket_manager* mgr) = 0;
@@ -72,8 +72,9 @@ public:
 
   expected<resources> start() override {
     if (!producer_->push(event_)) {
-      return make_error(sec::runtime_error,
-                        "WebSocket connection dropped: client canceled");
+      return expected<resources>{
+        unexpect, sec::runtime_error,
+        "WebSocket connection dropped: client canceled"};
     }
     return res_;
   }
@@ -104,8 +105,9 @@ public:
   expected<ws_conn_starter_ptr> accept(const net::http::request_header& hdr,
                                        net::socket_manager* mgr) override {
     if (!producer_) {
-      return make_error(sec::runtime_error,
-                        "WebSocket connection dropped: client canceled");
+      return expected<ws_conn_starter_ptr>{
+        unexpect, sec::runtime_error,
+        "WebSocket connection dropped: client canceled"};
     }
     ws_acceptor_impl<Ts...> acc{hdr, mgr};
     on_request_(acc);
@@ -115,9 +117,12 @@ public:
                                          std::move(acc.ws_resources));
       return res;
     }
-    return std::move(acc) //
-      .reject_reason()
-      .or_else(sec::runtime_error, "WebSocket request rejected without reason");
+    if (auto&& reason = std::move(acc).reject_reason(); reason.valid()) {
+      return expected<ws_conn_starter_ptr>{unexpect, std::move(reason)};
+    }
+    return expected<ws_conn_starter_ptr>{
+      unexpect, sec::runtime_error,
+      "WebSocket request rejected without reason"};
   }
 
   bool canceled() const noexcept override {

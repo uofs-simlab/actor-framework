@@ -114,7 +114,7 @@ expected<void> context::enable(bool flag) {
   if (flag)
     return expected<void>{};
   else
-    return expected<void>{caf::error{}};
+    return expected<void>{unexpect, caf::error{}};
 }
 
 expected<context> context::make(tls vmin, tls vmax) {
@@ -123,7 +123,7 @@ expected<context> context::make(tls vmin, tls vmax) {
   if (errstr == nullptr)
     return {std::move(ctx)};
   else
-    return {make_error(sec::logic_error, errstr)};
+    return expected<context>{unexpect, sec::logic_error, errstr};
 }
 
 expected<context> context::make_server(tls vmin, tls vmax) {
@@ -132,7 +132,7 @@ expected<context> context::make_server(tls vmin, tls vmax) {
   if (errstr == nullptr)
     return {std::move(ctx)};
   else
-    return {make_error(sec::logic_error, errstr)};
+    return expected<context>{unexpect, sec::logic_error, errstr};
 }
 
 expected<context> context::make_client(tls vmin, tls vmax) {
@@ -141,7 +141,7 @@ expected<context> context::make_client(tls vmin, tls vmax) {
   if (errstr == nullptr)
     return {std::move(ctx)};
   else
-    return {make_error(sec::logic_error, errstr)};
+    return expected<context>{unexpect, sec::logic_error, errstr};
 }
 
 expected<context> context::make(dtls vmin, dtls vmax) {
@@ -150,7 +150,7 @@ expected<context> context::make(dtls vmin, dtls vmax) {
   if (errstr == nullptr)
     return {std::move(ctx)};
   else
-    return {make_error(sec::logic_error, errstr)};
+    return expected<context>{unexpect, sec::logic_error, errstr};
 }
 
 expected<context> context::make_server(dtls vmin, dtls vmax) {
@@ -159,7 +159,7 @@ expected<context> context::make_server(dtls vmin, dtls vmax) {
   if (errstr == nullptr)
     return {std::move(ctx)};
   else
-    return {make_error(sec::logic_error, errstr)};
+    return expected<context>{unexpect, sec::logic_error, errstr};
 }
 
 expected<context> context::make_client(dtls vmin, dtls vmax) {
@@ -168,7 +168,7 @@ expected<context> context::make_client(dtls vmin, dtls vmax) {
   if (errstr == nullptr)
     return {std::move(ctx)};
   else
-    return {make_error(sec::logic_error, errstr)};
+    return expected<context>{unexpect, sec::logic_error, errstr};
 }
 
 // -- properties ---------------------------------------------------------------
@@ -176,6 +176,23 @@ expected<context> context::make_client(dtls vmin, dtls vmax) {
 void context::verify_mode(verify_t flags) {
   auto ptr = native(pimpl_);
   SSL_CTX_set_verify(ptr, to_integer(flags), SSL_CTX_get_verify_callback(ptr));
+}
+
+ssl::backend context::backend() const noexcept {
+  return ssl::backend::openssl;
+}
+
+std::string context::backend_name() const noexcept {
+  return to_string(backend());
+}
+
+int context::backend_version() const noexcept {
+  return OPENSSL_VERSION_NUMBER;
+}
+
+bool context::set_cipher_list(const char* cipher_list) {
+  ERR_clear_error();
+  return SSL_CTX_set_cipher_list(native(pimpl_), cipher_list) == 1;
 }
 
 namespace {
@@ -280,18 +297,20 @@ expected<connection> context::new_connection(stream_socket fd) {
     auto conn = connection::from_native(ptr);
     if (auto host = sni_hostname()) {
       if (!conn.sni_hostname(host))
-        return make_error(sec::cannot_connect_to_node,
-                          "Failed to set SNI hostname");
+        return expected<connection>{unexpect, sec::cannot_connect_to_node,
+                                    "Failed to set SNI hostname"};
     }
     if (auto bio_ptr = BIO_new_socket(fd.id, BIO_NOCLOSE)) {
       SSL_set_bio(ptr, bio_ptr, bio_ptr);
 
       return {std::move(conn)};
     } else {
-      return {make_error(sec::logic_error, "BIO_new_socket failed")};
+      return expected<connection>{unexpect, sec::logic_error,
+                                  "BIO_new_socket failed"};
     }
   } else {
-    return {make_error(sec::logic_error, "SSL_new returned null")};
+    return expected<connection>{unexpect, sec::logic_error,
+                                "SSL_new returned null"};
   }
 }
 
@@ -301,16 +320,17 @@ expected<connection> context::new_connection(stream_socket fd,
     auto conn = connection::from_native(ptr);
     if (auto host = sni_hostname()) {
       if (!conn.sni_hostname(host))
-        return make_error(sec::cannot_connect_to_node,
-                          "Failed to set SNI hostname");
+        return expected<connection>{unexpect, sec::cannot_connect_to_node,
+                                    "Failed to set SNI hostname"};
     }
     if (SSL_set_fd(ptr, fd.id) == 1)
       return {std::move(conn)};
     else
-      return {make_error(sec::logic_error, "SSL_set_fd failed")};
-
+      return expected<connection>{unexpect, sec::logic_error,
+                                  "SSL_set_fd failed"};
   } else {
-    return {make_error(sec::logic_error, "SSL_new returned null")};
+    return expected<connection>{unexpect, sec::logic_error,
+                                "SSL_new returned null"};
   }
 }
 

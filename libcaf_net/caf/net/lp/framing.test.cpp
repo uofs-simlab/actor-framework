@@ -117,7 +117,7 @@ public:
     auto printable = [](std::byte x) {
       return ::isprint(static_cast<uint8_t>(x));
     };
-    if (std::all_of(buf.begin(), buf.end(), printable)) {
+    if (std::ranges::all_of(buf, printable)) {
       auto str_buf = reinterpret_cast<char*>(buf.data());
       inputs->append(std::string{str_buf, buf.size()});
       return static_cast<ptrdiff_t>(buf.size());
@@ -269,9 +269,7 @@ SCENARIO("lp::with(...).connect(...) translates between flows and socket I/O") {
                     .subscribe(push);
                 });
               });
-        conn.or_else([this](const error& err) { //
-          fail("connect failed: {}", err);
-        });
+        require_has_value(conn);
         scoped_actor self{sys};
         self->wait_for(hdl);
         if (check_eq(buf->size(), 5u)) {

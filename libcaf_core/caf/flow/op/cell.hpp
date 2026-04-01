@@ -10,6 +10,7 @@
 #include "caf/flow/subscription.hpp"
 #include "caf/none.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 #include <variant>
@@ -46,9 +47,13 @@ using cell_listener_ptr = intrusive_ptr<cell_listener<T>>;
 
 /// State shared between one multicast operator and one subscribed observer.
 template <class T>
-struct cell_sub_state {
-  std::variant<none_t, std::nullptr_t, T, error> content;
-  std::vector<cell_listener_ptr<T>> listeners;
+class cell_sub_state {
+public:
+  /// Checks whether the cell is pending, i.e., none of the setters have been
+  /// called.
+  bool pending() {
+    return std::holds_alternative<none_t>(content);
+  }
 
   void set_null() {
     CAF_ASSERT(std::holds_alternative<none_t>(content));
@@ -100,10 +105,12 @@ struct cell_sub_state {
   }
 
   void drop(const cell_listener_ptr<T>& listener) {
-    if (auto i = std::find(listeners.begin(), listeners.end(), listener);
-        i != listeners.end())
+    if (auto i = std::ranges::find(listeners, listener); i != listeners.end())
       listeners.erase(i);
   }
+
+  std::variant<none_t, std::nullptr_t, T, error> content;
+  std::vector<cell_listener_ptr<T>> listeners;
 };
 
 /// Convenience alias for the state of a cell.
@@ -144,7 +151,7 @@ public:
   void request(size_t) override {
     if (!listening_) {
       listening_ = true;
-      auto self = cell_listener_ptr<T>{this};
+      auto self = cell_listener_ptr<T>{this, add_ref};
       parent_->delay_fn([state = state_, self]() mutable { //
         state->listen(std::move(self));
       });
@@ -181,7 +188,7 @@ public:
 private:
   void do_dispose(bool from_external) override {
     if (state_) {
-      state_->drop(this);
+      state_->drop({this, add_ref});
       state_ = nullptr;
     }
     if (out_) {
@@ -211,6 +218,10 @@ public:
   using state_ptr_type = cell_sub_state_ptr<T>;
 
   using observer_type = observer<T>;
+
+  // -- constants --------------------------------------------------------------
+
+  static constexpr bool single_value = true;
 
   // -- constructors, destructors, and assignment operators --------------------
 

@@ -22,7 +22,7 @@ class broker_servant : public Base {
 public:
   using handle_type = Handle;
 
-  broker_servant(handle_type x)
+  explicit broker_servant(handle_type x)
     : hdl_(x),
       value_(strong_actor_ptr{}, make_message_id(),
              make_message(SysMsgType{x, {}})) {
@@ -76,7 +76,7 @@ protected:
 
   bool invoke_mailbox_element(scheduler* ctx) {
     // hold on to a strong reference while "messing" with the parent actor
-    strong_actor_ptr ptr_guard{this->parent()->ctrl()};
+    strong_actor_ptr ptr_guard{this->parent()->ctrl(), add_ref};
     auto prev = activity_tokens_;
     invoke_mailbox_element_impl(ctx, value_);
     // only consume an activity token if actor did not produce them now

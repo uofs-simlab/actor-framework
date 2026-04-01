@@ -15,7 +15,7 @@
 using namespace caf;
 using namespace std::literals;
 
-CAF_BEGIN_TYPE_ID_BLOCK(typed_stream_test, caf::first_custom_type_id + 115)
+CAF_BEGIN_TYPE_ID_BLOCK(typed_stream_test, caf::first_custom_type_id + 160, 10)
 
   CAF_ADD_TYPE_ID(typed_stream_test, (caf::typed_stream<int32_t>) )
 
@@ -30,13 +30,13 @@ struct fixture : test::fixture::deterministic {
     {
       caf::binary_serializer sink{sys, buf};
       if (!sink.apply(obj))
-        return {sink.get_error()};
+        return caf::unexpected{std::move(sink.get_error())};
     }
     auto result = T{};
     {
       caf::binary_deserializer source{sys, buf};
       if (!source.apply(result))
-        return {source.get_error()};
+        return caf::unexpected{std::move(source.get_error())};
     }
     return result;
   }

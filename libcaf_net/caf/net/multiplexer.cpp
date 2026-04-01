@@ -5,7 +5,6 @@
 #include "caf/net/multiplexer.hpp"
 
 #include "caf/net/fwd.hpp"
-#include "caf/net/middleman.hpp"
 #include "caf/net/pipe_socket.hpp"
 #include "caf/net/socket.hpp"
 #include "caf/net/socket_event_layer.hpp"
@@ -17,8 +16,8 @@
 #include "caf/config.hpp"
 #include "caf/detail/atomic_ref_counted.hpp"
 #include "caf/detail/critical.hpp"
-#include "caf/detail/latch.hpp"
 #include "caf/detail/net_export.hpp"
+#include "caf/detail/panic.hpp"
 #include "caf/error.hpp"
 #include "caf/expected.hpp"
 #include "caf/log/net.hpp"
@@ -33,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <latch>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -50,6 +50,11 @@
 namespace caf::net {
 
 namespace {
+
+template <class T>
+uintptr_t to_uintptr(T* ptr) noexcept {
+  return reinterpret_cast<uintptr_t>(ptr);
+}
 
 class default_multiplexer;
 
@@ -134,12 +139,7 @@ class default_multiplexer : public detail::atomic_ref_counted,
 public:
   // -- member types -----------------------------------------------------------
 
-  struct poll_update {
-    short events = 0;
-    socket_manager_ptr mgr;
-  };
-
-  using poll_update_map = unordered_flat_map<socket, poll_update>;
+  using poll_update_map = unordered_flat_map<socket_manager_ptr, short>;
 
   using pollfd_list = std::vector<pollfd>;
 
@@ -151,7 +151,7 @@ public:
 
   // -- constructors, destructors, and assignment operators --------------------
 
-  explicit default_multiplexer(middleman* parent) : owner_(parent) {
+  explicit default_multiplexer(actor_system* sys) : sys_(sys) {
     // nop
   }
 
@@ -163,7 +163,7 @@ public:
       return std::move(pipe_handles.error());
     auto updater = pollset_updater::make(pipe_handles->first);
     auto mgr = socket_manager::make(this, std::move(updater));
-    if (auto err = mgr->start()) {
+    if (auto err = mgr->start(); err.valid()) {
       close(pipe_handles->second);
       return err;
     }
@@ -177,12 +177,9 @@ public:
     return managers_.size();
   }
 
-  middleman& owner() override {
-    CAF_ASSERT(owner_ != nullptr);
-    return *owner_;
-  }
   actor_system& system() override {
-    return owner().system();
+    CAF_ASSERT(sys_ != nullptr);
+    return *sys_;
   }
 
   // -- implementation of execution_context ------------------------------------
@@ -243,28 +240,34 @@ public:
   // -- callbacks for socket managers ------------------------------------------
 
   void register_reading(socket_manager* mgr) override {
-    auto lg = log::net::trace("socket = {}", mgr->handle().id);
-    update_for(mgr).events |= input_mask;
+    log::net::debug("register manager {:#x} for reading on socket {}",
+                    to_uintptr(mgr), mgr->handle().id);
+    update_for(mgr) |= input_mask;
   }
 
   void register_writing(socket_manager* mgr) override {
-    auto lg = log::net::trace("socket = {}", mgr->handle().id);
-    update_for(mgr).events |= output_mask;
+    log::net::debug("register manager {:#x} for writing on socket {}",
+                    to_uintptr(mgr), mgr->handle().id);
+    update_for(mgr) |= output_mask;
   }
 
   void deregister_reading(socket_manager* mgr) override {
-    auto lg = log::net::trace("socket = {}", mgr->handle().id);
-    update_for(mgr).events &= ~input_mask;
+    log::net::debug("deregister manager {:#x} for reading on socket {}",
+                    to_uintptr(mgr), mgr->handle().id);
+    update_for(mgr) &= ~input_mask;
   }
 
   void deregister_writing(socket_manager* mgr) override {
-    auto lg = log::net::trace("socket = {}", mgr->handle().id);
-    update_for(mgr).events &= ~output_mask;
+    log::net::debug("deregister manager {:#x} for writing on socket {}",
+                    to_uintptr(mgr), mgr->handle().id);
+    update_for(mgr) &= ~output_mask;
   }
 
   void deregister(socket_manager* mgr) override {
-    auto lg = log::net::trace("socket = {}", mgr->handle().id);
-    update_for(mgr).events = 0;
+    log::net::debug("deregister manager {:#x} for both reading and writing "
+                    "on socket {}",
+                    to_uintptr(mgr), mgr->handle().id);
+    update_for({mgr, add_ref}) = 0;
   }
 
   bool is_reading(const socket_manager* mgr) const noexcept override {
@@ -349,9 +352,7 @@ public:
           // Must not happen.
           auto int_code = static_cast<int>(code);
           auto msg = std::generic_category().message(int_code);
-          std::string_view prefix = "poll() failed: ";
-          msg.insert(msg.begin(), prefix.begin(), prefix.end());
-          CAF_CRITICAL(msg.c_str());
+          detail::panic("poll() failed: {} (error code: {})", msg, int_code);
         }
       }
     }
@@ -374,16 +375,16 @@ public:
     log::net::debug("apply {} updates", updates_.size());
     for (;;) {
       if (!updates_.empty()) {
-        for (auto& [fd, update] : updates_) {
-          if (auto index = index_of(fd); index == -1) {
-            if (update.events != 0) {
-              pollfd new_entry{socket_cast<socket_id>(fd), update.events, 0};
+        for (auto& [mgr, events] : updates_) {
+          if (auto index = index_of(mgr); index == -1) {
+            if (events != 0) {
+              pollfd new_entry{mgr->handle().id, events, 0};
               pollset_.emplace_back(new_entry);
-              managers_.emplace_back(std::move(update.mgr));
+              managers_.emplace_back(mgr);
             }
-          } else if (update.events != 0) {
-            pollset_[index].events = update.events;
-            managers_[index].swap(update.mgr);
+          } else if (events != 0) {
+            pollset_[index].events = events;
+            managers_[index] = mgr;
           } else {
             pollset_.erase(pollset_.begin() + index);
             managers_.erase(managers_.begin() + index);
@@ -444,13 +445,15 @@ public:
   bool do_start(const socket_manager_ptr& mgr) {
     auto lg = log::net::trace("socket = {}", mgr->handle().id);
     if (!shutting_down_) {
-      error err;
-      err = mgr->start();
-      if (err) {
-        log::net::debug("mgr->init failed: {}", err);
+      auto fd = mgr->handle().id;
+      log::net::debug("start manager {:#x} for socket {}",
+                      to_uintptr(mgr.get()), fd);
+      if (auto err = mgr->start(); err.valid()) {
+        log::net::debug("failed to start manager {:#x} for socket {}: {}",
+                        to_uintptr(mgr.get()), fd, err);
         // The socket manager should not register itself for any events if
         // initialization fails. Purge any state just in case.
-        update_for(mgr.get()).events = 0;
+        update_for(mgr) = 0;
         return false;
       }
       return true;
@@ -461,31 +464,35 @@ public:
   // -- utility functions ------------------------------------------------------
 
   /// Returns the index of `mgr` in the pollset or `-1`.
-  ptrdiff_t index_of(const socket_manager_ptr& mgr) const noexcept {
+  ptrdiff_t index_of(const socket_manager* mgr) const noexcept {
     auto first = managers_.begin();
     auto last = managers_.end();
     auto i = std::find(first, last, mgr);
     return i == last ? -1 : std::distance(first, i);
   }
 
-  /// Returns the index of `fd` in the pollset or `-1`.
-  ptrdiff_t index_of(socket fd) const noexcept {
-    auto first = pollset_.begin();
-    auto last = pollset_.end();
-    auto i = std::find_if(first, last,
-                          [fd](const pollfd& x) { return x.fd == fd.id; });
-    return i == last ? -1 : std::distance(first, i);
+  /// Returns the index of `mgr` in the pollset or `-1`.
+  ptrdiff_t index_of(const socket_manager_ptr& mgr) const noexcept {
+    return index_of(mgr.get());
   }
 
   /// Handles an I/O event on given manager.
   void handle(const socket_manager_ptr& mgr, [[maybe_unused]] short events,
               short revents) {
-    auto lg = log::net::trace("socket = {}, events = {}, revents = {}",
-                              mgr->handle().id, events, revents);
+    auto fd = mgr->handle();
+    auto lg = log::net::trace("socket = {}, events = {}, revents = {}", fd.id,
+                              events, revents);
+    if (fd == invalid_socket) {
+      log::net::error("manager {:#x} reports invalid socket -> drop",
+                      to_uintptr(mgr.get()));
+      update_for(mgr) = 0;
+      return;
+    }
     CAF_ASSERT(mgr != nullptr);
     bool checkerror = true;
-    log::net::debug("handle event on socket {}, events = {}, revents = {}",
-                    mgr->handle().id, events, revents);
+    log::net::debug("handle events for manager {:#x} on socket {}: "
+                    "events = {}, revents = {}",
+                    to_uintptr(mgr.get()), fd.id, events, revents);
     // Note: we double-check whether the manager is actually reading because a
     // previous action from the pipe may have disabled reading.
     if ((revents & input_mask) != 0 && is_reading(mgr.get())) {
@@ -505,40 +512,31 @@ public:
         mgr->handle_error(sec::socket_disconnected);
       else
         mgr->handle_error(sec::socket_operation_failed);
-      update_for(mgr.get()).events = 0;
+      update_for(mgr) = 0;
     }
   }
 
-  /// Returns a change entry for the socket at given index. Lazily creates a new
-  /// entry before returning if necessary.
-  poll_update& update_for(ptrdiff_t index) {
-    auto fd = socket{pollset_[index].fd};
-    if (auto i = updates_.find(fd); i != updates_.end()) {
+  /// Returns the update events mask for the manager.
+  short& update_for(socket_manager* mgr) {
+    if (auto i = updates_.find(mgr); i != updates_.end()) {
       return i->second;
-    } else {
-      updates_.container().emplace_back(fd, poll_update{pollset_[index].events,
-                                                        managers_[index]});
+    }
+    if (auto index = index_of(mgr); index != -1) {
+      updates_.container().emplace_back(socket_manager_ptr{mgr, add_ref},
+                                        pollset_[index].events);
       return updates_.container().back().second;
     }
+    updates_.container().emplace_back(socket_manager_ptr{mgr, add_ref},
+                                      short{0});
+    return updates_.container().back().second;
   }
 
-  /// Returns a change entry for the socket of the manager.
-  poll_update& update_for(socket_manager* mgr) {
-    auto fd = mgr->handle();
-    if (auto i = updates_.find(fd); i != updates_.end()) {
-      return i->second;
-    } else if (auto index = index_of(fd); index != -1) {
-      updates_.container().emplace_back(
-        fd, poll_update{pollset_[index].events, socket_manager_ptr{mgr}});
-      return updates_.container().back().second;
-    } else {
-      updates_.container().emplace_back(fd, poll_update{0, mgr});
-      return updates_.container().back().second;
-    }
+  short& update_for(const socket_manager_ptr& mgr) {
+    return update_for(mgr.get());
   }
 
-  /// Writes `opcode` and pointer to `mgr` the the pipe for handling an event
-  /// later via the pollset updater.
+  /// Writes `opcode` and `ptr` to the pipe for handling an event later via the
+  /// pollset updater.
   /// @warning assumes ownership of @p ptr.
   template <class T>
   bool write_to_pipe(uint8_t opcode, T* ptr) {
@@ -572,14 +570,13 @@ public:
 
   /// Queries the currently active event bitmask for `mgr`.
   short active_mask_of(const socket_manager* mgr) const noexcept {
-    auto fd = mgr->handle();
-    if (auto i = updates_.find(fd); i != updates_.end()) {
-      return i->second.events;
-    } else if (auto index = index_of(fd); index != -1) {
-      return pollset_[index].events;
-    } else {
-      return 0;
+    if (auto i = updates_.find(mgr); i != updates_.end()) {
+      return i->second;
     }
+    if (auto index = index_of(mgr); index != -1) {
+      return pollset_[index].events;
+    }
+    return 0;
   }
 
   /// Pending actions to run immediately.
@@ -615,8 +612,8 @@ private:
   /// Used for pushing updates to the multiplexer's thread.
   pipe_socket write_handle_;
 
-  /// Points to the owning middleman.
-  middleman* owner_;
+  /// Points to the owning actor system.
+  actor_system* sys_;
 
   /// Signals whether shutdown has been requested.
   bool shutting_down_ = false;
@@ -635,10 +632,11 @@ error pollset_updater::start(socket_manager* owner) {
 void pollset_updater::handle_read_event() {
   auto lg = log::net::trace("");
   auto as_mgr = [](intptr_t ptr) {
-    return intrusive_ptr{reinterpret_cast<socket_manager*>(ptr), false};
+    return intrusive_ptr{reinterpret_cast<socket_manager*>(ptr), adopt_ref};
   };
   auto add_action = [this](intptr_t ptr) {
-    auto f = action{intrusive_ptr{reinterpret_cast<action::impl*>(ptr), false}};
+    auto f
+      = action{intrusive_ptr{reinterpret_cast<action::impl*>(ptr), adopt_ref}};
     mpx_->pending_actions.push_back(std::move(f));
   };
   auto delay_action = [this](intptr_t ptr) {
@@ -709,12 +707,8 @@ void multiplexer::block_sigpipe() {
 #endif
 }
 
-multiplexer_ptr multiplexer::make(middleman* parent) {
-  return make_counted<default_multiplexer>(parent);
-}
-
-multiplexer* multiplexer::from(actor_system& sys) {
-  return sys.network_manager().mpx_ptr();
+multiplexer_ptr multiplexer::make(actor_system* sys) {
+  return make_counted<default_multiplexer>(sys);
 }
 
 // -- constructors, destructors, and assignment operators ----------------------
@@ -726,15 +720,16 @@ multiplexer::~multiplexer() {
 // -- initialization ---------------------------------------------------------
 
 std::thread multiplexer::launch() {
-  auto l = std::make_shared<detail::latch>(2);
-  auto fn = [mpx = multiplexer_ptr{this}, l]() mutable {
+  auto l = std::make_shared<std::latch>(2);
+  auto fn = [mpx = multiplexer_ptr{this, add_ref}, l]() mutable {
     mpx->set_thread_id();
     l->count_down();
     l = nullptr;
     mpx->run();
   };
   auto result = std::thread{fn};
-  l->count_down_and_wait();
+  l->count_down();
+  l->wait();
   return result;
 }
 

@@ -16,29 +16,22 @@ namespace caf::detail {
 
 void private_thread::run(actor_system* sys) {
   auto lg = log::core::trace("");
-  auto resume = [&sys](resumable* job) {
-    auto res = job->resume(&sys->scheduler(),
-                           std::numeric_limits<size_t>::max());
-    while (res == resumable::resume_later)
-      res = job->resume(&sys->scheduler(), std::numeric_limits<size_t>::max());
-    return res;
-  };
   for (;;) {
     auto [job, done] = await();
     if (job) {
-      CAF_ASSERT(job->subtype() != resumable::io_actor);
-      resume(job);
-      intrusive_ptr_release(job);
+      CAF_ASSERT(job->pinned_scheduler() == nullptr);
+      job->resume(&sys->scheduler(), resumable::default_event_id);
     }
-    if (done)
+    if (done) {
       return;
+    }
   }
 }
 
-void private_thread::resume(resumable* ptr) {
+void private_thread::resume(resumable_ptr job) {
   std::unique_lock<std::mutex> guard{mtx_};
   CAF_ASSERT(job_ == nullptr);
-  job_ = ptr;
+  job_ = std::move(job);
   cv_.notify_all();
 }
 
@@ -52,14 +45,13 @@ bool private_thread::stop() {
   return true;
 }
 
-std::pair<resumable*, bool> private_thread::await() {
+std::pair<resumable_ptr, bool> private_thread::await() {
   std::unique_lock<std::mutex> guard(mtx_);
   while (job_ == nullptr && !shutdown_)
     cv_.wait(guard);
-  auto ptr = job_;
-  if (ptr)
-    job_ = nullptr;
-  return {ptr, shutdown_};
+  auto job = resumable_ptr{};
+  job.swap(job_);
+  return {std::move(job), shutdown_};
 }
 
 private_thread* private_thread::launch(actor_system* sys) {

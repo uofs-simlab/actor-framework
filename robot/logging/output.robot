@@ -3,6 +3,7 @@ Documentation       A test suite for --dump-config.
 
 Library             OperatingSystem
 Library             Process
+Library             String
 
 
 *** Variables ***
@@ -48,6 +49,10 @@ ${ERROR_BASELINE}=      SEPARATOR=
 ...                     ERROR app this is an error message\n
 ...                     ERROR app this is another error message ; foo = bar\n
 
+${ALL_EXCLUDED_COMPONENT}=  ["app", "caf", "caf_flow", "caf.core", "caf.system"]
+
+${COMMON_EXCLUDED_COMPONENT}=   ["caf", "caf_flow", "caf.core", "caf.system"]
+
 
 *** Keywords ***
 Run Console Logger
@@ -59,7 +64,7 @@ Run Console Logger
     ...    --api\=${api}
     ...    stderr=app.out
     ${output}=    Get File    app.out
-    [Return]    ${output}
+    RETURN        ${output}
 
 Run File Logger
     [Arguments]    ${verbosity}   ${api}
@@ -68,6 +73,25 @@ Run File Logger
     ...    --config-file\=${CURDIR}${/}base.cfg
     ...    --caf.logger.file.verbosity\=${verbosity}
     ...    --api\=${api}
+
+Run Console And File Logger
+    [Arguments]    ${console_excluded_components}   ${file_excluded_components}
+    Remove File    app.out
+    Remove File    app.log
+    Run Process    ${BINARY_PATH}
+    ...    --config-file\=${CURDIR}${/}base.cfg
+    ...    --caf.logger.console.verbosity\=debug
+    ...    --caf.logger.file.verbosity\=debug
+    ...    --caf.logger.console.excluded-components\=${console_excluded_components}
+    ...    --caf.logger.file.excluded-components\=${file_excluded_components}
+    ...    stderr=app.out
+    ${console_output}=    Get File    app.out
+    TRY
+        ${file_output}=    Get File    app.log
+    EXCEPT
+        ${file_output}=    Set Variable    ${EMPTY}
+    END
+    RETURN        ${console_output}     ${file_output}
 
 *** Test Cases ***
 The console logger prints everything when setting the log level to TRACE
@@ -141,6 +165,24 @@ The console logger prints a subset when setting the log level to ERROR
     ${found}=    Run Console Logger  error  default
     Should Be Equal As Strings  ${ERROR_BASELINE}  ${found}  formatter=repr
 
+The logger rejects file and console logging for excluded components
+    [Tags]    logging
+    ${console}    ${file}=    Run Console And File Logger    ${ALL_EXCLUDED_COMPONENT}    ${ALL_EXCLUDED_COMPONENT}
+    Should Be Empty    ${console}
+    Should Be Empty    ${file}
+
+The logger rejects file logging for excluded components
+    [Tags]    logging
+    ${console}    ${file}=    Run Console And File Logger    ${COMMON_EXCLUDED_COMPONENT}    ${ALL_EXCLUDED_COMPONENT}
+    Should Be Equal As Strings    ${DEBUG_BASELINE}    ${console}    formatter=repr
+    Should Be Empty    ${file}
+
+The logger rejects console logging for excluded components
+    [Tags]    logging
+    ${console}    ${file}=    Run Console And File Logger    ${ALL_EXCLUDED_COMPONENT}    ${COMMON_EXCLUDED_COMPONENT}
+    Should Be Empty    ${console}
+    Should Be Equal As Strings    ${DEBUG_BASELINE}    ${file}    formatter=repr
+
 The applications prints a subset when setting the log level to ERROR
     [Tags]    logging
     Run File Logger  error  legacy
@@ -163,3 +205,28 @@ The file logger prints nothing when setting the log level to QUIET
     File Should Not Exist    app.log
     Run File Logger  quiet  default
     File Should Not Exist    app.log
+
+The file logger renders formatted messages with fields
+    [Tags]    logging
+    Remove File    app.log
+    Run Process    ${BINARY_PATH}
+    ...    --config-file\=${CURDIR}${/}base.cfg
+    ...    --caf.logger.file.verbosity\=debug
+    ...    --caf.logger.file.format\=%p %m%n
+    ...    --test\=formatted
+    ${found}=    Get File    app.log
+    Should Contain    ${found}    formatted message: foo + bar = foobar
+    Should Contain    ${found}    value = 42
+    Should Contain    ${found}    key = value
+    Should Contain    ${found}    n = 123
+
+The file logger includes thread id and runtime in formatted output
+    [Tags]    logging
+    Remove File    app.log
+    Run Process    ${BINARY_PATH}
+    ...    --config-file\=${CURDIR}${/}base.cfg
+    ...    --caf.logger.file.verbosity\=debug
+    ...    --caf.logger.file.format\=%r %t %m%n
+    ...    --test\=thread_runtime
+    ${found}=    Get File    app.log
+    Should Match Regexp    ${found}    \\d+\\s+\\d+\\s+thread_runtime_check

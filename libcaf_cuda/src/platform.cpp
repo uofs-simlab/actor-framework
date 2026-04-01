@@ -1,20 +1,13 @@
 #include "caf/cuda/platform.hpp"
 #include <iostream>
+#include <mutex>
 
 namespace caf::cuda {
-
-platform_ptr platform::create() {
-  static platform_ptr instance;
-  if (!instance) {
-    instance = make_counted<platform>();
-  }
-  return instance;
-}
 
 //constructor
 platform::platform() {
   int device_count = 0;
-  check(cuDeviceGetCount(&device_count), "cuDeviceGetCount");
+  check(cuDeviceGetCount(&device_count));
   devices_.resize(device_count);
   contexts_.resize(device_count);
 
@@ -23,16 +16,25 @@ platform::platform() {
 
   for (int i = 0; i < device_count; ++i) {
     CUdevice cuda_device;
-    check(cuDeviceGet(&cuda_device, i), "cuDeviceGet");
+    check(cuDeviceGet(&cuda_device, i));
 
     char name[256];
-    check(cuDeviceGetName(name, sizeof(name), cuda_device), "cuDeviceGetName");
+    check(cuDeviceGetName(name, sizeof(name), cuda_device));
     device_names[i] = name;
 
-//Use this if cuCtxCreate throws a compiler error
-//    check(cuCtxCreate(&contexts_[i],nullptr ,CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, cuda_device), "cuCtxCreate");
-
-    check(cuCtxCreate(&contexts_[i], CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, cuda_device), "cuCtxCreate");
+#if CUDA_VERSION >= 13000
+    {
+      CUctxCreateParams ctx_params = {};
+      check(cuCtxCreate(&contexts_[i], 
+                        &ctx_params, 
+                        CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, 
+                        cuda_device));
+    }
+#else
+    check(cuCtxCreate(&contexts_[i], 
+                      CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, 
+                      cuda_device));
+#endif
     devices_[i] = make_counted<device>(cuda_device, contexts_[i], name, i);
   }
 
@@ -54,13 +56,41 @@ platform::platform() {
   scheduler_->set_devices(devices_);
 
   if (device_count > 0) {
-    check(cuCtxSetCurrent(contexts_[0]), "cuCtxSetCurrent");
+    check(cuCtxSetCurrent(contexts_[0]));
   }
 }
 
 
 platform::~platform() {
-	//no-op
+  // Unload any remaining retired modules before device contexts are
+  // destroyed.  At this point the actor system is shut down, all actors are
+  // dead, and no GPU work should be in-flight.
+  std::cout << "CAF-CUDA platform shutting down, unloading retired modules..." << std::endl;
+  flush_retired_modules();
+}
+
+void platform::defer_module_unload(CUcontext ctx, CUmodule module) {
+  std::lock_guard<std::mutex> lk(retired_modules_mutex_);
+  retired_modules_.emplace_back(ctx, module);
+}
+
+void platform::flush_retired_modules() {
+  std::vector<std::pair<CUcontext, CUmodule>> modules;
+  {
+    std::lock_guard<std::mutex> lk(retired_modules_mutex_);
+    modules.swap(retired_modules_);
+  }
+  for (auto& [ctx, mod] : modules) {
+    CUresult res = cuCtxPushCurrent(ctx);
+    if (res == CUDA_SUCCESS) {
+      cuCtxSynchronize();
+      cuModuleUnload(mod);
+      CUcontext dummy;
+      cuCtxPopCurrent(&dummy);
+    }
+    // If cuCtxPushCurrent failed the context is already gone;
+    // the module was cleaned up with it.
+  }
 }
 
 const std::string& platform::name() const {
@@ -92,18 +122,18 @@ scheduler* platform::get_scheduler() {
   return scheduler_.get();
 }
 
-device_ptr platform::schedule(int actor_id) {
+device_ptr platform::schedule(caf::actor_id actor_id) {
   
 	return scheduler_->schedule(actor_id);
 }
 
-device_ptr platform::schedule(int actor_id,int device_number) {
+device_ptr platform::schedule(caf::actor_id actor_id,int device_number) {
   
 	return scheduler_->schedule(actor_id,device_number);
 }
 
 
-void platform::release_streams_for_actor(int actor_id) {
+void platform::release_streams_for_actor(caf::actor_id actor_id) {
   for (auto& dev : devices_) {
     dev->release_stream_for_actor(actor_id);
   }

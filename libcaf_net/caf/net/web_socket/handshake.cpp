@@ -47,7 +47,7 @@ handshake::handshake() noexcept {
 
 bool handshake::has_valid_key() const noexcept {
   auto non_zero = [](std::byte x) { return x != std::byte{0}; };
-  return std::any_of(key_.begin(), key_.end(), non_zero);
+  return std::ranges::any_of(key_, non_zero);
 }
 
 bool handshake::assign_key(std::string_view base64_key) {
@@ -209,7 +209,7 @@ struct response_checker {
   bool has_connection_field = false;
   bool has_ws_accept_field = false;
 
-  response_checker(std::string_view key) : ws_key(key) {
+  explicit response_checker(std::string_view key) : ws_key(key) {
     // nop
   }
 
@@ -226,11 +226,11 @@ struct response_checker {
       auto [field, value] = split_by(line, ":");
       field = trim(field);
       value = trim(value);
-      if (field == "Upgrade")
+      if (icase_equal(field, "upgrade"))
         has_upgrade_field = icase_equal(value, "websocket");
-      else if (field == "Connection")
+      else if (icase_equal(field, "connection"))
         has_connection_field = icase_equal(value, "upgrade");
-      else if (field == "Sec-WebSocket-Accept")
+      else if (icase_equal(field, "sec-websocket-accept"))
         has_ws_accept_field = value == ws_key;
     }
   }

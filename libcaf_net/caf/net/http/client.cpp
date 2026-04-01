@@ -111,8 +111,8 @@ public:
     down_->begin_output();
     auto& buf = down_->output_buffer();
     auto size_str = detail::format("{:X}\r\n", bytes.size());
-    std::transform(size_str.begin(), size_str.end(), std::back_inserter(buf),
-                   [](auto c) { return static_cast<std::byte>(c); });
+    std::ranges::transform(size_str, std::back_inserter(buf),
+                           [](auto c) { return static_cast<std::byte>(c); });
     buf.insert(buf.end(), bytes.begin(), bytes.end());
     buf.emplace_back(std::byte{'\r'});
     buf.emplace_back(std::byte{'\n'});
@@ -208,7 +208,7 @@ public:
     auto res = v1::parse_chunk(input);
     if (!res) {
       // No error code signals we didn't receive enough data.
-      if (!res.error())
+      if (res.error().empty())
         return consumed;
       abort_and_shutdown(res.error());
       return -1;

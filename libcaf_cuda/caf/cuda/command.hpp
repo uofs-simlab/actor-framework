@@ -13,6 +13,7 @@
 #include "caf/cuda/platform.hpp"
 #include "caf/cuda/mem_ref.hpp"
 #include "caf/cuda/device.hpp"
+#include "caf/cuda/program.hpp"
 
 
 
@@ -37,7 +38,7 @@ public:
   template <typename... Us>
   base_command(program_ptr program,
                nd_range dims,
-               int actor_id,
+               caf::actor_id actor_id,
                Us&&... xs)
       : program_(std::move(program)),
         dims_(std::move(dims)),
@@ -45,7 +46,7 @@ public:
         kernel_args(std::make_tuple(std::forward<Us>(xs)...)),
         shared_memory_(0)
   {
-      dev_ = platform::create()->schedule(actor_id);
+      dev_ = program_->get_platform()->schedule(actor_id);
       static_assert(sizeof...(Us) == sizeof...(Ts), "Argument count mismatch");
   }
 
@@ -55,7 +56,7 @@ public:
   template <typename... Us>
   base_command(program_ptr program,
                nd_range dims,
-               int actor_id,
+               caf::actor_id actor_id,
                int shared_memory,
                Us&&... xs)
       : program_(std::move(program)),
@@ -64,7 +65,7 @@ public:
         kernel_args(std::make_tuple(std::forward<Us>(xs)...)),
         shared_memory_(shared_memory)
   {
-      dev_ = platform::create()->schedule(actor_id);
+      dev_ = program_->get_platform()->schedule(actor_id);
       static_assert(sizeof...(Us) == sizeof...(Ts), "Argument count mismatch");
   }
 
@@ -74,7 +75,7 @@ public:
   template <typename... Us>
   base_command(program_ptr program,
                nd_range dims,
-               int actor_id,
+               caf::actor_id actor_id,
                int shared_memory,
                int device_number,
                Us&&... xs)
@@ -85,14 +86,21 @@ public:
         shared_memory_(shared_memory)
   {
       if (device_number == -1)
-          dev_ = platform::create()->schedule(actor_id);
+          dev_ = program_->get_platform()->schedule(actor_id);
       else
-          dev_ = platform::create()->schedule(actor_id, device_number);
+          dev_ = program_->get_platform()->schedule(actor_id, device_number);
 
       static_assert(sizeof...(Us) == sizeof...(Ts), "Argument count mismatch");
   }
 
   virtual ~base_command() = default;
+
+  /// Returns the device selected for this command (needed by run_async_notify
+  /// to retrieve the stream after launch).
+  device_ptr get_device() const { return dev_; }
+
+  /// Returns the actor_id used for stream selection.
+  caf::actor_id get_actor_id() const { return actor_id; }
 
   // -------------------------------------------------------------------------
   // Unpacks a caf message and calls launch_kernel_mem_ref
@@ -100,13 +108,14 @@ public:
   // -------------------------------------------------------------------------
   virtual std::tuple<mem_ptr<raw_t<Ts>>...> base_enqueue() {
       CUfunction kernel = program_->get_kernel(dev_->getId());
-      return dev_->launch_kernel_mem_ref(kernel, dims_, kernel_args, actor_id, shared_memory_);
+      return dev_->launch_kernel_mem_ref(kernel, dims_, kernel_args, actor_id, 
+                                         shared_memory_);
   }
 
 protected:
   program_ptr program_;
   nd_range dims_;
-  int actor_id;
+  caf::actor_id actor_id;
   device_ptr dev_;
   std::tuple<Ts ...> kernel_args;
   int shared_memory_;

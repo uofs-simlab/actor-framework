@@ -11,6 +11,7 @@
 #include <tuple>
 #include <mutex>
 
+#include <caf/adopt_ref.hpp>
 #include <caf/intrusive_ptr.hpp>
 #include <caf/ref_counted.hpp>
 
@@ -37,7 +38,7 @@ public:
       }
 
   ~device() {
-    check(cuCtxDestroy(context_), "cuCtxDestroy");
+    check(cuCtxDestroy(context_));
   }
 
   device(const device&) = delete;
@@ -100,29 +101,29 @@ public:
 
 
   //returns the CUStream associated with the actor id 
-  CUstream get_stream_for_actor(int actor_id) {
+  CUstream get_stream_for_actor(caf::actor_id actor_id) {
     return stream_table_.get_stream(actor_id);
   }
 
   //releases the CUStream associated with the actor id 
-  void release_stream_for_actor(int actor_id) {
+  void release_stream_for_actor(caf::actor_id actor_id) {
     stream_table_.release_stream(actor_id);
   }
 
 
   // Overloads for make_arg using actor_id
   template <typename T>
-  mem_ptr<T> make_arg(const in<T>& arg, int actor_id) {
+  mem_ptr<T> make_arg(const in<T>& arg, caf::actor_id actor_id) {
     return global_argument(arg, actor_id, IN);
   }
 
   template <typename T>
-  mem_ptr<T> make_arg(const in_out<T>& arg, int actor_id) {
+  mem_ptr<T> make_arg(const in_out<T>& arg, caf::actor_id actor_id) {
     return global_argument(arg, actor_id, IN_OUT);
   }
 
   template <typename T>
-  mem_ptr<T> make_arg(const out<T>& arg, int actor_id) {
+  mem_ptr<T> make_arg(const out<T>& arg, caf::actor_id actor_id) {
     return scratch_argument(arg, actor_id, OUT);
   }
 
@@ -186,31 +187,30 @@ public:
 
   //launches a kernel using wrapper types, in, in_out and out as arguments
   //and returns a tuple of mem ref's that hold device memory  
-  	  template <typename... Args>
-	  std::tuple<mem_ptr<raw_t<Args>>...>
-	  launch_kernel_mem_ref(CUfunction kernel,
-                      const nd_range& range,
-                      std::tuple<Args...> args,
-                      int actor_id,
-		      int shared_mem = 0 //in bytes
-		      ) {
+  template <typename... Args>
+	std::tuple<mem_ptr<raw_t<Args>>...>
+	launch_kernel_mem_ref(CUfunction kernel,
+                        const nd_range& range,
+                        std::tuple<Args...> args,
+                        caf::actor_id actor_id,
+		                    int shared_mem = 0) { //in bytes
 
-  // Step 1: Allocate mem_ref<T> for each wrapper type 
-   CUstream stream = get_stream_for_actor(actor_id);
-   auto mem_refs = std::apply([&](auto&&... arg) {
-    return std::make_tuple(make_arg(std::forward<decltype(arg)>(arg), stream)...);
-  }, args);
+    // Step 1: Allocate mem_ref<T> for each wrapper type 
+    CUstream stream = get_stream_for_actor(actor_id);
+    auto mem_refs = std::apply([&](auto&&... arg) {
+      return std::make_tuple(make_arg(std::forward<decltype(arg)>(arg), stream)...);
+    }, args);
 
-  // Step 2: Prepare kernel argument pointers
-  auto kernel_args = prepare_kernel_args(mem_refs);
+    // Step 2: Prepare kernel argument pointers
+    auto kernel_args = prepare_kernel_args(mem_refs);
 
-  // Step 3: Launch kernel
-  CHECK_CUDA(cuCtxPushCurrent(getContext()));
-  launch_kernel_internal(kernel, range, stream, kernel_args.ptrs.data(),shared_mem);
-  CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    // Step 3: Launch kernel
+    CHECK_CUDA(cuCtxPushCurrent(getContext()));
+    launch_kernel_internal(kernel, range, stream, kernel_args.ptrs.data(),shared_mem);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
 
-  // Step 4: Clean up kernel argument pointers
-  cleanup_kernel_args(kernel_args);
+    // Step 4: Clean up kernel argument pointers
+    cleanup_kernel_args(kernel_args);
 
   // Step 5: Return tuple of mem_ref<T>...
   return mem_refs;
@@ -224,7 +224,7 @@ public:
   std::vector<output_buffer> launch_kernel(CUfunction kernel,
                                            const nd_range& range,
                                            std::tuple<Ts...> args,
-                                           int actor_id) {
+                                           caf::actor_id actor_id) {
     CUstream stream = get_stream_for_actor(actor_id);
     CHECK_CUDA(cuCtxPushCurrent(getContext()));
 
@@ -377,8 +377,9 @@ mem_ptr<T> scratch_argument(const out<T>& arg, int actor_id, int access) {
 template <typename T>
 mem_ptr<T> global_argument(const in<T>& arg, CUstream stream, int access) {
   if (arg.is_scalar()) {
-    return caf::intrusive_ptr<mem_ref<T>>(
-      new mem_ref<T>(arg.getscalar(), access, id_, 0, getContext(), stream));
+    return caf::intrusive_ptr<mem_ref<T>>{
+      new mem_ref<T>(arg.getscalar(), access, id_, 0, getContext(), stream),
+      caf::add_ref};
   }
   size_t bytes = arg.size() * sizeof(T);
   CUdeviceptr dev_ptr;
@@ -386,16 +387,18 @@ mem_ptr<T> global_argument(const in<T>& arg, CUstream stream, int access) {
   CHECK_CUDA(cuMemAlloc(&dev_ptr, bytes));
   CHECK_CUDA(cuMemcpyHtoDAsync(dev_ptr, arg.data(), bytes, stream));
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
-  return caf::intrusive_ptr<mem_ref<T>>(
-    new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream));
+  return caf::intrusive_ptr<mem_ref<T>>{
+    new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream),
+    caf::add_ref};
 }
 
 // allocate a read/write input buffer on the GPU
 template <typename T>
 mem_ptr<T> global_argument(const in_out<T>& arg, CUstream stream, int access) {
   if (arg.is_scalar()) {
-    return caf::intrusive_ptr<mem_ref<T>>(
-      new mem_ref<T>(arg.getscalar(), access, id_, 0, getContext(), stream));
+    return caf::intrusive_ptr<mem_ref<T>>{
+      new mem_ref<T>(arg.getscalar(), access, id_, 0, getContext(), stream),
+      caf::add_ref};
   }
   size_t bytes = arg.size() * sizeof(T);
   CUdeviceptr dev_ptr;
@@ -403,8 +406,9 @@ mem_ptr<T> global_argument(const in_out<T>& arg, CUstream stream, int access) {
   CHECK_CUDA(cuMemAlloc(&dev_ptr, bytes));
   CHECK_CUDA(cuMemcpyHtoDAsync(dev_ptr, arg.data(), bytes, stream));
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
-  return caf::intrusive_ptr<mem_ref<T>>(
-    new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream));
+  return caf::intrusive_ptr<mem_ref<T>>{
+    new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream),
+    caf::add_ref};
 }
 
 // allocate an output buffer on the GPU
@@ -415,16 +419,17 @@ mem_ptr<T> scratch_argument(const out<T>& arg, CUstream stream, int access) {
   CHECK_CUDA(cuCtxPushCurrent(getContext()));
   CHECK_CUDA(cuMemAlloc(&dev_ptr, size * sizeof(T)));
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
-  return caf::intrusive_ptr<mem_ref<T>>(
-    new mem_ref<T>(size, dev_ptr, access, id_, 0, getContext(), stream));
+  return caf::intrusive_ptr<mem_ref<T>>{
+    new mem_ref<T>(size, dev_ptr, access, id_, 0, getContext(), stream),
+    caf::add_ref};
 }  
 
-// === Kernel launch core ===
+  // === Kernel launch core ===
   void launch_kernel_internal(CUfunction kernel,
                               const nd_range& range,
                               CUstream stream,
                               void** args,
-			      int shared_mem = 0) {
+			                        int shared_mem = 0) {
     CUresult result = cuLaunchKernel(kernel,
                                      range.getGridDimX(), range.getGridDimY(), range.getGridDimZ(),
                                      range.getBlockDimX(), range.getBlockDimY(), range.getBlockDimZ(),

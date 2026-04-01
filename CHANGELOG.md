@@ -25,6 +25,33 @@ is based on [Keep a Changelog](https://keepachangelog.com).
   more consistent.
 - The default maximum message size for the length-prefix framing has been
   reduced to 64 MB. This change was made to improve security by default.
+- Creating a response promise no longer invalidates `self->current_sender()`.
+- Improved compile-time error messages when passing ill-formed message handler
+  signatures to typed actors.
+- The CMake variable `CAF_LOG_LEVEL` has been removed. At run-time, users can
+  enable logging up to the `debug` log level by default. Setting a higher log
+  level than that will have no effect since trace logging remains disabled by
+  default and must be enabled manually by setting the CMake option
+  `CAF_ENABLE_TRACE_LOGGING` to `ON`. When using the `configure` script, this
+  can be achieved by passing the new `--enable-trace-logging` option to the
+  script.
+- The classes `scheduler` and `resumable` have received a complete overhaul to
+  better hide implementation details and to improve maintainability.
+- The `is_sum` parameter for counters now defaults to `true` instead of `false`.
+  In the Prometheus output, this means that name for the counter will be
+  suffixed with `_total`, which is the standard suffix for counters.
+- The method `caf::actor_registry::running` moved to
+  `caf::actor_system::running_actors_count`. Other methods for manipulating the
+  count have been removed and replaced by private methods on the `actor_system`
+  since they are meant for internal use only.
+- Outstanding `http::request` objects now keep their connection "alive" for the
+  purpose of `max_connections` tracking. Previously, only open sockets counted
+  against the limit, which could cause the server to accept new connections
+  while there were still pending requests being processed.
+- Metrics actor name filters (`caf.metrics.filters.include` and
+  `caf.metrics.filters.exclude`) now use simple wildcard matching with `*`
+  (zero or more characters) and `?` (exactly one character) only. Glob-style
+  patterns (`**`, `/`, `\`) are no longer supported.
 
 ### Deprecated
 
@@ -34,9 +61,41 @@ is based on [Keep a Changelog](https://keepachangelog.com).
   throughout the code base and users should do the same.
 - The alias `caf::net::lp::frame` is now deprecated and will be removed in the
   next major release. Users should use `caf::chunk` directly instead.
+- All legacy macros for logging have been deprecated: `CAF_LOG_DEBUG`,
+  `CAF_LOG_DEBUG_IF`, `CAF_LOG_INFO`, `CAF_LOG_INFO_IF`, `CAF_LOG_WARNING`,
+  `CAF_LOG_WARNING_IF`, `CAF_LOG_ERROR`, and `CAF_LOG_ERROR_IF`. Users should
+  use the new logging API instead.
+- The member functions `anon_send`, `scheduled_anon_send`, and
+  `delayed_anon_send` of the class `local_actor` are now deprecated in favor of
+  using the free `anon_mail` function instead.
+- The members `operator bool` and `operator!` on `caf::error` are now
+  deprecated. Allowing boolean conversions from this type makes it too easy to
+  misinterpret the meaning of an `if` statement and thus leads to subtle bugs.
+  Please use `.empty()` and `.valid()` instead to determine whether an error
+  has been default-constructed or holds a valid error code.
+- The methods `or_else` and `eval` on `caf::error` are now deprecated since they
+  overlap with methods such as `transform` and `and_then` on `caf::expected`.
+- The constructors and assignment operators of `caf::intrusive_ptr` and
+  `caf::weak_intrusive_ptr` that accept a boolean flag to control whether the
+  reference count should be increased or not have been deprecated. Users should
+  use the new `add_ref` and `adopt_ref` tags instead.
+- Deprecate all member functions in `caf::expected` that are not present in
+  `std::expected`.
+- The enumerator `spawn_options::priority_aware_flag` is a relict of pre-0.18
+  versions of CAF and had no effect for a long time. It is now deprecated and
+  will be removed in the next major release.
+- The `operator bool` on `caf::error_code` is now deprecated. Use `.empty()` or
+  `.valid()` instead to determine whether an error code was default-constructed
+  or holds a non-zero value (#2211).
+- The method `actor_system::redirect_text_output` is now deprecated. Configure a
+  console printer instead via `actor_system_config::console_printer_factory()`
+  before constructing the actor system.
 
 ### Added
 
+- CAF's intrusive pointer API now uses explicit `add_ref` and `adopt_ref` tags
+  to control whether the reference count should be increased or not instead of
+  relying on boolean flags.
 - Added `monitor` API to WebSocket and HTTP servers in the `with` DSL (#2026).
 - When starting a server or client using length-prefix framing, users can now
   specify the maximum message size via `max_message_size` and the number of
@@ -44,6 +103,40 @@ is based on [Keep a Changelog](https://keepachangelog.com).
 - The namespace `caf::net::http` now contains two new classes for dealing with
   HTTP multipart requests and responses: `multipart_reader` and
   `multipart_writer`.
+- Users can now set a global default handler for exceptions on the
+  `actor_system_config` by calling `exception_handler(my_handler)`. This handler
+  then gets passed down to all scheduled actors as the default exception handler
+  but can still be overridden by actors.
+- The HTTP server implementation now accepts chunked transfer encoding for
+  incoming requests (#2205).
+- Users can now define `CAF_SUPPRESS_DEPRECATION_WARNINGS` to silence all
+  deprecation warnings emitted by CAF headers. By turning deprecation warnings
+  off, users can migrate their code base in multiple steps without getting less
+  urgent warnings. Of course, we recommend using this macro only for a short
+  transition period since deprecated APIs will usually be removed in the next
+  major release.
+- The new static method `caf::abstract_actor::current()` grants users
+  access to the actor currently associated with the calling thread (returns
+  `nullptr` if no actor is associated with the thread).
+- To make `caf::expected` a drop-in replacement for `std::expected`, we have
+  added missing utility types such as `caf::unexpect` and `caf::unexpected`.
+  Further, users can optionally build CAF with `CAF_USE_STD_EXPECTED` enabled to
+  have CAF use aliases to the standard library types instead of its own
+  implementation (requires C++23).
+- The class `http::request` now has an `orphaned()` method that returns `true`
+  if the underlying connection has been shut down. This allows request handlers
+  to safely discard abandoned requests.
+- The new configuration option `caf.clock.cleanup-interval` enables periodic
+  cleanup of disposed jobs from the actor clock. By setting this option, users
+  can reduce the memory usage of the actor clock when the application frequently
+  schedules actions with long delays that usually get disposed before they run.
+- Users can now set the new config parameter `caf.logger.console.stream` to
+  `system` to have the console logger use `actor_system::println` instead of
+  writing to `stderr`. This avoids mangled output on the console when enabling
+  console logging while also printing from actors.
+- Setting the new CMake option `CAF_ENABLE_RTTI` to `OFF` will now disable all
+  uses of `typeid` and `dynamic_cast` in CAF. This enables users to build CAF
+  with compiler options such as `-fno-rtti`.
 
 ### Fixed
 
@@ -51,6 +144,9 @@ is based on [Keep a Changelog](https://keepachangelog.com).
   properly call `on_error` (#2026).
 - Fix UBSan finding regarding non-aligned memory allocation when spawning
   actors.
+- Fix build issues on some BSD derivatives (#2135).
+- Fix alignment of `caf::async::batch` on 32bit ARM architecture (#2142).
+- Timestamps in log output are now rendered without surrounding quotes (#2216).
 
 ### Removed
 
@@ -58,6 +154,15 @@ is based on [Keep a Changelog](https://keepachangelog.com).
 - Removed the deprecated `actor_ostream` class and the `aout` utility. They have
   been deprecated since CAF 1.0.0. Users should now use `println` instead, which
   is available on actors as well as on the `actor_system`.
+- The getters `spawn_serv` and `config_serv` have been removed from the public
+  interface of `actor_system`. These actors are an implementation detail of the
+  I/O module and should not be accessed directly by users.
+- The method `logger::thread_local_aid(actor_id)` as well as the macros
+  `CAF_PUSH_AID`, `CAF_PUSH_AID_FROM_PTR` and `CAF_SET_AID` have been removed.
+  They were technically part of the public API but were never intended to be
+  called by users.
+- Removed the implicit conversions from `caf::error_code` to `caf::error` and
+  from error code enums to `caf::error_code`.
 
 ## [1.1.0] - 2025-07-25
 

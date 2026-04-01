@@ -8,12 +8,19 @@
 #include "caf/net/http/client.hpp"
 #include "caf/net/http/router.hpp"
 #include "caf/net/http/server.hpp"
+#include "caf/net/middleman.hpp"
 #include "caf/net/socket_manager.hpp"
 
+#include "caf/actor_system.hpp"
+#include "caf/add_ref.hpp"
 #include "caf/detail/connection_acceptor.hpp"
+#include "caf/detail/connection_guard.hpp"
 #include "caf/internal/accept_handler.hpp"
 #include "caf/internal/make_transport.hpp"
 #include "caf/internal/net_config.hpp"
+#include "caf/make_counted.hpp"
+
+#include <atomic>
 
 namespace caf::net::http {
 
@@ -73,6 +80,37 @@ make_http_request_producer(async::execution_context_ptr ecp,
   return ptr;
 }
 
+/// Guards the lifetime of an HTTP connection. The destructor schedules a
+/// callback on the multiplexer. By having the socket manager's router hold a
+/// reference to the guard, and each http::request also hold a reference, the
+/// callback fires only when both the socket manager has cleaned up AND all
+/// outstanding requests have been destroyed.
+class http_connection_guard : public detail::connection_guard {
+public:
+  http_connection_guard(net::multiplexer* mpx, action on_close)
+    : mpx_(mpx, add_ref), on_close_(std::move(on_close)) {
+    // nop
+  }
+
+  ~http_connection_guard() override {
+    if (on_close_)
+      mpx_->schedule(std::move(on_close_));
+  }
+
+  bool orphaned() const noexcept override {
+    return orphaned_.load(std::memory_order_acquire);
+  }
+
+  void set_orphaned() noexcept override {
+    orphaned_.store(true, std::memory_order_release);
+  }
+
+private:
+  std::atomic<bool> orphaned_{false};
+  net::multiplexer_ptr mpx_;
+  action on_close_;
+};
+
 template <class Acceptor>
 class http_conn_acceptor : public detail::connection_acceptor {
 public:
@@ -86,8 +124,9 @@ public:
     // nop
   }
 
-  error start(net::socket_manager* parent) override {
+  error start(net::socket_manager* parent, action on_conn_close) override {
     parent_ = parent;
+    on_conn_close_ = std::move(on_conn_close);
     return error{};
   }
 
@@ -97,14 +136,20 @@ public:
 
   expected<net::socket_manager_ptr> try_accept() override {
     if (parent_ == nullptr)
-      return make_error(sec::runtime_error, "acceptor not started");
+      return expected<net::socket_manager_ptr>{unexpect, sec::runtime_error,
+                                               "acceptor not started"};
     auto conn = accept(acceptor_);
     if (!conn)
-      return conn.error();
-    auto app = net::http::router::make(routes_);
+      return expected<net::socket_manager_ptr>{unexpect,
+                                               std::move(conn.error())};
+    // Create the connection guard. The router and each http::request hold a
+    // reference. When all references are released, on_conn_close_ fires.
+    auto* mpx = parent_->mpx_ptr();
+    auto guard = make_counted<http_connection_guard>(mpx, on_conn_close_);
+    // Instantiate our protocol stack.
+    auto app = net::http::router::make(routes_, std::move(guard));
     auto serv = net::http::server::make(std::move(app));
     serv->max_request_size(max_request_size_);
-
     auto transport = std::unique_ptr<net::octet_stream::transport>{};
     if constexpr (std::is_same_v<std::decay_t<decltype(*conn)>,
                                  net::ssl::connection>)
@@ -114,7 +159,6 @@ public:
                                                      std::move(serv));
     transport->max_consecutive_reads(max_consecutive_reads_);
     transport->active_policy().accept();
-    auto* mpx = parent_->mpx_ptr();
     auto res = net::socket_manager::make(mpx, std::move(transport));
     mpx->watch(res->as_disposable());
     return res;
@@ -133,6 +177,7 @@ private:
   std::vector<net::http::route_ptr> routes_;
   size_t max_consecutive_reads_;
   size_t max_request_size_;
+  action on_conn_close_;
 };
 
 detail::connection_acceptor_ptr
@@ -168,7 +213,8 @@ public:
   template <class Acceptor>
   expected<disposable> do_start_server(Acceptor& acc) {
     if (push) {
-      auto producer = make_http_request_producer(mpx, push.try_open());
+      auto producer = make_http_request_producer({mpx, add_ref},
+                                                 push.try_open());
       auto new_route = make_route([producer](responder& res) {
         if (!producer->push(responder{res}.to_request())) {
           auto err = make_error(sec::runtime_error, "flow disconnected");
@@ -176,12 +222,13 @@ public:
         }
       });
       if (!new_route) {
-        return std::move(new_route.error());
+        return expected<disposable>{unexpect, std::move(new_route.error())};
       }
       routes.push_back(std::move(*new_route));
     } else if (routes.empty()) {
-      return make_error(sec::logic_error,
-                        "cannot start an HTTP server without any routes");
+      return expected<disposable>{
+        unexpect, sec::logic_error,
+        "cannot start an HTTP server without any routes"};
     }
     for (auto& ptr : routes)
       ptr->init();
@@ -194,8 +241,9 @@ public:
     auto ptr = net::socket_manager::make(mpx, std::move(impl));
     if (mpx->start(ptr))
       return expected<disposable>{disposable{std::move(ptr)}};
-    return make_error(sec::logic_error,
-                      "failed to register socket manager to net::multiplexer");
+    return expected<disposable>{
+      unexpect, sec::logic_error,
+      "failed to register socket manager to net::multiplexer"};
   }
 
   expected<disposable> start_server_impl(net::ssl::tcp_acceptor& acc) override {
@@ -218,8 +266,9 @@ public:
     auto ptr = socket_manager::make(mpx, std::move(transport));
     if (mpx->start(ptr))
       return disposable{std::move(ptr)};
-    return make_error(sec::logic_error,
-                      "failed to register socket manager to net::multiplexer");
+    return expected<disposable>{
+      unexpect, sec::logic_error,
+      "failed to register socket manager to net::multiplexer"};
   }
 
   expected<disposable> start_client_impl(net::ssl::connection& conn) override {
@@ -235,8 +284,8 @@ public:
     auto use_ssl = false;
     // Sanity checking.
     if (auth.host_str().empty())
-      return make_error(sec::invalid_argument,
-                        "URI must provide a valid hostname");
+      return expected<disposable>{unexpect, sec::invalid_argument,
+                                  "URI must provide a valid hostname"};
     if (endpoint.scheme() == "http") {
       if (auth.port == 0)
         auth.port = defaults::net::http_default_port;
@@ -247,14 +296,14 @@ public:
     } else {
       auto err = make_error(sec::invalid_argument,
                             "unsupported URI scheme: expected http or https");
-      return err;
+      return expected<disposable>{unexpect, std::move(err)};
     }
     if (use_ssl) {
       if (!ctx) {
         if (auto maybe_ctx = (*context_factory)())
           ctx = std::make_shared<ssl::context>(std::move(*maybe_ctx));
         else
-          return maybe_ctx.error();
+          return expected<disposable>{unexpect, std::move(maybe_ctx.error())};
       }
     }
     auto host = auth.host_str();
@@ -326,7 +375,7 @@ void with_t::server::do_monitor(strong_actor_ptr ptr) {
 }
 
 void with_t::server::add_route(expected<route_ptr>& new_route) {
-  if (config_->err)
+  if (config_->err.valid())
     return;
   if (new_route) {
     CAF_ASSERT(*new_route != nullptr);
@@ -339,10 +388,10 @@ void with_t::server::add_route(expected<route_ptr>& new_route) {
 expected<disposable> with_t::server::do_start(push_t push) {
   config_->push = std::move(push);
   // Handle an error that could've been created by the DSL during server setup.
-  if (config_->err) {
+  if (config_->err.valid()) {
     if (config_->on_error)
       (*config_->on_error)(config_->err);
-    return config_->err;
+    return expected<disposable>{unexpect, config_->err};
   }
   return config_->start_server();
 }
@@ -384,10 +433,11 @@ void with_t::client::do_add_header_field(std::string name, std::string value) {
 expected<std::pair<async::future<response>, disposable>>
 with_t::client::request(http::method method, const_byte_span payload) {
   // Handle an error that could've been created by the DSL during client setup.
-  if (config_->err) {
+  if (config_->err.valid()) {
     if (config_->on_error)
       (*config_->on_error)(config_->err);
-    return config_->err;
+    return expected<std::pair<async::future<response>, disposable>>{
+      unexpect, config_->err};
   }
   // Only connecting to an URI is enabled in the 'with' DSL.
   using lazy_t = internal::net_config::client_config::lazy;
@@ -417,7 +467,7 @@ with_t with(multiplexer* mpx) {
 }
 
 with_t with(actor_system& sys) {
-  return with(multiplexer::from(sys));
+  return with(sys.network_manager().mpx_ptr());
 }
 
 with_t::with_t(multiplexer* mpx) : config_(new config_impl(mpx)) {
@@ -439,7 +489,7 @@ with_t&& with_t::context(ssl::context ctx) && {
 with_t&& with_t::context(expected<ssl::context> ctx) && {
   if (ctx) {
     config_->ctx = std::make_shared<ssl::context>(std::move(*ctx));
-  } else if (ctx.error()) {
+  } else if (ctx.error().valid()) {
     config_->err = std::move(ctx.error());
   }
   return std::move(*this);
@@ -470,7 +520,7 @@ with_t::client with_t::connect(uri endpoint) && {
 with_t::client with_t::connect(expected<uri> endpoint) && {
   if (endpoint) {
     config_->client.assign(std::move(*endpoint));
-  } else if (endpoint.error()) {
+  } else if (endpoint.error().valid()) {
     config_->err = std::move(endpoint.error());
   }
   return client{std::move(config_)};

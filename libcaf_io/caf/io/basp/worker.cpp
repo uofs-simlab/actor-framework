@@ -7,6 +7,7 @@
 #include "caf/io/basp/message_queue.hpp"
 
 #include "caf/actor_system.hpp"
+#include "caf/add_ref.hpp"
 #include "caf/detail/assert.hpp"
 #include "caf/proxy_registry.hpp"
 #include "caf/scheduler.hpp"
@@ -36,20 +37,22 @@ void worker::launch(const node_id& last_hop, const basp::header& hdr,
   last_hop_ = last_hop;
   memcpy(&hdr_, &hdr, sizeof(basp::header));
   payload_.assign(payload.begin(), payload.end());
-  ref();
-  system_->scheduler().schedule(this);
+  system_->scheduler().schedule(resumable_ptr{this, add_ref},
+                                resumable::default_event_id);
 }
 
 // -- implementation of resumable ----------------------------------------------
 
-resumable::resume_result worker::resume(scheduler* sched, size_t) {
+void worker::resume(scheduler* sched, uint64_t event_id) {
+  if (event_id == resumable::dispose_event_id) {
+    return;
+  }
   proxy_registry::current(proxies_);
   auto guard = detail::scope_guard{[]() noexcept { //
     proxy_registry::current(nullptr);
   }};
   handle_remote_message(*system_, sched);
   hub_->push(this);
-  return resumable::awaiting_message;
 }
 
 } // namespace caf::io::basp

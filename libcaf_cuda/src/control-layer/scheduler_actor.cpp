@@ -16,22 +16,23 @@
  */
 namespace caf::cuda {
 
-caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, int device_number,bool multi_gpu) {
-    auto& state = self->state();
+caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, 
+                             int device_number,bool multi_gpu) {
+  auto& state = self->state();
 
-    // add self reference
-    state.self = self;
+  // add self reference
+  state.self = self;
 
-    // set device number
-    state.device_number = device_number;
+  // set device number
+  state.device_number = device_number;
 
-    //check if multiple gpus
-    state.multiple_gpus = multi_gpu;
+  //check if multiple gpus
+  state.multiple_gpus = multi_gpu;
 
-   // default behavior
-    state.table = std::make_unique<behavior_table>(state);
-    state.current_behavior = state.table -> get(behavior_token("single_usage"));
-    state.current_behavior->on_enter();
+  // default behavior
+  state.table = std::make_unique<behavior_table>(state);
+  state.current_behavior = state.table -> get(behavior_token("single_usage"));
+  state.current_behavior->on_enter();
 
 
 

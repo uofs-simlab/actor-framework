@@ -9,6 +9,7 @@
 #include "caf/test/block_type.hpp"
 #include "caf/test/context.hpp"
 
+#include "caf/detail/asynchronous_logger.hpp"
 #include "caf/detail/format.hpp"
 #include "caf/detail/log_level.hpp"
 #include "caf/detail/log_level_map.hpp"
@@ -18,7 +19,8 @@
 #include "caf/raise_error.hpp"
 #include "caf/term.hpp"
 
-#include <iostream>
+#include <algorithm>
+#include <cstdio>
 
 namespace caf::test {
 
@@ -27,6 +29,34 @@ reporter::~reporter() {
 }
 
 namespace {
+
+/// Output iterator that writes to a FILE*.
+struct file_iterator {
+  using difference_type = int;
+  using value_type = void;
+  using pointer = void;
+  using reference = void;
+  using iterator_category = std::output_iterator_tag;
+
+  FILE* out;
+
+  file_iterator& operator++() {
+    return *this;
+  }
+
+  file_iterator operator++(int) {
+    return *this;
+  }
+
+  file_iterator& operator*() {
+    return *this;
+  }
+
+  file_iterator& operator=(char c) {
+    fputc(c, out);
+    return *this;
+  }
+};
 
 /// Implements a mini-DSL for colored output:
 /// - $R(red text)
@@ -55,35 +85,36 @@ struct colorizing_iterator {
     verbatim,
   };
   mode_t mode = normal;
-  std::ostream* out;
+  FILE* out;
+
   void put(char c) {
     switch (mode) {
       case normal:
         if (c == '$')
           mode = read_color;
         else
-          out->put(c);
+          fputc(c, out);
         break;
       case read_color:
-        out->flush();
+        fflush(out);
         switch (c) {
           case 'R':
-            *out << term::red;
+            detail::set_color(out, term::red);
             break;
           case 'G':
-            *out << term::green;
+            detail::set_color(out, term::green);
             break;
           case 'B':
-            *out << term::blue;
+            detail::set_color(out, term::blue);
             break;
           case 'Y':
-            *out << term::yellow;
+            detail::set_color(out, term::yellow);
             break;
           case 'M':
-            *out << term::magenta;
+            detail::set_color(out, term::magenta);
             break;
           case 'C':
-            *out << term::cyan;
+            detail::set_color(out, term::cyan);
             break;
           case '0':
             mode = verbatim;
@@ -101,21 +132,21 @@ struct colorizing_iterator {
         break;
       case color:
         if (c == ')') {
-          out->flush();
-          *out << term::reset;
+          fflush(out);
+          detail::set_color(out, term::reset);
           mode = normal;
           break;
         }
-        out->put(c);
+        fputc(c, out);
         break;
       case off:
         if (c == '$')
           mode = off_read_color;
         else
-          out->put(c);
+          fputc(c, out);
         break;
       case off_read_color:
-        out->flush();
+        fflush(out);
         switch (c) {
           case '0':
             mode = verbatim;
@@ -132,14 +163,14 @@ struct colorizing_iterator {
         break;
       case off_color:
         if (c == ')') {
-          out->flush();
+          fflush(out);
           mode = off;
           break;
         }
-        out->put(c);
+        fputc(c, out);
         break;
       default: // verbatim
-        out->put(c);
+        fputc(c, out);
     }
   }
 
@@ -187,13 +218,13 @@ public:
   }
 
   auto plain() {
-    return std::ostream_iterator<char>{std::cout};
+    return file_iterator{stdout};
   }
 
   auto colored() {
     auto state = no_colors_ ? colorizing_iterator::off
                             : colorizing_iterator::normal;
-    return colorizing_iterator{state, &std::cout};
+    return colorizing_iterator{state, stdout};
   }
 
   void stop() override {
@@ -217,7 +248,8 @@ public:
       for (auto name : failed_suites_)
         detail::format_to(colored(), "  - $R({})\n", name);
     }
-    std::cout << std::endl;
+    fputc('\n', stdout);
+    fflush(stdout);
   }
 
   void begin_suite(std::string_view name) override {
@@ -252,7 +284,8 @@ public:
       for (auto name : failed_tests_)
         detail::format_to(colored(), "  - $R({})\n", name);
     }
-    std::cout << std::endl;
+    fputc('\n', stdout);
+    fflush(stdout);
   }
 
   void begin_test(context_ptr state, std::string_view name) override {
@@ -267,8 +300,10 @@ public:
       failed_tests_.push_back(current_test_);
     suite_stats_ += test_stats_;
     current_ctx_.reset();
-    if (live_)
-      std::cout << std::endl;
+    if (live_) {
+      fputc('\n', stdout);
+      fflush(stdout);
+    }
   }
 
   void set_live() {
@@ -306,7 +341,7 @@ public:
       indent_ -= 2;
   }
 
-  void pass(const detail::source_location& location) override {
+  void pass(const std::source_location& location) override {
     test_stats_.passed++;
     if (level_ < log::level::debug)
       return;
@@ -316,7 +351,7 @@ public:
   }
 
   void fail(binary_predicate type, std::string_view lhs, std::string_view rhs,
-            const detail::source_location& location) override {
+            const std::source_location& location) override {
     test_stats_.failed++;
     if (level_ < log::level::error)
       return;
@@ -332,7 +367,7 @@ public:
   }
 
   void fail(std::string_view arg,
-            const detail::source_location& location) override {
+            const std::source_location& location) override {
     test_stats_.failed++;
     if (level_ < log::level::error)
       return;
@@ -368,7 +403,7 @@ public:
   }
 
   void unhandled_exception(std::string_view msg,
-                           const detail::source_location& location) override {
+                           const std::source_location& location) override {
     test_stats_.failed++;
     if (level_ < log::level::error)
       return;
@@ -393,6 +428,16 @@ public:
                       event.line_number(), event.message());
     for (const auto& field : event.fields())
       do_print(field);
+  }
+
+  /// Prints a message to the output stream if `verbosity() >= level`.
+  void println(unsigned level, std::string_view msg) override {
+    if (level_ < level) {
+      return;
+    }
+    set_live();
+    detail::format_to(colored(), "{0:{1}}${2}({3}): {4}\n", ' ', indent_,
+                      color_by_log_level(level), log_level_names_[level], msg);
   }
 
   void print_actor_output(local_actor* self, std::string_view msg) override {
@@ -478,7 +523,7 @@ private:
 
   void print_indent(size_t indent) {
     for (size_t i = 0; i < indent; ++i)
-      std::cout << ' ';
+      fputc(' ', stdout);
   }
 
   void print_indent() {
@@ -560,7 +605,8 @@ std::unique_ptr<reporter> reporter::make_default() {
 namespace {
 
 /// A logger implementation that delegates to the test reporter.
-class reporter_logger : public logger, public detail::atomic_ref_counted {
+class reporter_logger : public detail::asynchronous_logger,
+                        public detail::atomic_ref_counted {
 public:
   /// Increases the reference count of the coordinated.
   void ref_logger() const noexcept final {
@@ -602,27 +648,16 @@ public:
   /// component and log level.
   bool accepts(unsigned level, std::string_view component) override {
     return level <= reporter::instance().verbosity()
-           && !std::any_of(filter_.begin(), filter_.end(),
-                           [component](const std::string& excluded) {
-                             return component == excluded;
-                           });
+           && !std::ranges::any_of(filter_,
+                                   [component](const std::string& excluded) {
+                                     return component == excluded;
+                                   });
   }
 
-  // -- initialization ---------------------------------------------------------
-
-  /// Allows the logger to read its configuration from the actor system config.
-  void init(const actor_system_config&) override {
-    // nop
-  }
-
-  // -- event handling ---------------------------------------------------------
-
-  /// Starts any background threads needed by the logger.
   void start() override {
     // nop
   }
 
-  /// Stops all background threads of the logger.
   void stop() override {
     // nop
   }
@@ -633,7 +668,7 @@ private:
 
 } // namespace
 
-intrusive_ptr<logger> reporter::make_logger() {
+intrusive_ptr<detail::asynchronous_logger> reporter::make_logger() {
   return make_counted<reporter_logger>();
 }
 

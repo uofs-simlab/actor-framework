@@ -16,7 +16,6 @@
 #include "caf/extend.hpp"
 #include "caf/fwd.hpp"
 #include "caf/local_actor.hpp"
-#include "caf/mixin/requester.hpp"
 #include "caf/none.hpp"
 #include "caf/unordered_flat_map.hpp"
 
@@ -24,6 +23,10 @@ namespace caf::net {
 
 class CAF_NET_EXPORT abstract_actor_shell : public abstract_scheduled_actor {
 public:
+  // -- constants --------------------------------------------------------------
+
+  static constexpr auto forced_spawn_options = spawn_options::no_flags;
+
   // -- member types -----------------------------------------------------------
 
   using super = abstract_scheduled_actor;
@@ -100,7 +103,11 @@ public:
 
   // -- overridden functions of local_actor ------------------------------------
 
-  void launch(scheduler* eu, bool lazy, bool hide) override;
+  bool initialize(scheduler* ctx) override;
+
+  bool launch_delayed() override;
+
+  void launch(caf::detail::private_thread* worker, scheduler* ctx) override;
 
   void on_cleanup(const error& reason) override;
 
@@ -114,7 +121,7 @@ private:
 
   void do_unstash(mailbox_element_ptr ptr) override;
 
-  void close_mailbox(const error& reason);
+  void close_mailbox();
 
   void force_close_mailbox() final;
 

@@ -25,12 +25,4 @@ void red_light_behavior::on_enter() {
             .send(state_.self);
 }
 
-void red_light_behavior::process_launch_token(const token_ptr& tok, int stream_id) {
-    // Override to do nothing, as red light should not process
-}
-
-void red_light_behavior::process_memory_transfer_token(const token_ptr& tok, int stream_id) {
-    // Override to do nothing
-}
-
 } // namespace caf::cuda

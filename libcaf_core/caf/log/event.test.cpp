@@ -48,18 +48,6 @@ private:
   void do_log(log::event_ptr&& ptr) override {
     event = std::move(ptr);
   }
-
-  void init(const actor_system_config&) override {
-    // nop
-  }
-
-  void start() override {
-    // nop
-  }
-
-  void stop() override {
-    // nop
-  }
 };
 
 std::pair<std::string_view, std::string>
@@ -112,7 +100,7 @@ TEST("fields builder") {
 }
 
 TEST("log event sender") {
-  auto loc = detail::source_location::current();
+  auto loc = std::source_location::current();
   auto mlog = mock_logger{};
   SECTION("trivial message") {
     log::event_sender(&mlog, log::level::debug, "foo", loc, 0, "hello")
@@ -156,7 +144,7 @@ TEST("log event sender") {
 }
 
 TEST("with_message") {
-  auto loc = detail::source_location::current();
+  auto loc = std::source_location::current();
   auto mlog = mock_logger{};
   log::event_sender(&mlog, log::level::debug, "foo", loc, 0, "message 1")
     .field("foo", 42)

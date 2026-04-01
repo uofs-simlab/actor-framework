@@ -6,14 +6,16 @@
 
 #include "caf/test/fwd.hpp"
 
+#include "caf/detail/asynchronous_logger.hpp"
+#include "caf/detail/format.hpp"
 #include "caf/detail/log_level.hpp"
-#include "caf/detail/source_location.hpp"
 #include "caf/detail/test_export.hpp"
 #include "caf/format_string_with_location.hpp"
 #include "caf/fwd.hpp"
 #include "caf/logger.hpp"
 
 #include <cstddef>
+#include <source_location>
 #include <string_view>
 
 namespace caf::test {
@@ -56,24 +58,33 @@ public:
 
   virtual void end_step(block* ptr) = 0;
 
-  virtual void pass(const detail::source_location& location) = 0;
+  virtual void pass(const std::source_location& location) = 0;
 
   /// Reports a failed check with a binary predicate.
   virtual void fail(binary_predicate type, std::string_view lhs,
-                    std::string_view rhs,
-                    const detail::source_location& location)
+                    std::string_view rhs, const std::source_location& location)
     = 0;
 
   /// Reports a failed check (unary predicate).
-  virtual void
-  fail(std::string_view arg, const detail::source_location& location)
+  virtual void fail(std::string_view arg, const std::source_location& location)
     = 0;
 
   virtual void unhandled_exception(std::string_view msg) = 0;
 
   virtual void unhandled_exception(std::string_view msg,
-                                   const detail::source_location& location)
+                                   const std::source_location& location)
     = 0;
+
+  /// Prints a message to the output stream if `verbosity() >= level`.
+  virtual void println(unsigned level, std::string_view msg) = 0;
+
+  /// Prints a message to the output stream if `verbosity() >= level`.
+  template <class... Args>
+    requires(sizeof...(Args) > 0)
+  void println(unsigned level, std::string_view fst, Args&&... args) {
+    auto msg = detail::format(fst, std::forward<Args>(args)...);
+    println(level, msg);
+  }
 
   /// Prints a message to the output stream if `verbosity() >= level`.
   virtual void print(const log::event& event) = 0;
@@ -124,7 +135,7 @@ public:
   static std::unique_ptr<reporter> make_default();
 
   /// Creates a logger that forwards events to the current reporter.
-  static intrusive_ptr<logger> make_logger();
+  static intrusive_ptr<detail::asynchronous_logger> make_logger();
 };
 
 } // namespace caf::test

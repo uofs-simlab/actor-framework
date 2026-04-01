@@ -15,6 +15,7 @@
 #include "caf/log/system.hpp"
 #include "caf/raise_error.hpp"
 #include "caf/thread_owner.hpp"
+#include "caf/version.hpp"
 
 namespace caf::net {
 
@@ -101,7 +102,7 @@ actor_system::global_state_guard middleman::init_host_system() {
 }
 
 middleman::middleman(actor_system& sys)
-  : sys_(sys), mpx_(multiplexer::make(this)) {
+  : sys_(sys), mpx_(multiplexer::make(&sys)) {
   // nop
 }
 
@@ -127,7 +128,7 @@ void middleman::stop() {
 }
 
 void middleman::init(actor_system_config&) {
-  if (auto err = mpx_->init()) {
+  if (auto err = mpx_->init(); err.valid()) {
     log::system::error("failed to initialize multiplexer: {}", err);
     CAF_RAISE_ERROR("mpx_->init() failed");
   }
@@ -156,9 +157,7 @@ actor_system_module* middleman::make(actor_system& sys) {
 }
 
 void middleman::check_abi_compatibility(version::abi_token token) {
-  if (static_cast<int>(token) != CAF_VERSION_MAJOR) {
-    CAF_CRITICAL("CAF ABI token mismatch");
-  }
+  version::check_abi_compatibility(token);
 }
 
 } // namespace caf::net

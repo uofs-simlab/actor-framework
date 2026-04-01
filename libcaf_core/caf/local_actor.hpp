@@ -7,9 +7,11 @@
 #include "caf/abstract_actor.hpp"
 #include "caf/actor.hpp"
 #include "caf/actor_cast.hpp"
+#include "caf/actor_clock.hpp"
 #include "caf/actor_config.hpp"
 #include "caf/actor_system.hpp"
 #include "caf/behavior.hpp"
+#include "caf/caf_deprecated.hpp"
 #include "caf/detail/assert.hpp"
 #include "caf/detail/core_export.hpp"
 #include "caf/detail/monitor_action.hpp"
@@ -27,7 +29,7 @@
 #include "caf/response_type.hpp"
 #include "caf/send.hpp"
 #include "caf/spawn_options.hpp"
-#include "caf/telemetry/histogram.hpp"
+#include "caf/telemetry/actor_metrics.hpp"
 #include "caf/timespan.hpp"
 
 #include <cstdint>
@@ -49,42 +51,9 @@ public:
   /// Defines a monotonic clock suitable for measuring intervals.
   using clock_type = std::chrono::steady_clock;
 
-  /// Optional metrics collected by individual actors when configured to do so.
-  struct metrics_t {
-    /// Samples how long the actor needs to process messages.
-    telemetry::dbl_histogram* processing_time = nullptr;
-
-    /// Samples how long messages wait in the mailbox before being processed.
-    telemetry::dbl_histogram* mailbox_time = nullptr;
-
-    /// Counts how many messages are currently waiting in the mailbox.
-    telemetry::int_gauge* mailbox_size = nullptr;
-  };
-
-  /// Optional metrics for inbound stream traffic collected by individual actors
-  /// when configured to do so.
-  struct inbound_stream_metrics_t {
-    /// Counts the total number of processed stream elements from upstream.
-    telemetry::int_counter* processed_elements = nullptr;
-
-    /// Tracks how many stream elements from upstream are currently buffered.
-    telemetry::int_gauge* input_buffer_size = nullptr;
-  };
-
-  /// Optional metrics for outbound stream traffic collected by individual
-  /// actors when configured to do so.
-  struct outbound_stream_metrics_t {
-    /// Counts the total number of elements that have been pushed downstream.
-    telemetry::int_counter* pushed_elements = nullptr;
-
-    /// Tracks how many stream elements are currently waiting in the output
-    /// buffer due to insufficient credit.
-    telemetry::int_gauge* output_buffer_size = nullptr;
-  };
-
   // -- constructors, destructors, and assignment operators --------------------
 
-  local_actor(actor_config& cfg);
+  explicit local_actor(actor_config& cfg);
 
   ~local_actor() override;
 
@@ -97,7 +66,9 @@ public:
 
   // -- pure virtual modifiers -------------------------------------------------
 
-  virtual void launch(scheduler* sched, bool lazy, bool hide) = 0;
+  virtual bool launch_delayed() = 0;
+
+  virtual void launch(detail::private_thread* worker, scheduler* ctx) = 0;
 
   // -- time -------------------------------------------------------------------
 
@@ -128,20 +99,18 @@ public:
 
   template <class T, spawn_options Os = no_spawn_options, class... Ts>
   infer_handle_from_class_t<T> spawn(Ts&&... xs) {
-    actor_config cfg{context(), this};
+    actor_config cfg{Os, context(), this};
     cfg.mbox_factory = system().mailbox_factory();
-    return eval_opts(Os, system().spawn_class<T, make_unbound(Os)>(
-                           cfg, std::forward<Ts>(xs)...));
+    return eval_opts(Os, system().spawn_class<T>(cfg, std::forward<Ts>(xs)...));
   }
 
   template <spawn_options Options = no_spawn_options, class CustomSpawn,
             class... Args>
   typename CustomSpawn::handle_type spawn(CustomSpawn, Args&&... args) {
-    actor_config cfg{context(), this};
+    actor_config cfg{Options, context(), this};
     cfg.mbox_factory = system().mailbox_factory();
-    return eval_opts(Options,
-                     CustomSpawn::template do_spawn<make_unbound(Options)>(
-                       system(), cfg, std::forward<Args>(args)...));
+    return eval_opts(Options, CustomSpawn::do_spawn(
+                                system(), cfg, std::forward<Args>(args)...));
   }
 
   template <spawn_options Os = no_spawn_options, class F, class... Ts>
@@ -150,12 +119,11 @@ public:
     static constexpr bool spawnable = detail::spawnable<F, impl, Ts...>();
     static_assert(spawnable,
                   "cannot spawn function-based actor with given arguments");
-    actor_config cfg{context(), this};
+    actor_config cfg{Os, context(), this};
     cfg.mbox_factory = system().mailbox_factory();
-    static constexpr spawn_options unbound = make_unbound(Os);
     std::bool_constant<spawnable> enabled;
-    return eval_opts(Os, system().spawn_functor<unbound>(
-                           enabled, cfg, fun, std::forward<Ts>(xs)...));
+    return eval_opts(Os, system().spawn_functor(enabled, cfg, fun,
+                                                std::forward<Ts>(xs)...));
   }
 
   // -- sending asynchronous messages ------------------------------------------
@@ -170,14 +138,15 @@ public:
   template <class Handle>
   void send_exit(const Handle& receiver, error reason) {
     if (receiver)
-      receiver->enqueue(make_mailbox_element(ctrl(), make_message_id(),
-                                             exit_msg{address(),
-                                                      std::move(reason)}),
-                        context());
+      receiver->enqueue(
+        make_mailbox_element({ctrl(), add_ref}, make_message_id(),
+                             exit_msg{address(), std::move(reason)}),
+        context());
   }
 
   template <message_priority Priority = message_priority::normal, class Handle,
             class T, class... Ts>
+  CAF_DEPRECATED("use anon_mail instead")
   void anon_send(const Handle& receiver, T&& arg, Ts&&... args) {
     detail::send_type_check<none_t, Handle, T, Ts...>();
     do_anon_send(actor_cast<abstract_actor*>(receiver), Priority,
@@ -186,9 +155,10 @@ public:
 
   template <message_priority Priority = message_priority::normal, class Handle,
             class T, class... Ts>
-  disposable scheduled_anon_send(const Handle& receiver,
-                                 actor_clock::time_point timeout, T&& arg,
-                                 Ts&&... args) {
+  CAF_DEPRECATED("use anon_mail instead")
+  disposable
+    scheduled_anon_send(const Handle& receiver, actor_clock::time_point timeout,
+                        T&& arg, Ts&&... args) {
     detail::send_type_check<none_t, Handle, T, Ts...>();
     return do_scheduled_anon_send(
       actor_cast<strong_actor_ptr>(receiver), Priority, timeout,
@@ -197,6 +167,7 @@ public:
 
   template <message_priority Priority = message_priority::normal, class Handle,
             class T, class... Ts>
+  CAF_DEPRECATED("use anon_mail instead")
   disposable delayed_anon_send(const Handle& receiver,
                                actor_clock::duration_type timeout, T&& arg,
                                Ts&&... args) {
@@ -303,16 +274,6 @@ public:
 
   const char* name() const override;
 
-  /// Serializes the state of this actor to `sink`. This function is
-  /// only called if this actor has set the `is_serializable` flag.
-  /// The default implementation throws a `std::logic_error`.
-  virtual error save_state(serializer& sink, unsigned int version);
-
-  /// Deserializes the state of this actor from `source`. This function is
-  /// only called if this actor has set the `is_serializable` flag.
-  /// The default implementation throws a `std::logic_error`.
-  virtual error load_state(deserializer& source, unsigned int version);
-
   /// Returns the currently defined fail state. If this reason is not
   /// `none` then the actor will terminate with this error after executing
   /// the current message handler.
@@ -323,6 +284,10 @@ public:
   // -- here be dragons: end of public interface -------------------------------
 
   /// @cond
+
+  /// Returns a pointer to this actor as a resumable if this actor implements
+  /// the resumable interface. Returns `nullptr` otherwise.
+  virtual resumable* as_resumable() noexcept;
 
   auto& builtin_metrics() noexcept {
     return metrics_;
@@ -335,10 +300,9 @@ public:
 
   template <class ActorHandle>
   ActorHandle eval_opts(spawn_options opts, ActorHandle res) {
-    if (has_monitor_flag(opts))
-      do_monitor(actor_cast<abstract_actor*>(res), message_priority::normal);
-    if (has_link_flag(opts))
+    if (has_link_flag(opts)) {
       link_to(res->address());
+    }
     return res;
   }
 
@@ -363,18 +327,7 @@ public:
     return {result, std::move(current_element_->sender)};
   }
 
-  template <message_priority P = message_priority::normal, class Handle = actor,
-            class... Ts>
-  [[deprecated("use the mail API instead")]]
-  typename response_type<
-    typename Handle::signatures,
-    detail::implicit_conversions_t<std::decay_t<Ts>>...>::delegated_type
-  delegate(const Handle& dest, Ts&&... xs) {
-    auto rp = make_response_promise();
-    return rp.template delegate<P>(dest, std::forward<Ts>(xs)...);
-  }
-
-  virtual void initialize();
+  virtual bool initialize(scheduler* sched) = 0;
 
   message_id new_request_id(message_priority mp) noexcept;
 
@@ -390,22 +343,6 @@ public:
 
 protected:
   // -- send functions ---------------------------------------------------------
-
-  /// Sends `msg` as an asynchronous message to `receiver`.
-  /// @param receiver The receiver for the message.
-  /// @param priority The priority for sending the message.
-  /// @param msg The message to send.
-  void do_send(abstract_actor* receiver, message_priority priority,
-               message&& msg);
-
-  /// Sends `msg` as an asynchronous message to `receiver` after the timeout.
-  /// @param receiver The receiver for the message.
-  /// @param priority The priority for sending the message.
-  /// @param timeout The timeout for sending the message.
-  /// @param msg The message to send.
-  disposable do_scheduled_send(strong_actor_ptr receiver,
-                               message_priority priority,
-                               actor_clock::time_point timeout, message&& msg);
 
   /// Sends `msg` as an asynchronous message to `receiver` without sender
   /// information.
@@ -445,10 +382,8 @@ protected:
   /// Factory function for returning initial behavior in function-based actors.
   detail::unique_function<behavior(local_actor*)> initial_behavior_fac_;
 
-  metrics_t metrics_;
-
-  /// Tracks the current number of running actors of this type.
-  telemetry::int_gauge* running_count_ = nullptr;
+  /// Stores the metrics for this actor.
+  telemetry::actor_metrics metrics_;
 
 private:
   virtual void do_unstash(mailbox_element_ptr ptr) = 0;

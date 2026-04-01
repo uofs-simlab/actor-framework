@@ -33,7 +33,7 @@ mmul_batch_scheduler_behavior::mmul_batch_scheduler_behavior(scheduler_actor_sta
 mmul_batch_scheduler_behavior::~mmul_batch_scheduler_behavior() {}
 
 void mmul_batch_scheduler_behavior::init_state() {
-    device_ = manager::get().find_device(state_.device_number);
+    device_ = state_.self->system().cuda_manager().find_device(state_.device_number);
     num_streams = 128;
 
     // default partitioning: LOW:50% of streams, MED:25%, HIGH:25%
@@ -65,61 +65,65 @@ void mmul_batch_scheduler_behavior::on_enter() {
 }
 
 void mmul_batch_scheduler_behavior::receive(const token_ptr& tok) {
-    if (!tok) return;
+  if (!tok) return;
 
-    if (tok->getType() == LAUNCH) {
-        // Inspect block count now to choose queue + stream before creating the graph.
-        const auto& launch = static_cast<const launch_token&>(*tok);
-        int blocks = launch.getBlocks();
-        queue_type qt = classify_blocks(blocks);
-        int assigned_stream = get_stream_for_queue(qt);
+  if (tok->getType() == LAUNCH) {
+    // Inspect block count now to choose queue + stream before creating the graph.
+    const auto& launch = static_cast<const launch_token&>(*tok);
+    int blocks = launch.getBlocks();
+    queue_type qt = classify_blocks(blocks);
+    int assigned_stream = get_stream_for_queue(qt);
 
-        if (tok->isIndependent()) {
-            // create independent graph with preselected stream
-            kernel_graph new_graph(state_.device_number, assigned_stream);
-            new_graph.add_operation(tok);
-            independent_graphs.push_back(std::move(new_graph));
-            graph_ref ref{graph_ref::kind_t::independent, -1, static_cast<int>(independent_graphs.size() - 1)};
-            enqueue_graph_by_blocks(ref, qt);
-            schedule();
-            return;
-        }
+    if (tok->isIndependent()) {
+      // create independent graph with preselected stream
+      kernel_graph new_graph(state_.device_number, assigned_stream);
+      new_graph.add_operation(tok);
+      independent_graphs.push_back(std::move(new_graph));
+      graph_ref ref {
+          graph_ref::kind_t::independent, 
+          -1, 
+          independent_graphs.size() - 1
+      };
+      enqueue_graph_by_blocks(ref, qt);
+      schedule();
+      return;
+    }
 
-        int dep = tok->getDependency();
+    int dep = tok->getDependency();
 
-        // If multiple GPUs are in play, forward to the owning device if found
-        if (state_.multiple_gpus) {
-            int dev_num = -1;
-            auto it = dependency_device_map.find(dep);
-            if (it != dependency_device_map.end()) dev_num = it->second;
+    // If multiple GPUs are in play, forward to the owning device if found
+    if (state_.multiple_gpus) {
+      int dev_num = -1;
+      auto it = dependency_device_map.find(dep);
+      if (it != dependency_device_map.end()) dev_num = it->second;
 
-            if (dev_num != state_.device_number && dev_num != -1) {
-                // preserve stream choice on target side by forwarding token (target will reclassify)
-                anon_mail(tok).send(state_.schedulers[dev_num]);
-                return;
-            }
-        }
+      if (dev_num != state_.device_number && dev_num != -1) {
+        // preserve stream choice on target side by forwarding token (target will reclassify)
+        anon_mail(tok).send(state_.schedulers[dev_num]);
+        return;
+      }
+    }
 
-        if (graphs.contains(dep)) {
-            // append operation to existing graph; keep the stream already assigned to that graph
-            graphs[dep].add_operation(tok);
-            graph_ref ref{graph_ref::kind_t::dependent, dep};
-            enqueue_graph_by_blocks(ref, qt);
-        } else {
-            // create a new dependent graph, assign the stream we selected earlier
-            kernel_graph new_graph(state_.device_number, assigned_stream);
-            new_graph.add_operation(tok);
-            graphs[dep] = std::move(new_graph);
-            graph_ref ref{graph_ref::kind_t::dependent, dep};
-            // record that we own this dependency on this device
-            dependency_device_map[dep] = state_.device_number;
-            enqueue_graph_by_blocks(ref, qt);
-        }
+    if (graphs.contains(dep)) {
+      // append operation to existing graph; keep the stream already assigned to that graph
+      graphs[dep].add_operation(tok);
+      graph_ref ref{graph_ref::kind_t::dependent, dep};
+      enqueue_graph_by_blocks(ref, qt);
+    } else {
+      // create a new dependent graph, assign the stream we selected earlier
+      kernel_graph new_graph(state_.device_number, assigned_stream);
+      new_graph.add_operation(tok);
+      graphs[dep] = std::move(new_graph);
+      graph_ref ref{graph_ref::kind_t::dependent, dep};
+      // record that we own this dependency on this device
+      dependency_device_map[dep] = state_.device_number;
+      enqueue_graph_by_blocks(ref, qt);
+    }
 
-        schedule();
+    schedule();
 
     } else if (tok->getType() == MEMORY) {
-        process_memory_transfer_token(tok, 0);
+      process_memory_transfer_token(tok, 0);
     }
 }
 
@@ -209,7 +213,7 @@ void mmul_batch_scheduler_behavior::try_dispatch_queue(std::deque<graph_ref>& q,
             // launch_response_token's reclaim_dependency_ so reclaim(...) can map it back.
         }
 
-        process_launch_token(op, stream, static_cast<int>(qt));
+        process_launch_token(op, stream);
     }
 }
 
@@ -220,20 +224,25 @@ void mmul_batch_scheduler_behavior::schedule() {
     try_dispatch_queue(high_queue, HIGH);
 }
 
-void mmul_batch_scheduler_behavior::process_launch_token(const token_ptr& tok, int stream_id, int assigned_queue) {
-    // Create a launch response token and send it (same pattern as multilevel)
-    const auto& launch = static_cast<const launch_token&>(*tok);
-    auto response = make_launch_response_token(state_.self, launch, state_.device_number, stream_id, /*reclaim_value*/ 0, /*reclaim_runtime*/ 0);
-    anon_mail(response).send(launch.getReplyActor());
+void mmul_batch_scheduler_behavior::process_launch_token(const token_ptr& tok, 
+                                                         int stream_id) {
+  // Create a launch response token and send it (same pattern as multilevel)
+  const auto& launch = static_cast<const launch_token&>(*tok);
+  auto response = make_launch_response_token(state_.self, 
+                                             launch, 
+                                             state_.device_number, 
+                                             stream_id, 
+                                             /*reclaim_value*/ 0, 
+                                             /*reclaim_runtime*/ 0);
+  anon_mail(response).send(launch.getReplyActor());
 
-    // Note: actual reclaim will arrive via anon_mail(reclaim_value, reclaim_memory, reclaim_runtime, reclaim_dependency)
-    // when launch_response_token::release() runs on the device side. That triggers reclaim(...) in this actor.
+  // Note: actual reclaim will arrive via anon_mail(reclaim_value, 
+  // reclaim_memory, reclaim_runtime, reclaim_dependency)
+  // when launch_response_token::release() runs on the device side. 
+  // That triggers reclaim(...) in this actor.
 }
 
-void mmul_batch_scheduler_behavior::reclaim(int blocks_consumed,
-                                            int memory_returned,
-                                            int time,
-                                            int dependency_number) {
+void mmul_batch_scheduler_behavior::reclaim(int dependency_number) {
     // This reclaim() is called when the device (or the launch_response_token destructor)
     // sends the 4-tuple (reclaim_value, reclaim_memory, reclaim_runtime, reclaim_dependency).
 

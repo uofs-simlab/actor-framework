@@ -13,20 +13,24 @@
 #include "caf/io/network/scribe_impl.hpp"
 
 #include "caf/actor_system_config.hpp"
+#include "caf/adopt_ref.hpp"
 #include "caf/config.hpp"
 #include "caf/defaults.hpp"
 #include "caf/detail/assert.hpp"
 #include "caf/detail/call_cfun.hpp"
 #include "caf/detail/cleanup_and_release.hpp"
 #include "caf/detail/critical.hpp"
+#include "caf/detail/panic.hpp"
 #include "caf/detail/socket_guard.hpp"
 #include "caf/format_to_error.hpp"
+#include "caf/format_to_unexpected.hpp"
 #include "caf/log/io.hpp"
 #include "caf/log/system.hpp"
 #include "caf/make_counted.hpp"
 #include "caf/scheduler.hpp"
 
 #include <cstdio>
+#include <cstring>
 #include <optional>
 #include <utility>
 
@@ -143,8 +147,7 @@ default_multiplexer::default_multiplexer(actor_system& sys)
     epollfd_(invalid_native_socket),
     shadow_(1),
     pipe_reader_(*this),
-    servant_ids_(0),
-    max_throughput_(0) {
+    servant_ids_(0) {
   init();
   epollfd_ = epoll_create1(EPOLL_CLOEXEC);
   if (epollfd_ == -1) {
@@ -181,8 +184,8 @@ bool default_multiplexer::poll_once_impl(bool block) {
           continue;
         }
         default: {
-          perror("epoll_wait() failed");
-          CAF_CRITICAL("epoll_wait() failed");
+          detail::panic("epoll_wait() failed: {} (errno: {})", strerror(errno),
+                        errno);
         }
       }
     }
@@ -254,8 +257,8 @@ void default_multiplexer::handle(const default_multiplexer::event& e) {
         break;
       default:
         log::system::error("epoll_ctl failed: {}", strerror(errno));
-        perror("epoll_ctl() failed");
-        CAF_CRITICAL("epoll_ctl() failed");
+        detail::panic("epoll_ctl() failed: {} (errno: {})", strerror(errno),
+                      errno);
     }
   }
   if (e.ptr) {
@@ -337,8 +340,8 @@ bool default_multiplexer::poll_once_impl(bool block) {
           break;
         }
         default: {
-          perror("poll() failed");
-          CAF_CRITICAL("poll() failed");
+          detail::panic("poll() failed: {} (errno: {})", strerror(errno),
+                        errno);
         }
       }
       continue; // rinse and repeat
@@ -577,13 +580,10 @@ void default_multiplexer::init() {
   if (!system().has_network_manager()) {
     WSADATA WinsockData;
     if (WSAStartup(MAKEWORD(2, 2), &WinsockData) != 0) {
-      CAF_CRITICAL("WSAStartup failed");
+      detail::critical("WSAStartup failed");
     }
   }
 #endif
-  namespace sr = defaults::scheduler;
-  max_throughput_ = get_or(system().config(), "caf.scheduler.max-throughput",
-                           sr::max_throughput);
 }
 
 bool default_multiplexer::poll_once(bool block) {
@@ -609,17 +609,7 @@ bool default_multiplexer::poll_once(bool block) {
 
 void default_multiplexer::resume(intrusive_ptr<resumable> ptr) {
   auto lg = log::io::trace("");
-  switch (ptr->resume(this, max_throughput_)) {
-    case resumable::resume_later:
-      // Delay resumable until next cycle.
-      internally_posted_.emplace_back(ptr.release(), false);
-      break;
-    case resumable::shutdown_execution_unit:
-      // Don't touch reference count of shutdown helpers.
-      ptr.release();
-      break;
-    default:; // Done. Release reference to resumable.
-  }
+  ptr->resume(this, resumable::default_event_id);
 }
 
 default_multiplexer::~default_multiplexer() {
@@ -631,7 +621,7 @@ default_multiplexer::~default_multiplexer() {
   nonblocking(pipe_.first, true);
   auto ptr = pipe_reader_.try_read_next();
   while (ptr != nullptr) {
-    detail::cleanup_and_release(ptr);
+    detail::cleanup_and_release(resumable_ptr{ptr, adopt_ref});
     ptr = pipe_reader_.try_read_next();
   }
   // do cleanup for pipe reader manually, since WSACleanup needs to happen last
@@ -643,24 +633,18 @@ default_multiplexer::~default_multiplexer() {
 #endif
 }
 
-void default_multiplexer::schedule(resumable* ptr) {
-  auto lg = log::io::trace("ptr = {}", ptr);
-  CAF_ASSERT(ptr != nullptr);
-  switch (ptr->subtype()) {
-    case resumable::io_actor:
-    case resumable::function_object:
-      if (std::this_thread::get_id() != thread_id())
-        wr_dispatch_request(ptr);
-      else
-        internally_posted_.emplace_back(ptr, false);
-      break;
-    default:
-      system().scheduler().schedule(ptr);
+void default_multiplexer::schedule(resumable_ptr job, uint64_t) {
+  auto lg = log::io::trace("ptr = {}", job.get());
+  CAF_ASSERT(job != nullptr);
+  if (std::this_thread::get_id() != thread_id()) {
+    wr_dispatch_request(job.release());
+  } else {
+    internally_posted_.emplace_back(std::move(job));
   }
 }
 
-void default_multiplexer::delay(resumable* ptr) {
-  schedule(ptr);
+void default_multiplexer::delay(resumable_ptr job, uint64_t) {
+  schedule(std::move(job), resumable::default_event_id);
 }
 
 scribe_ptr default_multiplexer::new_scribe(native_socket fd) {
@@ -673,7 +657,7 @@ expected<scribe_ptr>
 default_multiplexer::new_tcp_scribe(const std::string& host, uint16_t port) {
   auto fd = new_tcp_connection(host, port);
   if (!fd)
-    return std::move(fd.error());
+    return expected<scribe_ptr>{unexpect, std::move(fd.error())};
   return new_scribe(*fd);
 }
 
@@ -689,7 +673,7 @@ expected<doorman_ptr> default_multiplexer::new_tcp_doorman(uint16_t port,
   auto fd = new_tcp_acceptor_impl(port, in, reuse_addr);
   if (fd)
     return new_doorman(*fd);
-  return std::move(fd.error());
+  return expected<doorman_ptr>{unexpect, std::move(fd.error())};
 }
 
 datagram_servant_ptr
@@ -713,7 +697,7 @@ default_multiplexer::new_remote_udp_endpoint(const std::string& host,
                                              uint16_t port) {
   auto res = new_remote_udp_endpoint_impl(host, port);
   if (!res)
-    return std::move(res.error());
+    return expected<datagram_servant_ptr>{unexpect, std::move(res.error())};
   return new_datagram_servant_for_endpoint(res->first, res->second);
 }
 
@@ -723,7 +707,7 @@ default_multiplexer::new_local_udp_endpoint(uint16_t port, const char* in,
   auto res = new_local_udp_endpoint_impl(port, in, reuse_addr);
   if (res)
     return new_datagram_servant((*res).first);
-  return std::move(res.error());
+  return expected<datagram_servant_ptr>{unexpect, std::move(res.error())};
 }
 
 int64_t default_multiplexer::next_endpoint_id() {
@@ -764,8 +748,9 @@ new_tcp_connection(const std::string& host, uint16_t port,
   auto res = interfaces::native_address(host, std::move(preferred));
   if (!res) {
     log::io::debug("no such host");
-    return format_to_error(sec::cannot_connect_to_node,
-                           "cannot connect to host {} on port {}", host, port);
+    return format_to_unexpected(sec::cannot_connect_to_node,
+                                "cannot connect to host {} on port {}", host,
+                                port);
   }
   auto proto = res->second;
   CAF_ASSERT(proto == ipv4 || proto == ipv6);
@@ -789,8 +774,9 @@ new_tcp_connection(const std::string& host, uint16_t port,
   }
   if (!ip_connect<AF_INET>(fd, res->first, port)) {
     log::io::warning("could not connect to: host = {} port = {}", host, port);
-    return format_to_error(sec::cannot_connect_to_node,
-                           "cannot connect to host {} on port {}", host, port);
+    return format_to_unexpected(sec::cannot_connect_to_node,
+                                "cannot connect to host {} on port {}", host,
+                                port);
   }
   log::io::info("successfully connected to (IPv4): host = {} port = {}", host,
                 port);
@@ -865,9 +851,9 @@ expected<native_socket> new_tcp_acceptor_impl(uint16_t port, const char* addr,
   auto addrs = interfaces::server_address(port, addr);
   auto addr_str = std::string{addr == nullptr ? "" : addr};
   if (addrs.empty())
-    return format_to_error(sec::cannot_open_port,
-                           "failed to resolve {} to a local interface",
-                           addr_str);
+    return format_to_unexpected(sec::cannot_open_port,
+                                "failed to resolve {} to a local interface",
+                                addr_str);
   bool any = addr_str.empty() || addr_str == "::" || addr_str == "0.0.0.0";
   auto fd = invalid_native_socket;
   for (auto& elem : addrs) {
@@ -884,7 +870,7 @@ expected<native_socket> new_tcp_acceptor_impl(uint16_t port, const char* addr,
     break;
   }
   if (fd == invalid_native_socket) {
-    return format_to_error(
+    return format_to_unexpected(
       sec::cannot_open_port,
       "could not open tcp socket on: port = {}, addr_str = {}", port, addr_str);
   }
@@ -902,12 +888,14 @@ new_remote_udp_endpoint_impl(const std::string& host, uint16_t port,
                            preferred);
   auto lep = new_local_udp_endpoint_impl(0, nullptr, false, preferred);
   if (!lep)
-    return std::move(lep.error());
+    return expected<std::pair<native_socket, ip_endpoint>>{
+      unexpect, std::move(lep.error())};
   detail::socket_guard sguard{(*lep).first};
   std::pair<native_socket, ip_endpoint> info;
   if (!interfaces::get_endpoint(host, port, std::get<1>(info), (*lep).second))
-    return format_to_error(sec::cannot_connect_to_node,
-                           "cannot connect to host {} on port {}", host, port);
+    return format_to_unexpected(sec::cannot_connect_to_node,
+                                "cannot connect to host {} on port {}", host,
+                                port);
   get<0>(info) = sguard.release();
   return info;
 }
@@ -920,9 +908,9 @@ new_local_udp_endpoint_impl(uint16_t port, const char* addr, bool reuse,
   auto addrs = interfaces::server_address(port, addr, preferred);
   auto addr_str = std::string{addr == nullptr ? "" : addr};
   if (addrs.empty())
-    return format_to_error(sec::cannot_open_port,
-                           "failed to resolve {} to a local interface",
-                           addr_str);
+    return format_to_unexpected(sec::cannot_open_port,
+                                "failed to resolve {} to a local interface",
+                                addr_str);
   bool any = addr_str.empty() || addr_str == "::" || addr_str == "0.0.0.0";
   auto fd = invalid_native_socket;
   protocol::network proto{};
@@ -941,7 +929,7 @@ new_local_udp_endpoint_impl(uint16_t port, const char* addr, bool reuse,
     break;
   }
   if (fd == invalid_native_socket) {
-    return format_to_error(
+    return format_to_unexpected(
       sec::cannot_open_port,
       "could not open udp socket: port = {}, addr_str = {}", port, addr_str);
   }

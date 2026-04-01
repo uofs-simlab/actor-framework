@@ -24,7 +24,7 @@ public:
   // tell actor_cast which semantic this type uses
   static constexpr bool has_weak_ptr_semantics = false;
 
-  scoped_actor(actor_system& sys, bool hide = false);
+  explicit scoped_actor(actor_system& sys, bool hide = false);
 
   scoped_actor(const scoped_actor&) = delete;
   scoped_actor& operator=(const scoped_actor&) = delete;
@@ -61,7 +61,7 @@ private:
     return self_.get();
   }
 
-  actor_id prev_; // used for logging/debugging purposes only
+  abstract_actor* prev_; // previous current actor, restored in destructor
   strong_actor_ptr self_;
 };
 

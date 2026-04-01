@@ -82,7 +82,7 @@ private:
     if (!running_) {
       running_ = true;
       parent_->delay_fn(
-        [strong_this = intrusive_ptr<from_generator_sub>{this}] { //
+        [strong_this = intrusive_ptr<from_generator_sub>{this, add_ref}] { //
           strong_this->do_run();
         });
     }
@@ -109,7 +109,7 @@ private:
   }
 
   void fin() {
-    if (!err_)
+    if (err_.empty())
       out_.on_complete();
     else
       out_.on_error(err_);
@@ -149,6 +149,7 @@ public:
 
   using super = hot<output_type>;
 
+  // cppcheck-suppress noExplicitConstructor
   from_generator(coordinator* parent, Generator gen, std::tuple<Steps...> steps)
     : super(parent), gen_(std::move(gen)), steps_(std::move(steps)) {
     // nop

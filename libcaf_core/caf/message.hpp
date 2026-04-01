@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "caf/caf_deprecated.hpp"
 #include "caf/detail/assert.hpp"
 #include "caf/detail/core_export.hpp"
 #include "caf/detail/implicit_conversions.hpp"
@@ -180,9 +181,26 @@ public:
     data_.swap(other.data_);
   }
 
-  void reset(detail::message_data* new_ptr = nullptr,
-             bool add_ref = true) noexcept {
+  void reset() noexcept {
+    data_.reset();
+  }
+
+  CAF_DEPRECATED("use 'reset(ptr, add_ref)' or 'reset(ptr, adopt_ref)' instead")
+  void reset(detail::message_data* new_ptr,
+             bool increase_ref_count = true) noexcept {
+    if (increase_ref_count) {
+      data_.reset(new_ptr, add_ref);
+    } else {
+      data_.reset(new_ptr, adopt_ref);
+    }
+  }
+
+  void reset(detail::message_data* new_ptr, add_ref_t) noexcept {
     data_.reset(new_ptr, add_ref);
+  }
+
+  void reset(detail::message_data* new_ptr, adopt_ref_t) noexcept {
+    data_.reset(new_ptr, adopt_ref);
   }
 
   /// Forces the message to copy its content if more than one reference to the
@@ -228,7 +246,7 @@ message make_message(Ts&&... xs) {
   if (vptr == nullptr)
     CAF_RAISE_ERROR(std::bad_alloc, "bad_alloc");
   auto raw_ptr = new (vptr) message_data(types);
-  intrusive_cow_ptr<message_data> ptr{raw_ptr, false};
+  intrusive_cow_ptr<message_data> ptr{raw_ptr, adopt_ref};
   raw_ptr->init(std::forward<Ts>(xs)...);
   return message{std::move(ptr)};
 }

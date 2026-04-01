@@ -99,14 +99,16 @@ public:
   void init(observable<input_type> vals, observable<select_token_type> ctrl) {
     using val_fwd_t = forwarder<input_type, buffer_sub, buffer_input_t>;
     using ctrl_fwd_t = forwarder<select_token_type, buffer_sub, buffer_emit_t>;
-    auto fwd = parent_->add_child(std::in_place_type<val_fwd_t>, this,
+    auto fwd = parent_->add_child(std::in_place_type<val_fwd_t>,
+                                  intrusive_ptr<buffer_sub>{this, add_ref},
                                   buffer_input_t{});
     vals.subscribe(fwd->as_observer());
     // Note: the previous subscribe might call on_error, in which case we don't
     // need to try to subscribe to the control observable.
     if (running())
-      ctrl.subscribe(parent_->add_child_hdl(std::in_place_type<ctrl_fwd_t>,
-                                            this, buffer_emit_t{}));
+      ctrl.subscribe(parent_->add_child_hdl(
+        std::in_place_type<ctrl_fwd_t>,
+        intrusive_ptr<buffer_sub>{this, add_ref}, buffer_emit_t{}));
   }
 
   // -- callbacks for the forwarders -------------------------------------------
@@ -183,9 +185,8 @@ public:
     demand_ += n;
     // If we can ship a batch, schedule an event to do so.
     if (demand_ == n && can_emit()) {
-      parent_->delay_fn([strong_this = intrusive_ptr<buffer_sub>{this}] {
-        strong_this->on_request();
-      });
+      parent_->delay_fn([strong_this = intrusive_ptr<buffer_sub>{
+                           this, add_ref}] { strong_this->on_request(); });
     }
   }
 
@@ -209,14 +210,14 @@ private:
       case state::running: {
         if (!buf_.empty()) {
           if (demand_ == 0) {
-            state_ = err_ ? state::aborted : state::completed;
+            state_ = err_.valid() ? state::aborted : state::completed;
             return;
           }
           Trait f;
           out_.on_next(f(buf_));
           buf_.clear();
         }
-        if (!err_)
+        if (err_.empty())
           out_.on_complete();
         else
           out_.on_error(err_);
@@ -238,7 +239,7 @@ private:
     }
     if (!buf_.empty())
       do_emit();
-    if (!err_)
+    if (err_.empty())
       out_.on_complete();
     else
       out_.on_error(err_);
@@ -322,9 +323,12 @@ public:
                                          max_items_, out);
     ptr->init(in_, select_);
     if (!ptr->running()) {
-      return super::fail_subscription(
-        out, ptr->err().or_else(sec::runtime_error,
-                                "failed to initialize buffer subscription"));
+      auto err = ptr->err();
+      if (!err.valid()) {
+        err = error{sec::runtime_error,
+                    "failed to initialize buffer subscription"};
+      }
+      return super::fail_subscription(out, err);
     }
     out.on_subscribe(subscription{ptr});
     return ptr->as_disposable();

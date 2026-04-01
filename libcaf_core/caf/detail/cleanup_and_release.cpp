@@ -4,20 +4,24 @@
 
 #include "caf/detail/cleanup_and_release.hpp"
 
+#include "caf/detail/assert.hpp"
 #include "caf/resumable.hpp"
 #include "caf/scheduled_actor.hpp"
 #include "caf/scheduler.hpp"
 
+#include <vector>
+
 namespace caf::detail {
 
-void cleanup_and_release(resumable* ptr) {
+void cleanup_and_release(resumable_ptr job) {
+  CAF_ASSERT(job != nullptr);
   class dummy_scheduler : public scheduler {
   public:
-    void delay(resumable* job) override {
-      resumables.push_back(job);
+    void delay(resumable_ptr sub, uint64_t) override {
+      resumables.push_back(std::move(sub));
     }
-    void schedule(resumable* job) override {
-      resumables.push_back(job);
+    void schedule(resumable_ptr sub, uint64_t) override {
+      resumables.push_back(std::move(sub));
     }
     void start() override {
       // nop
@@ -25,34 +29,18 @@ void cleanup_and_release(resumable* ptr) {
     void stop() override {
       // nop
     }
-    std::vector<resumable*> resumables;
-  };
-  switch (ptr->subtype()) {
-    case resumable::scheduled_actor:
-    case resumable::io_actor: {
-      auto dptr = static_cast<scheduled_actor*>(ptr);
-      dummy_scheduler dummy;
-      dptr->cleanup(make_error(exit_reason::user_shutdown), &dummy);
-      while (!dummy.resumables.empty()) {
-        auto sub = dummy.resumables.back();
-        dummy.resumables.pop_back();
-        switch (sub->subtype()) {
-          case resumable::scheduled_actor:
-          case resumable::io_actor: {
-            auto dsub = static_cast<scheduled_actor*>(sub);
-            dsub->cleanup(make_error(exit_reason::user_shutdown), &dummy);
-            break;
-          }
-          default:
-            break;
-        }
-      }
-      break;
+    bool is_system_scheduler() const noexcept final {
+      return true;
     }
-    default:
-      break;
+    std::vector<resumable_ptr> resumables;
+  };
+  dummy_scheduler dummy;
+  job->resume(&dummy, resumable::dispose_event_id);
+  while (!dummy.resumables.empty()) {
+    auto sub = std::move(dummy.resumables.back());
+    dummy.resumables.pop_back();
+    sub->resume(&dummy, resumable::dispose_event_id);
   }
-  intrusive_ptr_release(ptr);
 }
 
 } // namespace caf::detail

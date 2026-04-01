@@ -14,7 +14,7 @@ single_usage_behavior::single_usage_behavior(scheduler_actor_state& state)
 single_usage_behavior::~single_usage_behavior() = default;
 
 void single_usage_behavior::init_state() {
-    device_ = manager::get().find_device(state_.device_number);
+    device_ = state_.self->system().cuda_manager().find_device(state_.device_number);
     // We can still keep the heuristic if you want to log real SM usage later,
     // but we won't use it for scheduling decisions
     heuristic.emplace(device_);
@@ -28,18 +28,12 @@ void single_usage_behavior::on_enter() {
     schedule();  // try to launch something right away if tokens already waiting
 }
 
-void single_usage_behavior::reclaim(int blocks_consumed,
-                                    int memory_returned,
-                                    int time,
-                                    int dependency_number) {
+void single_usage_behavior::reclaim(int memory_returned) {
    
     std::cout << "reclaiming\n";
     // GPU is now free again
     gpu_available = true;
     available_memory += memory_returned;
-
-    // Optional: could log real usage
-    // std::cout << "Reclaimed: " << blocks_consumed << " SMs, " << time << " μs\n";
 
     schedule();  // try to launch the next one immediately
 }

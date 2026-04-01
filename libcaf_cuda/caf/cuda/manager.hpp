@@ -41,27 +41,43 @@ using platform_ptr = caf::intrusive_ptr<platform>;
 template <bool PassConfig, class... Ts>
 class actor_facade;
 
-class CAF_CUDA_EXPORT manager {
+class CAF_CUDA_EXPORT manager : public actor_system_module {
 public:
-  /// Initializes the singleton. Must be called exactly once before get().
-  static void init(caf::actor_system& sys);
 
+  static void check_abi_compatibility(version::abi_token token);
 
+  static void add_module_options(actor_system_config& cfg);
 
+  // -- static utility functions -----------------------------------------------
 
- /// Initializes the singleton. Must be called exactly once before get().
-  static void init(caf::actor_system& sys,manager_config config);
+  static void init_global_meta_objects();
 
-  /// Returns the singleton instance. Crashes if not yet initialized.
-  static manager& get();
+  // -- interface functions ----------------------------------------------------
+
+  void start() override;
+
+  void stop() override;
+
+  void init(actor_system_config&) override;
+
+  id_t id() const override;
+
+  void* subtype_ptr() override;
+
+  static actor_system_module* make(actor_system& sys);
 
   /// Deletes the singleton if needed (optional).
   //deletes the scheduler actor as well if it exists
-  static void shutdown();
+  void shutdown();
 
   // Prevent copy/assignment
-  manager(const manager&) = delete;
-  manager& operator=(const manager&) = delete;
+  // manager(const manager&) = delete;
+  // manager& operator=(const manager&) = delete;
+
+  /// Constructor
+  explicit manager(actor_system& sys);
+  ~manager() override;
+
 
   //device_ptr getter
   device_ptr find_device(std::size_t id) const;
@@ -83,12 +99,12 @@ public:
 
   //Currently not working DO NOT USE 
   program_ptr create_program_from_ptx(const std::string& filename,
-                                    const char* kernel_name,
-                                    device_ptr device);
+                                      const char* kernel_name,
+                                      device_ptr device);
 
   program_ptr create_program_from_cubin(const std::string& filename,
-                                               const char* kernel_name,
-                                               device_ptr device);
+                                        const char* kernel_name,
+                                        device_ptr device);
 
 
 
@@ -97,7 +113,7 @@ public:
   //@param: filename, this is the path to the file that contains the kernel
   //@param: kernel_name, the function signature name of the kernel
   program_ptr create_program_from_cubin(const std::string& filename,
-                                               const char* kernel_name);
+                                        const char* kernel_name);
 
 
 
@@ -106,7 +122,7 @@ public:
   //@param: filename, this is the path to the file that contains the kernel
   //@param: kernel_name, the function signature name of the kernel
   program_ptr create_program_from_fatbin(const std::string& filename,
-                                               const char* kernel_name);
+                                         const char* kernel_name);
 
 
 
@@ -118,32 +134,25 @@ public:
   template <class... Ts>
   caf::actor spawn(const char* kernel,
                    const std::string& name,
-		   nd_range dims,
+		               nd_range dims,
                    Ts&&... xs) {
     caf::detail::cuda_spawn_helper<false, Ts...> f;
-    caf::actor_config cfg;
-
     device_ptr device = find_device(0);
     program_ptr prog = create_program(kernel, name, device);
-
-    return f(&system_, std::move(cfg), std::move(prog),dims,std::forward<Ts>(xs)...);
+    return f(&system_, caf::actor_config{caf::no_spawn_options}, std::move(prog), dims, std::forward<Ts>(xs)...);
   }
 
 
   //Currently broken DO not use  
   template <class... Ts>
-  caf::actor spawnFromPTX(
-                   const std::string& fileName,
-		   const char * kernelName,
-		   nd_range dims,
-                   Ts&&... xs) {
+  caf::actor spawnFromPTX(const std::string& fileName,
+		                      const char * kernelName,
+		                      nd_range dims,
+                          Ts&&... xs) {
     caf::detail::cuda_spawn_helper<false, Ts...> f;
-    caf::actor_config cfg;
-
     device_ptr device = find_device(0);
     program_ptr prog = create_program_from_ptx(fileName, kernelName, device);
-
-    return f(&system_, std::move(cfg), std::move(prog),dims,std::forward<Ts>(xs)...);
+    return f(&system_, caf::actor_config{caf::no_spawn_options}, std::move(prog), dims, std::forward<Ts>(xs)...);
   }
 
 
@@ -156,18 +165,14 @@ public:
   //@param dims: both block and grid dimensions of the kernel you want to launch
   //@returns a handle to the actor facade
   template <class... Ts>
-  caf::actor spawnFromCUBIN(
-                   const std::string& fileName,
-		   const char * kernelName,
-		   nd_range dims,
-                   Ts&&... xs) {
+  caf::actor spawnFromCUBIN(const std::string& fileName,
+		                        const char * kernelName,
+		                        nd_range dims,
+                            Ts&&... xs) {
     caf::detail::cuda_spawn_helper<false, Ts...> f;
-    caf::actor_config cfg;
-
     device_ptr device = find_device(0);
     program_ptr prog = create_program_from_cubin(fileName, kernelName, device);
-
-    return f(&system_, std::move(cfg), std::move(prog),dims,std::forward<Ts>(xs)...);
+    return f(&system_, caf::actor_config{caf::no_spawn_options}, std::move(prog), dims, std::forward<Ts>(xs)...);
   }
 
 
@@ -177,7 +182,14 @@ public:
 
   int get_num_devices();
 
+  platform_ptr get_platform() { return platform_; }
 
+  /// Immediately synchronises and unloads all CUDA modules that have been
+  /// retired (via ~program()) but not yet cleaned up.  This is optional —
+  /// retired modules are automatically unloaded at platform shutdown.
+  /// Only call this between computation phases where blocking is acceptable;
+  /// never call from inside a CAF actor handler.
+  void flush_retired_modules();
 
   caf::actor get_scheduler_actor();
 
@@ -185,7 +197,8 @@ public:
 
   //methods used to send scheduler actors messages
   void send_scheduler_actor_message(token_ptr token,int device_number = -1);
-  void send_scheduler_actor_message(std::vector<token_ptr> tokens,int device_number = -1);
+  void send_scheduler_actor_message(std::vector<token_ptr> tokens,
+                                    int device_number = -1);
   void send_scheduler_actor_message(behavior_token_ptr token,int device_number);
   void send_scheduler_actor_message(std::string behavior,int device_number);
 
@@ -194,16 +207,10 @@ public:
   caf::actor spawn_exit_actor(int num_actors);
 
 private:
-  explicit manager(caf::actor_system& sys)
-    : system_(sys), platform_(platform::create()) {
-    // cuInit is done in init()
-  }
-
-  caf::actor_system& system_;
-  platform_ptr platform_;
-
   //helper to compile a nvrtc program
-  bool compile_nvrtc_program(const char* source, CUdevice device, std::vector<char>& ptx_out);
+  bool compile_nvrtc_program(const char* source, 
+                             CUdevice device, 
+                             std::vector<char>& ptx_out);
 
   void init_scheduler_actors(caf::actor_system&);
   
@@ -211,13 +218,13 @@ private:
   void init_memory_actor(caf::actor_system&);
   void destroy_memory_actor();
 
-  static manager* instance_;
-  static std::mutex mutex_;
-  bool scheduler_on = false;
-  bool memory_manager_on = false;
-  caf::actor scheduler_actor_handle;
-  caf::actor memory_actor_handle;
-  std::vector<caf::actor> scheduler_actors;
+  caf::actor_system& system_;
+  platform_ptr platform_;
+  bool scheduler_on_ = false;
+  bool memory_manager_on_ = false;
+  caf::actor scheduler_actor_handle_;
+  caf::actor memory_actor_handle_;
+  std::vector<caf::actor> scheduler_actors_;
 };
 
 } // namespace caf::cuda

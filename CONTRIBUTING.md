@@ -18,14 +18,16 @@ Branches
   below.
 
 - After a GitHub issue has been assigned to you, create a branch with naming
-  convention `issue/$num`, where `$num` is the issue ID on GitHub. Once you are
-  ready, create a pull request for your branch. You can also file a draft pull
-  request to get early feedback. In the pull request, put "Closes #$num." or
-  "Fixes #$num." into the description if the pull request resolves the issue. If
-  the pull request only partially addresses the issue, use "Relates #$num."
+  convention `issue/$num-$description`, where `$num` is the issue ID on GitHub
+  and `$description` is a short description of the changes. Once you are ready,
+  create a pull request for your branch. You can also file a draft pull request
+  to get early feedback. In the pull request, put "Closes #$num." or "Fixes
+  #$num." into the description if the pull request resolves the issue. If the
+  pull request only partially addresses the issue and requires a follow-up, use
+  "Relates #$num." instead.
 
 - For smaller changes that do not have a GitHub issue, we use topic branches
-  with naming convention `topic/$user/short-description`. For example, a branch
+  with naming convention `topic/$user/$description`. For example, a branch
   for fixing some typos in the documentation by user `johndoe` could be named
   `topic/johndoe/fix-doc-typos`.
 
@@ -75,8 +77,8 @@ Coding Style
 ============
 
 When contributing source code, please adhere to the following coding style,
-which is loosely based the C++ Core Guidelines and the coding conventions used
-by the C++ Standard Library.
+which is loosely based on the C++ Core Guidelines and the coding conventions
+used by the C++ Standard Library.
 
 Example for the Impatient
 -------------------------
@@ -170,7 +172,7 @@ void my_class::print_name() const {
 // the main distribution directory for license terms and copyright or visit
 // https://github.com/actor-framework/actor-framework/blob/main/LICENSE.
 
-#include "caf/example/my_class.hpp" // the header-under-test
+#include "caf/foo/my_class.hpp" // the header-under-test
 
 #include "caf/test/caf_test_main.hpp"
 #include "caf/test/test.hpp"
@@ -194,6 +196,8 @@ not enforced by `clang-format` and must be applied manually:
 
 - Never use C-style casts.
 
+- Use "west const" style, i.e., `const T&` rather than `T const&`.
+
 - Never declare more than one variable per line.
 
 - Only separate functions with vertical whitespaces and use comments to
@@ -211,8 +215,9 @@ not enforced by `clang-format` and must be applied manually:
   immediately or if you actually want a type conversion. In the latter case,
   provide a comment why this conversion is necessary.
 
-- Never use unwrapped, manual resource management such as `new` and `delete`,
-  except when implementing a smart pointer or a similar abstraction.
+- Never use unwrapped, manual resource management such as `new` and `delete`.
+  Use smart pointers from the STL (`std::unique_ptr`, `std::shared_ptr`) or
+  `caf::intrusive_ptr` instead.
 
 - Prefer algorithms over manual loops.
 
@@ -221,9 +226,19 @@ not enforced by `clang-format` and must be applied manually:
 - Protect single-argument constructors with `explicit` to avoid implicit
   conversions.
 
-- Use `noexcept` and attributes such as `[[nodiscard]]` whenever it makes sense
-  and as long as it does not limit future design space. For example, move
-  construction and assignment are natural candidates for `noexcept`.
+- Prefer `constexpr` functions where reasonable, i.e., when the function can be
+  evaluated at compile time and doing so provides a benefit.
+
+- Use `noexcept` whenever it makes sense and as long as it does not limit future
+  design space. For example, move construction and assignment as well as simple
+  getters are natural candidates for `noexcept`.
+
+- Functions should generally be marked `[[nodiscard]]` unless the return value
+  is intentionally optional to use (e.g., for functions that are primarily
+  called for side effects but also return a status).
+
+- Do not use exceptions for error handling. Use `expected` and/or `caf::error`
+  instead to keep errors explicit and anchored in the type system.
 
 Naming
 ------
@@ -248,7 +263,7 @@ Naming
     }
 
     const std::string& name() const noexcept {
-      return name_
+      return name_;
     }
 
     void name(const std::string& new_name) {
@@ -303,5 +318,5 @@ multiple `.cpp` files in the same module. An `internal` component is never
 exported (and thus does not become part of the CAF ABI) and we do not install
 headers for it. We prefer `internal` whenever possible to keep the ABI minimal.
 
-However, there cases where `internal` is not suitable, e.g., when a type must be
-included in a public CAF header. In such cases, use `detail` instead.
+However, there are cases where `internal` is not suitable, e.g., when a type
+must be included in a public CAF header. In such cases, use `detail` instead.

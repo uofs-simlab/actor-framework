@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <caf/intrusive_ptr.hpp>
+#include <caf/adopt_ref.hpp>
 #include <caf/ref_counted.hpp>
 #include "caf/cuda/global_export.hpp"
 #include <iostream>
@@ -23,8 +24,6 @@ class CAF_CUDA_EXPORT token : public caf::ref_counted {
 public:
    virtual ~token() {
     // Print ref count when destructor runs
-    size_t count = ref_count_.load(std::memory_order_acquire);
-    //std::cout << "token object getting deleted, ref_count = " << count << "\n";
 }
 
     //should only be used by caf's type id system

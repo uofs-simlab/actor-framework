@@ -326,8 +326,8 @@ public:
       // TODO: use fail() on the current runnable instead.
       CAF_RAISE_ERROR(std::logic_error, "observable did not complete");
     }
-    if (*err) {
-      return result_type{std::move(*err)};
+    if (err->valid()) {
+      return result_type{unexpect, std::move(*err)};
     }
     return result_type{std::move(*values)};
   }

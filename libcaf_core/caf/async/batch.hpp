@@ -96,7 +96,7 @@ public:
     intrusive_ptr<batch::data> ptr{
       new (vptr) batch::data(destroy_items, type_id_or_invalid<value_type>(),
                              sizeof(value_type), 0),
-      false};
+      adopt_ref};
     auto* storage = ptr->storage_;
     for (const auto& item : items) {
       new (storage) value_type(item);
@@ -194,7 +194,7 @@ private:
     type_id_t item_type_;
     size_t item_size_;
     size_t size_;
-    std::byte storage_[];
+    alignas(max_align_t) std::byte storage_[];
   };
 
   explicit batch(intrusive_ptr<data> ptr) : data_(std::move(ptr)) {

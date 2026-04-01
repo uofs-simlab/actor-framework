@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "caf/caf_deprecated.hpp"
 #include "caf/detail/behavior_impl.hpp"
 #include "caf/detail/concepts.hpp"
 #include "caf/detail/core_export.hpp"
@@ -23,6 +24,8 @@ class message_handler;
 /// handler and an optional timeout.
 class CAF_CORE_EXPORT behavior {
 public:
+  using impl_ptr = intrusive_ptr<detail::behavior_impl>;
+
   friend class message_handler;
 
   behavior() = default;
@@ -37,11 +40,13 @@ public:
   }
 
   /// Creates a behavior from `fun` without timeout.
+  // cppcheck-suppress noExplicitConstructor
   behavior(const message_handler& mh);
 
   /// The list of arguments can contain match expressions, message handlers,
   /// and up to one timeout (if set, the timeout has to be the last argument).
   template <class T, class... Ts>
+    requires(!std::is_same_v<T, impl_ptr>)
   behavior(T arg, Ts&&... args) {
     if constexpr (is_timeout_definition_v<T>
                   || (is_timeout_definition_v<Ts> || ...)) {
@@ -53,15 +58,15 @@ public:
 
   /// Creates a behavior from `tdef` without message handler.
   template <class F>
-  [[deprecated("use idle timeouts instead of 'after >> ...'")]]
-  behavior(timeout_definition<F> tdef)
-    : impl_(detail::make_behavior(tdef)) {
+  CAF_DEPRECATED("use idle timeouts instead of 'after >> ...'")
+  // cppcheck-suppress noExplicitConstructor
+  behavior(timeout_definition<F> tdef) : impl_(detail::make_behavior(tdef)) {
     // nop
   }
 
   /// Assigns new handlers.
   template <class... Ts>
-  [[deprecated("use idle timeouts instead of 'after >> ...'")]]
+  CAF_DEPRECATED("use idle timeouts instead of 'after >> ...'")
   void legacy_assign(Ts&&... xs) {
     static_assert(sizeof...(Ts) > 0, "assign() called without arguments");
     impl_ = detail::make_behavior(std::forward<Ts>(xs)...);
@@ -115,19 +120,17 @@ public:
   }
 
   /// Checks whether this behavior is not empty.
-  operator bool() const {
+  explicit operator bool() const {
     return static_cast<bool>(impl_);
   }
 
   /// @cond
 
-  using impl_ptr = intrusive_ptr<detail::behavior_impl>;
-
   const impl_ptr& as_behavior_impl() const {
     return impl_;
   }
 
-  behavior(impl_ptr ptr) : impl_(std::move(ptr)) {
+  explicit behavior(impl_ptr ptr) : impl_(std::move(ptr)) {
     // nop
   }
 

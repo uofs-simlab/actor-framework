@@ -7,10 +7,10 @@
 #include "caf/abstract_mailbox.hpp"
 #include "caf/abstract_scheduled_actor.hpp"
 #include "caf/action.hpp"
-#include "caf/actor_traits.hpp"
 #include "caf/async/fwd.hpp"
-#include "caf/config.hpp"
+#include "caf/caf_deprecated.hpp"
 #include "caf/cow_string.hpp"
+#include "caf/defaults.hpp"
 #include "caf/detail/behavior_stack.hpp"
 #include "caf/detail/core_export.hpp"
 #include "caf/detail/default_mailbox.hpp"
@@ -72,8 +72,8 @@ CAF_CORE_EXPORT skippable_result drop(scheduled_actor*, message&);
 
 /// A cooperatively scheduled, event-based actor implementation.
 class CAF_CORE_EXPORT scheduled_actor : public abstract_scheduled_actor,
-                                        public resumable,
-                                        public flow::coordinator {
+                                        public flow::coordinator,
+                                        public resumable {
 public:
   // -- friends ----------------------------------------------------------------
 
@@ -109,6 +109,10 @@ public:
     /// Actor dropped the activation message.
     dropped
   };
+
+  // -- constants --------------------------------------------------------------
+
+  static constexpr auto forced_spawn_options = spawn_options::no_flags;
 
   // -- nested and member types ------------------------------------------------
 
@@ -203,19 +207,23 @@ public:
 
   const char* name() const override;
 
-  void launch(scheduler* sched, bool lazy, bool hide) override;
+  bool initialize(scheduler* ctx) override;
+
+  bool launch_delayed() final;
+
+  void launch(detail::private_thread* worker, scheduler* ctx) override;
 
   void on_cleanup(const error& reason) override;
 
-  // -- overridden functions of resumable --------------------------------------
+  resumable* as_resumable() noexcept override;
 
-  subtype_t subtype() const noexcept override;
+  // -- overridden functions of resumable --------------------------------------
 
   void ref_resumable() const noexcept final;
 
   void deref_resumable() const noexcept final;
 
-  resume_result resume(scheduler*, size_t) override;
+  void resume(scheduler*, uint64_t) override;
 
   // -- scheduler callbacks ----------------------------------------------------
 
@@ -257,7 +265,7 @@ public:
   // -- event handlers ---------------------------------------------------------
 
   /// Sets a custom handler for unexpected messages.
-  [[deprecated("use a handler for 'message' instead")]]
+  CAF_DEPRECATED("use a handler for 'message' instead")
   void set_default_handler(default_handler fun) {
     if (fun)
       default_handler_ = std::move(fun);
@@ -268,7 +276,7 @@ public:
   /// Sets a custom handler for unexpected messages.
   template <std::invocable<message&> F>
     requires std::same_as<std::invoke_result_t<F, message&>, skippable_result>
-  [[deprecated("use a handler for 'message' instead")]]
+  CAF_DEPRECATED("use a handler for 'message' instead")
   void set_default_handler(F fun) {
     default_handler_ = [fn{std::move(fun)}](scheduled_actor*,
                                             message& xs) mutable {
@@ -277,7 +285,7 @@ public:
   }
 
   /// Sets a custom handler for error messages.
-  [[deprecated("use a handler for 'error' instead")]]
+  CAF_DEPRECATED("use a handler for 'error' instead")
   void set_error_handler(error_handler fun) {
     if (fun)
       error_handler_ = std::move(fun);
@@ -287,7 +295,7 @@ public:
 
   /// Sets a custom handler for error messages.
   template <std::invocable<error&> F>
-  [[deprecated("use a handler for 'error' instead")]]
+  CAF_DEPRECATED("use a handler for 'error' instead")
   void set_error_handler(F fun) {
     error_handler_ = [fn{std::move(fun)}](scheduled_actor*, error& x) mutable {
       fn(x);
@@ -295,7 +303,7 @@ public:
   }
 
   /// Sets a custom handler for down messages.
-  [[deprecated("use monitor with callback instead")]]
+  CAF_DEPRECATED("use monitor with callback instead")
   void set_down_handler(down_handler fun) {
     if (fun)
       down_handler_ = std::move(fun);
@@ -305,14 +313,14 @@ public:
 
   /// Sets a custom handler for down messages.
   template <std::invocable<down_msg&> F>
-  [[deprecated("use monitor with callback instead")]]
+  CAF_DEPRECATED("use monitor with callback instead")
   void set_down_handler(F fun) {
     down_handler_ = [fn{std::move(fun)}](scheduled_actor*,
                                          down_msg& x) mutable { fn(x); };
   }
 
   /// Sets a custom handler for node down messages.
-  [[deprecated("use a handler for 'node_down_msg' instead")]]
+  CAF_DEPRECATED("use a handler for 'node_down_msg' instead")
   void set_node_down_handler(node_down_handler fun) {
     if (fun)
       node_down_handler_ = std::move(fun);
@@ -322,7 +330,7 @@ public:
 
   /// Sets a custom handler for down messages.
   template <std::invocable<node_down_msg&> F>
-  [[deprecated("use a handler for 'node_down_msg' instead")]]
+  CAF_DEPRECATED("use a handler for 'node_down_msg' instead")
   void set_node_down_handler(F fun) {
     node_down_handler_ = [fn{std::move(fun)}](scheduled_actor*,
                                               node_down_msg& x) mutable {
@@ -331,7 +339,7 @@ public:
   }
 
   /// Sets a custom handler for error messages.
-  [[deprecated("use a handler for 'exit_msg' instead")]]
+  CAF_DEPRECATED("use a handler for 'exit_msg' instead")
   void set_exit_handler(exit_handler fun) {
     if (fun)
       exit_handler_ = std::move(fun);
@@ -341,7 +349,7 @@ public:
 
   /// Sets a custom handler for exit messages.
   template <std::invocable<exit_msg&> F>
-  [[deprecated("use a handler for 'exit_msg' instead")]]
+  CAF_DEPRECATED("use a handler for 'exit_msg' instead")
   void set_exit_handler(F fun) {
     exit_handler_ = [fn{std::move(fun)}](scheduled_actor*,
                                          exit_msg& x) mutable { fn(x); };
@@ -488,7 +496,8 @@ public:
   /// @note Both @p buf_capacity and @p demand_threshold are considered hints.
   ///       The actor may increase (or decrease) the effective settings
   ///       depending on the amount of messages per batch or other factors.
-  template <class T, bool = flow::assert_has_impl_include<T>>
+  template <class T>
+    requires flow::assert_has_impl_include<T>
   auto
   observe(typed_stream<T> what, size_t buf_capacity, size_t demand_threshold);
 
@@ -500,7 +509,8 @@ public:
   /// @note Both @p buf_capacity and @p demand_threshold are considered hints.
   ///       The actor may increase (or decrease) the effective settings
   ///       depending on the amount of messages per batch or other factors.
-  template <class T, bool = flow::assert_has_impl_include<T>>
+  template <class T>
+    requires flow::assert_has_impl_include<T>
   auto observe_as(stream what, size_t buf_capacity, size_t demand_threshold);
 
   /// Deregisters a local stream. After calling this function, other actors can
@@ -626,13 +636,13 @@ public:
   using super::demonitor;
 
   template <message_priority P = message_priority::normal, class Handle>
-  [[deprecated("use the monitor() overload with a callback instead")]]
+  CAF_DEPRECATED("use the monitor() overload with a callback instead")
   void monitor(const Handle& whom) {
     do_monitor(actor_cast<abstract_actor*>(whom), P);
   }
 
   template <class Handle>
-  [[deprecated("use the monitor() overload with a callback instead")]]
+  CAF_DEPRECATED("use the monitor() overload with a callback instead")
   void demonitor(const Handle& whom) {
     do_demonitor(actor_cast<strong_actor_ptr>(whom));
   }
@@ -723,6 +733,8 @@ private:
   disposable do_monitor(abstract_actor* ptr,
                         detail::abstract_monitor_action_ptr on_down);
 
+  virtual behavior type_erased_initial_behavior() = 0;
+
   /// Encodes how an actor is currently handling timeouts.
   enum class timeout_mode {
     none,          /// No timeout is set.
@@ -763,8 +775,8 @@ private:
   /// Stores the current timeout state.
   timeout_state timeout_state_;
 
-  template <class T, bool = flow::assert_has_impl_include<T>>
-  auto single_from_response(message_id mid, disposable pending_timeout);
+  flow::observable<async::batch> do_observe(stream what, size_t buf_capacity,
+                                            size_t request_threshold);
 
   void do_unstash(mailbox_element_ptr ptr) override;
 
@@ -792,7 +804,7 @@ private:
 
   // -- cleanup ----------------------------------------------------------------
 
-  void close_mailbox(const error& reason);
+  void close_mailbox();
 
   void force_close_mailbox() final;
 
@@ -809,20 +821,8 @@ private:
 
   flow::coordinator* flow_context() override;
 
-  template <class T, class Policy>
-  flow::single<T> single_from_response(Policy& policy) {
-    return single_from_response_impl<T>(policy);
-  }
-
-  template <class T, class Policy>
-  flow::single<T> single_from_response_impl(Policy& policy);
-
   /// Removes any watched object that became disposed since the last update.
   void update_watched_disposables();
-
-  /// Implementation detail for observe_as.
-  flow::observable<async::batch> do_observe(stream what, size_t buf_capacity,
-                                            size_t request_threshold);
 
   /// Implementation detail for to_stream.
   stream to_stream_impl(cow_string name, batch_op_ptr batch_op,
@@ -845,6 +845,10 @@ private:
   /// Cleans up any state associated to flows and streams and cancels all
   /// ongoing activities.
   void cancel_flows_and_streams();
+
+  /// The maximum throughput for resuming the actor, i.e., the maximum number of
+  /// messages that the actor is allowed to consume per resume.
+  size_t max_throughput_ = defaults::scheduler::max_throughput;
 
   /// Stores actions that the actor executes after processing the current
   /// message.
@@ -882,9 +886,6 @@ private:
 
   /// Stashes skipped messages until the actor processes the next message.
   intrusive::stack<mailbox_element> stash_;
-
-  /// Metrics to count processed messages for the actor.
-  telemetry::int_counter* processed_messages_ = nullptr;
 
   union {
     /// The default mailbox instance that we use if the user does not configure
