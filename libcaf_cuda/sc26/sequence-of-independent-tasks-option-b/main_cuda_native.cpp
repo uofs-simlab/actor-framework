@@ -1,3 +1,10 @@
+// main_cuda_native.cpp
+// Option B: Throughput mode — native pipelining baseline unchanged from the
+// original sequence-of-independent-tasks test. All iterations are enqueued
+// without intermediate syncs; a single cuStreamSynchronize is called at the
+// end of each series. GPU remains at ~100% utilisation throughout.
+// Paired with fire-and-forget actor variants that queue all iterations to the
+// actor mailbox up front, approaching the same pipelining behaviour.
 #include <cuda.h>
 #include <iostream>
 #include <vector>
@@ -24,7 +31,6 @@ std::string readFile(const std::string &path) {
     return ss.str();
 }
 
-// Launch kernel once
 void launchKernel(CUfunction kernel, CUstream stream,
                   CUdeviceptr d_a, CUdeviceptr d_b, CUdeviceptr d_c, int N) {
     const unsigned int blockX = 32;
@@ -37,10 +43,8 @@ void launchKernel(CUfunction kernel, CUstream stream,
     checkCU(cuLaunchKernel(kernel,
                            gridX, gridY, 1,
                            blockX, blockY, 1,
-                           0,
-                           stream,
-                           kernelParams,
-                           nullptr),
+                           0, stream,
+                           kernelParams, nullptr),
             "cuLaunchKernel");
 }
 
@@ -65,9 +69,6 @@ int main() {
     CUfunction kernel;
     checkCU(cuModuleGetFunction(&kernel, module, "matrixMul"), "cuModuleGetFunction matrixMul");
 
-    // ----------------------------------
-    // Persistent host buffers
-    // ----------------------------------
     size_t elements = (size_t)N * N;
     std::vector<int> h_a(elements, 1);
     std::vector<int> h_b(elements, 1);
@@ -78,7 +79,7 @@ int main() {
 
     using clock = std::chrono::steady_clock;
 
-    // Warmup: prime CUDA context and allocator before timed series
+    // Warmup
     {
         const int warmup_iters = 10;
         for (int i = 0; i < warmup_iters; ++i) {
@@ -102,39 +103,26 @@ int main() {
         auto start = clock::now();
 
         for (int i = 0; i < iterations; ++i) {
-            // ----------------------------------
-            // Allocate device memory each iteration
-            // ----------------------------------
             CUdeviceptr d_a, d_b, d_c;
             checkCU(cuMemAlloc(&d_a, elements * sizeof(int)), "cuMemAlloc d_a");
             checkCU(cuMemAlloc(&d_b, elements * sizeof(int)), "cuMemAlloc d_b");
             checkCU(cuMemAlloc(&d_c, elements * sizeof(int)), "cuMemAlloc d_c");
 
-            // ----------------------------------
-            // Copy persistent host buffers to device
-            // ----------------------------------
             checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), elements * sizeof(int), stream), "H2D d_a");
             checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), elements * sizeof(int), stream), "H2D d_b");
 
-            // ----------------------------------
-            // Launch kernel
-            // ----------------------------------
             launchKernel(kernel, stream, d_a, d_b, d_c, N);
 
-            // ----------------------------------
-            // Copy result back
-            // ----------------------------------
             checkCU(cuMemcpyDtoHAsync(h_c.data(), d_c, elements * sizeof(int), stream), "D2H d_c");
 
-            // ----------------------------------
-            // Free device memory
-            // ----------------------------------
+            // [OPTION B] No per-iteration sync — GPU pipelines all iterations
+            // back-to-back, achieving maximum throughput
             checkCU(cuMemFree(d_a), "cuMemFree d_a");
             checkCU(cuMemFree(d_b), "cuMemFree d_b");
             checkCU(cuMemFree(d_c), "cuMemFree d_c");
         }
 
-        // Synchronize stream after series
+        // Single sync per series — measures pure GPU throughput
         checkCU(cuStreamSynchronize(stream), "stream sync after series");
 
         auto end = clock::now();
@@ -145,9 +133,6 @@ int main() {
                   << ", total GPU time = " << total_ms << " ms\n";
     }
 
-    // ----------------------------------
-    // Cleanup
-    // ----------------------------------
     checkCU(cuStreamDestroy(stream), "cuStreamDestroy");
     checkCU(cuModuleUnload(module), "cuModuleUnload");
     checkCU(cuCtxDestroy(ctx), "cuCtxDestroy");

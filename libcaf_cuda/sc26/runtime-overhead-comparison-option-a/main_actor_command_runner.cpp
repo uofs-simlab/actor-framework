@@ -1,13 +1,19 @@
+// main_actor_command_runner.cpp
+// Option A: Serialised latency — command-runner variant unchanged from the
+// corrected runtime-overhead-comparison test. The command_runner.run() call is
+// already synchronous (blocks until GPU completes), so no structural change is
+// needed. This file exists to pair with the Option A native variant which now
+// also serialises after every async op.
 #include <caf/all.hpp>
 #include <caf/cuda/all.hpp>
 #include <vector>
 #include <iostream>
-#include <random>
 #include <chrono>
+#include <random>
 
+using namespace caf;
 static const unsigned int RANDOM_SEED = 42;
 using namespace std::chrono_literals;
-using clock_t_ = std::chrono::steady_clock;
 using mmul_command = caf::cuda::command_runner<
     in<int>,  // matrix A
     in<int>,  // matrix B
@@ -17,17 +23,15 @@ using mmul_command = caf::cuda::command_runner<
 
 
 class MatMult {
-  caf::event_based_actor* self_;
+  event_based_actor* self_;
   std::vector<int> A_;
   std::vector<int> B_;
   caf::cuda::program_ptr program_;
   using clock = std::chrono::steady_clock;
   clock::time_point start_;
 
-
 public:
-  MatMult(caf::event_based_actor* self, int N) : self_(self) {
-    // Initialize persistent host buffers (matches native CUDA's single allocation)
+  MatMult(event_based_actor* self, int N) : self_(self) {
     std::mt19937 rng(RANDOM_SEED);
     std::uniform_int_distribution<int> dist(1, 10);
 
@@ -42,7 +46,7 @@ public:
         "mmul.cubin", "matrixMul");
   };
 
-  caf::behavior make_behavior() {
+  behavior make_behavior() {
     return {
       [this](int N) {
         start_ = clock::now();
@@ -56,67 +60,62 @@ public:
                                 THREADS,
                                 THREADS,
                                 1);
+        
+        auto arg1 = caf::cuda::create_in_arg(std::move(A_));
+        auto arg2 = caf::cuda::create_in_arg(std::move(B_));
 
         mmul_command runner;
-
         // .run() blocks until the GPU finishes
         auto result_buffer = runner.run(program_,
                                         dim,
                                         self_->id(),
-                                        caf::cuda::create_in_arg(A_),
-                                        caf::cuda::create_in_arg(B_),
-                                        caf::cuda::create_out_arg_with_size<int>(N * N),
-                                        caf::cuda::create_in_arg(N));
+                                        arg1,
+                                        arg2,
+                                        out<int>(N * N),
+                                        in(N));
 
         double duration = std::chrono::duration<double, std::milli>(
             clock::now() - start_).count();
 
         std::vector<int> output = caf::cuda::extract_vector<int>(result_buffer);
         return duration;
-      }
+      },
     };
   }
 };
 
+void caf_main(actor_system& sys) {
+  scoped_actor self{sys};
+  std::vector<int> sizes = {1000, 2000, 4000, 8000, 16000};
+  std::vector<double> results;
 
-void caf_main(caf::actor_system& sys) {
-  caf::scoped_actor self{sys};
-  int N = 1000;
-  int iterations = 10000;
-  int checkpoint = 1000;
-
-  // Spawn one persistent actor reused across all iterations
-  // (persistent host buffers match native CUDA's single allocation)
-  auto worker = self->spawn(caf::actor_from_state<MatMult>, N);
-
-  // Warmup: prime CUDA context before timed measurements
-  self->mail(N).request(worker, caf::infinite).receive(
-    [](double) {},
-    [](const caf::error& err) {
-      std::cerr << "Warmup error: " << to_string(err) << std::endl;
-    });
+  // Warmup: prime CUDA context and cubin load before timed tests
+  {
+    int warmup_N = 64;
+    auto w = self->spawn(caf::actor_from_state<MatMult>, warmup_N);
+    self->mail(warmup_N).request(w, caf::infinite).receive(
+      [](double) {}, [](const caf::error&) {});
+  }
   std::cout << "--- warmup complete ---\n";
 
-  auto loop_start = clock_t_::now();
-
-  for (int i = 0; i < iterations; i++) {
+  for (int N : sizes) {
+    auto worker = self->spawn(caf::actor_from_state<MatMult>, N);
     self->mail(N)
       .request(worker, caf::infinite)
       .receive(
-        [](double /*per_iter_ms*/) {},
+        [&](double duration) {
+          results.push_back(duration);
+        },
         [&](const caf::error& err) {
           std::cerr << "Main: Error occurred for N=" << N
                     << ": " << to_string(err) << std::endl;
         }
       );
+  }
 
-    if ((i + 1) % checkpoint == 0) {
-      auto now = clock_t_::now();
-      double elapsed_ms = std::chrono::duration<double, std::milli>(now - loop_start).count();
-      std::cout << "[SERIES RESULT] Matrix " << N << "x" << N
-                << ", iterations = " << (i + 1)
-                << ", total GPU time = " << elapsed_ms << " ms\n";
-    }
+  std::cout << "\nMatrix size : time (ms)\n";
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    std::cout << sizes[i] << " : " << results[i] << " ms\n";
   }
 }
 

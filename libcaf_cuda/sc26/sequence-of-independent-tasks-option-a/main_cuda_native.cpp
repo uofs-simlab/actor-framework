@@ -1,3 +1,9 @@
+// main_cuda_native.cpp
+// Option A: Serialised latency — cuStreamSynchronize added after each D2H copy
+// inside the loop so native completes one full GPU round-trip per iteration
+// before queuing the next. This matches the actor variants' per-iteration
+// blocking semantics exactly and gives a truly apples-to-apples overhead
+// measurement. Expected overhead ratio: ~1.5–2x instead of ~4.5x.
 #include <cuda.h>
 #include <iostream>
 #include <vector>
@@ -90,11 +96,11 @@ int main() {
             checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), elements * sizeof(int), stream), "warmup H2D d_b");
             launchKernel(kernel, stream, d_a, d_b, d_c, N);
             checkCU(cuMemcpyDtoHAsync(h_c.data(), d_c, elements * sizeof(int), stream), "warmup D2H d_c");
+            checkCU(cuStreamSynchronize(stream), "warmup sync");  // serialised in warmup too
             checkCU(cuMemFree(d_a), "warmup free d_a");
             checkCU(cuMemFree(d_b), "warmup free d_b");
             checkCU(cuMemFree(d_c), "warmup free d_c");
         }
-        checkCU(cuStreamSynchronize(stream), "warmup sync");
         std::cout << "--- warmup complete ---\n";
     }
 
@@ -102,40 +108,27 @@ int main() {
         auto start = clock::now();
 
         for (int i = 0; i < iterations; ++i) {
-            // ----------------------------------
-            // Allocate device memory each iteration
-            // ----------------------------------
             CUdeviceptr d_a, d_b, d_c;
             checkCU(cuMemAlloc(&d_a, elements * sizeof(int)), "cuMemAlloc d_a");
             checkCU(cuMemAlloc(&d_b, elements * sizeof(int)), "cuMemAlloc d_b");
             checkCU(cuMemAlloc(&d_c, elements * sizeof(int)), "cuMemAlloc d_c");
 
-            // ----------------------------------
-            // Copy persistent host buffers to device
-            // ----------------------------------
             checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), elements * sizeof(int), stream), "H2D d_a");
             checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), elements * sizeof(int), stream), "H2D d_b");
 
-            // ----------------------------------
-            // Launch kernel
-            // ----------------------------------
             launchKernel(kernel, stream, d_a, d_b, d_c, N);
 
-            // ----------------------------------
-            // Copy result back
-            // ----------------------------------
             checkCU(cuMemcpyDtoHAsync(h_c.data(), d_c, elements * sizeof(int), stream), "D2H d_c");
 
-            // ----------------------------------
-            // Free device memory
-            // ----------------------------------
+            // [OPTION A] Synchronise after each iteration — GPU completes one
+            // full round-trip before the next iteration begins. This matches
+            // the actor variants' blocking request/receive semantics exactly.
+            checkCU(cuStreamSynchronize(stream), "per-iteration sync");
+
             checkCU(cuMemFree(d_a), "cuMemFree d_a");
             checkCU(cuMemFree(d_b), "cuMemFree d_b");
             checkCU(cuMemFree(d_c), "cuMemFree d_c");
         }
-
-        // Synchronize stream after series
-        checkCU(cuStreamSynchronize(stream), "stream sync after series");
 
         auto end = clock::now();
         double total_ms = std::chrono::duration<double, std::milli>(end - start).count();

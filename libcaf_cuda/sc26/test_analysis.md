@@ -213,3 +213,176 @@ The following tests are recommended to make a stronger SC paper. Each measures a
 - **Overhead percentage annotation**: for each comparison figure, add a secondary y-axis or annotation showing `((actor − native) / native) × 100%`. This directly answers "how much does CAF-CUDA cost?"
 - **Normalise to native baseline** in a summary figure: one chart with bars for each test showing relative overhead (%). A value close to zero means the actor abstraction is transparent.
 - **Table 1: static code complexity** — count lines-of-code and explicit synchronisation calls for each variant (native / actor-facade / command-runner) across tests T1–T5. Fewer lines + zero explicit sync in CAF-CUDA is a strong usability argument.
+
+---
+
+## Results Analysis: Why the Performance Gap Is So Large
+
+*(Added after reviewing `resutls.txt` / `results.txt` and tracing the full CUDA dispatch path.)*
+
+### Observed numbers
+
+**runtime-overhead-comparison (single-shot, N=1000):**
+| Variant | Time (ms) |
+|---------|-----------|
+| Native CUDA | 3.74 |
+| Command-runner | 19.34 |
+| Actor-facade | 29.69 |
+
+**sequence-of-independent-tasks (1000 iterations, N=1000):**
+| Variant | Cumulative time (ms) | Per-iteration (ms) |
+|---------|---------------------|-------------------|
+| Native CUDA | 3891 | 3.89 |
+| Command-runner | 18,643 | 18.64 |
+| Actor-facade | 18,168 | 18.17 |
+
+---
+
+### Root cause 1: The native sequence test pipelines GPU work — actors cannot (primary cause)
+
+**This is the single biggest source of the gap** and it is a structural difference, not a bug.
+
+The native `sequence-of-independent-tasks` test calls `cuMemFree` with the CUDA Driver API, which in CUDA 12 is **non-blocking** (logically deferred). The memory is reclaimed by CUDA once the GPU finishes using it, but the CPU returns immediately and loops to the next iteration. The GPU stream therefore has all 1000 iterations queued back-to-back with no gap:
+
+```
+GPU stream: [H2D A1][H2D B1][kernel1][D2H C1][H2D A2][H2D B2][kernel2][D2H C2]...
+CPU:        loop() ← returns immediately for each iteration
+cuStreamSynchronize: called ONCE at iteration 1000
+```
+
+The GPU is at **100% utilization** throughout. The measured time is pure GPU throughput: 1000 × 3.89 ms.
+
+The actor tests call `cuStreamSynchronize` **inside `copy_to_host()`** every single iteration (via `collect_output_buffers → mem_ref::copy_to_host`). The GPU is idle while the CPU does CAF message routing, actor scheduling, and memory management before the next iteration begins:
+
+```
+[H2D A][H2D B][kernel][D2H C][sync] ← GPU idle → [H2D A][H2D B]...
+                                      14 ms gap
+```
+
+GPU utilization in actor tests ≈ 3.89 / 18.17 = **21%**.
+
+**This is the dominant overhead source**: 14.3 ms of GPU idle time per iteration out of 18.17 ms total.
+
+---
+
+### Root cause 2: actor-facade serializes input data through CAF messages (extra copies)
+
+When `actor_facade` sends data to the GPU actor using `self_->mail(create_in_arg(A_), ...).request(gpuActor_, ...)`, CAF serializes the arguments into a message. The serialization path calls `in_impl<T>::get_buffer()`:
+
+```cpp
+// in types.hpp:
+std::vector<T> get_buffer() const {
+    return std::vector<T>(ptr_, ptr_ + size_);  // full NxN copy
+}
+// in global.hpp inspect():
+auto buf = x.get_buffer();  // copies 4 MB
+f.object(x).fields(f.field("buffer", buf));  // writes to message
+```
+
+The receiving GPU actor then deserializes, reading a new `std::vector<T>` back from the message. This is a **full round-trip copy of A and B through CAF's message store** — 8 MB of CPU memory per iteration for N=1000.
+
+The command-runner does not have this problem because the data path is a direct function call with no message passing. This is why command-runner (18.6 ms) is consistently faster than actor-facade (18.2 ms) for small N, and explains the additional overhead in actor-facade at the single-shot level (29.7 ms vs 19.3 ms).
+
+---
+
+### Root cause 3: `collect_output_buffers → copy_to_host` allocates a new heap vector every call
+
+```cpp
+// In mem_ref.hpp copy_to_host():
+std::vector<T> host_data(num_elements_);  // allocates 4 MB every call
+cuMemcpyDtoHAsync(host_data.data(), memory_, bytes, s);
+cuStreamSynchronize(s);
+return host_data;  // returns by value → moves to output_buffer
+```
+
+Native writes D2H to a **persistent** pre-allocated `h_c` buffer. The actor path allocates 4 MB → does D2H → returns (moves) the vector → gets placed in an `output_buffer` → then `extract_vector<int>` copies it again to return to the caller. This is two 4 MB allocations/copies that native does not do.
+
+For N=1000 at ~30 GB/s memory bandwidth: ~0.3 ms per dispatch. Minor compared to the GPU idle time but accumulates over 10 000 iterations (≈ 3 seconds overhead just from these copies).
+
+---
+
+### Root cause 4: Multiple `cuCtxPushCurrent` / `cuCtxPopCurrent` per dispatch
+
+The actor dispatch path calls the context push/pop pair in:
+1. `global_argument` for A (H2D A: push+pop)
+2. `global_argument` for B (H2D B: push+pop)
+3. `scratch_argument` for C (alloc: push+pop)
+4. `launch_kernel_internal` (kernel launch: push+pop)
+5. `copy_to_host` in `collect_output_buffers` (D2H + sync: push+pop)
+
+That is **5 context switch pairs** per dispatch vs. 0 in native (context is already current on the calling thread). Each `cuCtxPushCurrent` involves a kernel ioctl, contributing to the elevated `sys` time seen in `time` output:
+
+- Native `sequence-of-independent-tasks` (10 000 iter): sys = 26 s → 2.6 ms/iter syscall overhead
+- Actor-facade (10 000 iter): sys = 84 s → 8.4 ms/iter syscall overhead
+- Command-runner (10 000 iter): sys = 111 s → 11.1 ms/iter syscall overhead (more context ops than facade for this test)
+
+The extra syscall time alone accounts for ~6–8 ms/iteration beyond native.
+
+---
+
+### Why the old `mmul-actor-benchmarking` tests showed closer performance
+
+The old `baseline-comparison/actors` benchmark used `anon_mail(...).send(a)` (fire-and-forget) instead of blocking `request/receive`:
+
+```cpp
+// Old benchmark — all iterations queued non-blocking:
+for (int i = 0; i < iterations; i++)
+    anon_mail(matrixA, matrixB, matrix_size).send(a);
+sys.await_all_actors_done();  // single barrier at end
+```
+
+This is structurally identical to the native test's pipelining: all iterations are queued to the actor's mailbox with no blocking. The actor processes them sequentially from its mailbox just as the GPU stream processes native ops sequentially. GPU utilization was near 100% in both cases.
+
+The current `sequence-of-independent-tasks` uses blocking `request/receive` per iteration, which was the correct change for getting per-iteration results but introduced per-iteration GPU stalls. The old benchmarks were not broken because of API changes to improve results — they were doing something fundamentally different (throughput-mode operation).
+
+---
+
+### Is the native test "cheating"?
+
+**No** — but the two tests are measuring different things:
+
+- Native `sequence` test measures **GPU throughput**: how long does the GPU take to run 1000 matrix multiplies back-to-back with no idle time. Answer: ~3.89 ms × 1000 = 3890 ms.
+- Actor tests measure **end-to-end application throughput** including the framework scheduling: how long does it take for a program to dispatch 1000 work units and collect all results using the actor model. Answer: ~18 ms × 1000 = 18 000 ms.
+
+Neither is wrong. But they need to be shown as measuring different things in the paper.
+
+---
+
+### How to get a truly fair apples-to-apples sequence comparison
+
+**Option A — Serialised latency (fairest overhead measure):**
+Add `cuStreamSynchronize(stream)` after each `cuMemcpyDtoHAsync` in the native sequence test's inner loop, forcing native to also complete one full GPU round-trip per iteration before queuing the next. This matches actor semantics exactly and isolates the pure framework overhead. Expected result: native ≈ 3.9 ms/iter, actors ≈ 6–8 ms/iter (once `extract_vector` cost is also removed). Overhead ratio: ~1.5–2x rather than ~4.5x.
+
+**Option B — Throughput mode with fire-and-forget actors:**
+Restructure actor tests to use `anon_mail(...).send(worker)` for all iterations, then `sys.await_all_actors_done()`. This matches the native pipelining and shows the actor model can achieve near-native throughput when results are not needed per-iteration. This recovers the closer-to-native performance seen in the old benchmarks.
+
+Both options should be presented in the paper: Option A as the honest latency overhead figure, Option B as the throughput figure demonstrating the actor model's practical ceiling.
+
+---
+
+### Additional code-level improvements that would reduce overhead
+
+| Item | Current behaviour | Improvement | Expected gain |
+|------|------------------|-------------|---------------|
+| `in<int>` serialization in actor-facade | Full N×N copy through CAF message store | Mark `in<int>` as `CAF_ALLOW_UNSAFE_MESSAGE_TYPE` to pass by shared pointer for intra-process messages | Eliminates ~8 MB copy per dispatch for actor-facade |
+| `copy_to_host` allocation | Allocates new `std::vector` every call | Add `copy_to_host(T* dst, size_t n)` overload writing to caller-provided buffer | Eliminates one 4 MB allocation per dispatch |
+| `extract_vector` in test code | Copies 4 MB unnecessarily (result discarded) | Already removed from current test code — confirm not re-introduced | Eliminates one 4 MB copy per dispatch |
+| Context push/pop | 5 round-trips per dispatch | Cache context as thread-local current once at actor startup | Eliminates ~5–8 ms/iter sys overhead |
+| Per-iteration `cuMemAlloc` | 3 driver-API allocations per dispatch | Use stream-ordered allocator (`cuMemAllocAsync`/`cuMemFreeAsync`) or a device memory pool | Could cut allocation overhead by 10–100x |
+
+The most impactful single change would be adding per-iteration `cuStreamSynchronize` to the native sequence test (Option A above) and then presenting the remaining gap as honest framework overhead.
+
+---
+
+### Summary table: overhead sources
+
+| Source | Overhead (ms/iter, N=1000) | Affects |
+|--------|---------------------------|---------|
+| GPU idle time (CAF scheduling between iterations) | ~6–10 | Both actor variants |
+| Extra syscalls (`cuCtxPushCurrent/Pop` ×5) | ~6–8 | Both actor variants |
+| Serialization copy of A+B through CAF message | ~0.3 | Actor-facade only |
+| `copy_to_host` vector allocation + D2H copy in place | ~0.3 | Both actor variants |
+| CAF message routing (send + receive) | ~0.2 | Both actor variants |
+| **Total (estimated)** | **~13–19 ms** | **Both; facade slightly worse** |
+
+The numbers match the observed ~14.3 ms/iter gap. At N=4000, the GPU kernel itself takes ~146 ms so the ~14 ms framework overhead becomes < 10%, which is why command-runner approaches native performance at large N in the runtime-overhead test.

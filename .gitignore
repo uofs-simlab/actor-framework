@@ -29,3 +29,8 @@ libcaf_cuda/sc26/runtime-overhead-comparison/main_actor_facade
 libcaf_cuda/sc26/sequence-of-independent-tasks/main_actor_facade
 libcaf_cuda/sc26/runtime-overhead-comparison/resutls.txt
 libcaf_cuda/sc26/sequence-of-independent-tasks/main_command_runner
+libcaf_cuda/sc26/runtime-overhead-comparison-option-a/results.txt
+libcaf_cuda/sc26/runtime-overhead-comparison-option-b/results.txt
+libcaf_cuda/sc26/test_analysis.md
+libcaf_cuda/sc26/sequence-of-independent-tasks-option-b/results.txt
+libcaf_cuda/sc26/sequence-of-independent-tasks-option-a/results.txt

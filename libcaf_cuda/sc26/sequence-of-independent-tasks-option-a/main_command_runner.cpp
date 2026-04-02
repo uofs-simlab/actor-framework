@@ -1,3 +1,8 @@
+// main_command_runner.cpp
+// Option A: Serialised latency — command-runner variant unchanged from the
+// corrected sequence-of-independent-tasks test. command_runner.run() is already
+// synchronous per-iteration, matching the native variant which now also
+// synchronises per-iteration. Fairest apples-to-apples overhead comparison.
 #include <caf/all.hpp>
 #include <caf/cuda/all.hpp>
 #include <vector>
@@ -24,10 +29,8 @@ class MatMult {
   using clock = std::chrono::steady_clock;
   clock::time_point start_;
 
-
 public:
   MatMult(caf::event_based_actor* self, int N) : self_(self) {
-    // Initialize persistent host buffers (matches native CUDA's single allocation)
     std::mt19937 rng(RANDOM_SEED);
     std::uniform_int_distribution<int> dist(1, 10);
 
@@ -37,10 +40,9 @@ public:
     for (auto& v : A_) v = dist(rng);
     for (auto& v : B_) v = dist(rng);
 
-    // Pre-load cubin outside the timed window
     program_ = self_->system().cuda_manager().create_program_from_cubin(
         "mmul.cubin", "matrixMul");
-  };
+  }
 
   caf::behavior make_behavior() {
     return {
@@ -50,16 +52,9 @@ public:
         int THREADS = 32;
         int BLOCKS = (N + THREADS - 1) / THREADS;
 
-        caf::cuda::nd_range dim(BLOCKS,
-                                BLOCKS,
-                                1,
-                                THREADS,
-                                THREADS,
-                                1);
-
+        caf::cuda::nd_range dim(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
         mmul_command runner;
 
-        // .run() blocks until the GPU finishes
         auto result_buffer = runner.run(program_,
                                         dim,
                                         self_->id(),
@@ -85,8 +80,6 @@ void caf_main(caf::actor_system& sys) {
   int iterations = 10000;
   int checkpoint = 1000;
 
-  // Spawn one persistent actor reused across all iterations
-  // (persistent host buffers match native CUDA's single allocation)
   auto worker = self->spawn(caf::actor_from_state<MatMult>, N);
 
   // Warmup: prime CUDA context before timed measurements

@@ -20,10 +20,9 @@ class MatMult {
   event_based_actor* self_;
   std::vector<int> A_;
   std::vector<int> B_;
-  std::vector<int> C_;
+  caf::cuda::program_ptr program_;
   using clock = std::chrono::steady_clock;
-  using ms = std::chrono::duration<double, std::milli>;
-  clock::time_point start_, end_;
+  clock::time_point start_;
 
 public:
   MatMult(event_based_actor* self, int N) : self_(self) {
@@ -36,7 +35,9 @@ public:
     for (auto& v : A_) v = dist(rng);
     for (auto& v : B_) v = dist(rng);
 
-    C_.resize(N * N);
+    // Pre-load cubin outside the timed window
+    program_ = self_->system().cuda_manager().create_program_from_cubin(
+        "mmul.cubin", "matrixMul");
   };
 
   behavior make_behavior() {
@@ -47,33 +48,26 @@ public:
         int THREADS = 32;
         int BLOCKS = (N + THREADS - 1) / THREADS;
 
-        caf::cuda::nd_range dim(BLOCKS, 
-                                BLOCKS, 
-                                1, 
-                                THREADS, 
-                                THREADS, 
+        caf::cuda::nd_range dim(BLOCKS,
+                                BLOCKS,
+                                1,
+                                THREADS,
+                                THREADS,
                                 1);
-
-
-        auto& mgr = self_->system().cuda_manager();
-        auto program = mgr.create_program_from_cubin(
-            "mmul.cubin", "matrixMul");
-
 
         mmul_command runner;
 
-        // .run() is expected to block the actor's execution until the GPU finishes
-        auto result_buffer = runner.run(program, 
-                                        dim, 
-                                        self_->id(), 
+        // .run() blocks until the GPU finishes
+        auto result_buffer = runner.run(program_,
+                                        dim,
+                                        self_->id(),
                                         caf::cuda::create_in_arg(A_),
                                         caf::cuda::create_in_arg(B_),
                                         caf::cuda::create_out_arg_with_size<int>(N * N),
                                         caf::cuda::create_in_arg(N));
 
-        end_ = clock::now();
-        double duration = std::chrono::duration_cast<
-            std::chrono::milliseconds>(end_ - start_).count();
+        double duration = std::chrono::duration<double, std::milli>(
+            clock::now() - start_).count();
 
         std::vector<int> output = caf::cuda::extract_vector<int>(result_buffer);
         return duration;
@@ -86,6 +80,16 @@ void caf_main(actor_system& sys) {
   scoped_actor self{sys};
   std::vector<int> sizes = {1000, 2000, 4000, 8000, 16000};
   std::vector<double> results;
+
+  // Warmup: prime CUDA context and cubin load before timed tests
+  {
+    int warmup_N = 64;
+    auto w = self->spawn(caf::actor_from_state<MatMult>, warmup_N);
+    self->mail(warmup_N).request(w, caf::infinite).receive(
+      [](double) {}, [](const caf::error&) {});
+  }
+  std::cout << "--- warmup complete ---\n";
+
   for (int N : sizes) {
     auto worker = self->spawn(caf::actor_from_state<MatMult>, N);
     self->mail(N)
@@ -93,19 +97,17 @@ void caf_main(actor_system& sys) {
       .receive(
         [&](double duration) {
           results.push_back(duration);
-          self->println("Duration = {}", duration);
         },
         [&](const caf::error& err) {
-          std::cerr << "Main: Error occurred for N=" << N 
+          std::cerr << "Main: Error occurred for N=" << N
                     << ": " << to_string(err) << std::endl;
         }
       );
   }
-  // Print summary of results
+
   std::cout << "\nMatrix size : time (ms)\n";
   for (size_t i = 0; i < sizes.size(); ++i) {
-    std::cout << sizes[i] << " : " << results[i] << " ms"
-              << std::endl;
+    std::cout << sizes[i] << " : " << results[i] << " ms\n";
   }
 }
 
