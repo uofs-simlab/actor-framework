@@ -4,6 +4,7 @@
 #include <caf/intrusive_ptr.hpp>
 #include <caf/ref_counted.hpp>
 #include <vector>
+#include <memory>
 #include <stdexcept>
 #include <chrono>
 #include <iostream>

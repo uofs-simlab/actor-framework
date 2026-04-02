@@ -1,0 +1,57 @@
+
+===== COMMAND-RUNNER BENCHMARK (N=64) =====
+create_in_arg A:             0.001398 ms
+create_in_arg B:             0.000269 ms
+runner.run (H2D+kernel+D2H): 1.05533 ms
+extract_vector:              0.00086 ms
+TOTAL:                       1.05858 ms
+=============================================
+--- warmup complete ---
+
+===== COMMAND-RUNNER BENCHMARK (N=1000) =====
+create_in_arg A:             0.000822 ms
+create_in_arg B:             0.000257 ms
+runner.run (H2D+kernel+D2H): 19.3838 ms
+extract_vector:              0.000569 ms
+TOTAL:                       19.3861 ms
+=============================================
+
+===== COMMAND-RUNNER BENCHMARK (N=2000) =====
+create_in_arg A:             0.000866 ms
+create_in_arg B:             0.000268 ms
+runner.run (H2D+kernel+D2H): 47.3479 ms
+extract_vector:              0.000364 ms
+TOTAL:                       47.35 ms
+=============================================
+
+===== COMMAND-RUNNER BENCHMARK (N=4000) =====
+create_in_arg A:             0.001611 ms
+create_in_arg B:             0.000264 ms
+runner.run (H2D+kernel+D2H): 138.449 ms
+extract_vector:              0.000369 ms
+TOTAL:                       138.452 ms
+=============================================
+
+===== COMMAND-RUNNER BENCHMARK (N=8000) =====
+create_in_arg A:             0.000987 ms
+create_in_arg B:             0.000261 ms
+runner.run (H2D+kernel+D2H): 661.873 ms
+extract_vector:              0.000461 ms
+TOTAL:                       661.875 ms
+=============================================
+
+===== COMMAND-RUNNER BENCHMARK (N=16000) =====
+create_in_arg A:             0.001066 ms
+create_in_arg B:             0.00026 ms
+runner.run (H2D+kernel+D2H): 6752.28 ms
+extract_vector:              0.000394 ms
+TOTAL:                       6752.28 ms
+=============================================
+
+Matrix size : time (ms)
+1000 : 19.3861 ms
+2000 : 47.35 ms
+4000 : 138.452 ms
+8000 : 661.875 ms
+16000 : 6752.28 ms
+CAF-CUDA platform shutting down, unloading retired modules...

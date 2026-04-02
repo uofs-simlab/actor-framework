@@ -29,6 +29,10 @@ class MatMult {
   caf::cuda::program_ptr program_;
   int total_;       // total messages expected
   int completed_;   // dispatches completed so far
+  double acc_create_inA_ms_ = 0;
+  double acc_create_inB_ms_ = 0;
+  double acc_run_ms_        = 0;
+  double acc_extract_ms_    = 0;
 
 public:
   MatMult(caf::event_based_actor* self, int N, int total)
@@ -49,22 +53,65 @@ public:
   caf::behavior make_behavior() {
     return {
       [this](int N) {
+        using ms = std::chrono::duration<double, std::milli>;
+
         int THREADS = 32;
         int BLOCKS = (N + THREADS - 1) / THREADS;
 
         caf::cuda::nd_range dim(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-        mmul_command runner;
 
+        // -------------------------
+        // create_in_arg A
+        // -------------------------
+        auto t_a_start = clock_t_::now();
+        auto arg1 = caf::cuda::create_in_arg(A_);
+        auto t_a_end = clock_t_::now();
+
+        // -------------------------
+        // create_in_arg B
+        // -------------------------
+        auto t_b_start = clock_t_::now();
+        auto arg2 = caf::cuda::create_in_arg(B_);
+        auto t_b_end = clock_t_::now();
+
+        // -------------------------
+        // runner.run (H2D A+B + kernel + D2H C)
+        // -------------------------
+        auto t_run_start = clock_t_::now();
+        mmul_command runner;
         auto result_buffer = runner.run(program_,
                                         dim,
                                         self_->id(),
-                                        caf::cuda::create_in_arg(A_),
-                                        caf::cuda::create_in_arg(B_),
+                                        arg1,
+                                        arg2,
                                         caf::cuda::create_out_arg_with_size<int>(N * N),
                                         caf::cuda::create_in_arg(N));
-        // result discarded — throughput mode
+        auto t_run_end = clock_t_::now();
+
+        // -------------------------
+        // extract_vector
+        // -------------------------
+        auto t_extract_start = clock_t_::now();
+        (void)caf::cuda::extract_vector<int>(result_buffer);
+        auto t_extract_end = clock_t_::now();
+
+        acc_create_inA_ms_ += ms(t_a_end       - t_a_start).count();
+        acc_create_inB_ms_ += ms(t_b_end       - t_b_start).count();
+        acc_run_ms_        += ms(t_run_end     - t_run_start).count();
+        acc_extract_ms_    += ms(t_extract_end - t_extract_start).count();
+
         ++completed_;
         if (completed_ >= total_) {
+          double n = static_cast<double>(total_);
+          std::cout << "\n[PHASE BREAKDOWN] Series iters=" << total_
+                    << " (N=" << N << "):\n";
+          std::cout << "  Avg create_in_arg A:             " << acc_create_inA_ms_ / n << " ms\n";
+          std::cout << "  Avg create_in_arg B:             " << acc_create_inB_ms_ / n << " ms\n";
+          std::cout << "  Avg runner.run (H2D+kernel+D2H): " << acc_run_ms_        / n << " ms\n";
+          std::cout << "  Avg extract_vector:              " << acc_extract_ms_    / n << " ms\n";
+          std::cout << "  Avg TOTAL per-iteration:         "
+                    << (acc_create_inA_ms_ + acc_create_inB_ms_ + acc_run_ms_ + acc_extract_ms_) / n
+                    << " ms\n";
           self_->quit();
         }
       }

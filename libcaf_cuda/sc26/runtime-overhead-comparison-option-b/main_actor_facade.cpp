@@ -24,6 +24,12 @@ class MatMult {
   caf::actor gpuActor_;
   int total_;       // total messages expected
   int completed_;   // GPU results received so far
+  double acc_create_inA_ms_  = 0;
+  double acc_create_inB_ms_  = 0;
+  double acc_create_outC_ms_ = 0;
+  double acc_create_inN_ms_  = 0;
+  double acc_dispatch_ms_    = 0;
+  double acc_extract_ms_     = 0;
 
 public:
   MatMult(caf::event_based_actor* self, int N, int total)
@@ -49,18 +55,76 @@ public:
   caf::behavior make_behavior() {
     return {
       [this](int N) {
-        // Dispatch to GPU actor, discard result, count completions
-        self_->mail(
-            caf::cuda::create_in_arg(A_),
-            caf::cuda::create_in_arg(B_),
-            caf::cuda::create_out_arg_with_size<int>(N * N),
-            caf::cuda::create_in_arg(N))
+        using ms = std::chrono::duration<double, std::milli>;
+
+        // -------------------------
+        // create_in_arg A
+        // -------------------------
+        auto t_a_start = clock_t_::now();
+        auto inA = caf::cuda::create_in_arg(A_);
+        auto t_a_end = clock_t_::now();
+
+        // -------------------------
+        // create_in_arg B
+        // -------------------------
+        auto t_b_start = clock_t_::now();
+        auto inB = caf::cuda::create_in_arg(B_);
+        auto t_b_end = clock_t_::now();
+
+        // -------------------------
+        // create_out_arg C
+        // -------------------------
+        auto t_outC_start = clock_t_::now();
+        auto outC = caf::cuda::create_out_arg_with_size<int>(N * N);
+        auto t_outC_end = clock_t_::now();
+
+        // -------------------------
+        // create_in_arg N
+        // -------------------------
+        auto t_inN_start = clock_t_::now();
+        auto inN = caf::cuda::create_in_arg(N);
+        auto t_inN_end = clock_t_::now();
+
+        // Accumulate synchronous pre-dispatch timings immediately
+        acc_create_inA_ms_  += ms(t_a_end    - t_a_start).count();
+        acc_create_inB_ms_  += ms(t_b_end    - t_b_start).count();
+        acc_create_outC_ms_ += ms(t_outC_end - t_outC_start).count();
+        acc_create_inN_ms_  += ms(t_inN_end  - t_inN_start).count();
+
+        // -------------------------
+        // request (dispatch + GPU execution + D2H)
+        // -------------------------
+        auto t_request_start = clock_t_::now();
+
+        self_->mail(inA, inB, outC, inN)
             .request(gpuActor_, caf::infinite)
             .then(
-              [this](const std::vector<output_buffer>&) {
+              [this, t_request_start, N](const std::vector<output_buffer>& result) mutable {
+                using ms2 = std::chrono::duration<double, std::milli>;
+                auto t_response_end = clock_t_::now();
+
+                // -------------------------
+                // extract_vector
+                // -------------------------
+                auto t_extract_start = clock_t_::now();
+                (void)caf::cuda::extract_vector<int>(result);
+                auto t_extract_end = clock_t_::now();
+
+                acc_dispatch_ms_ += ms2(t_response_end - t_request_start).count();
+                acc_extract_ms_  += ms2(t_extract_end  - t_extract_start).count();
+
                 ++completed_;
                 if (completed_ >= total_) {
-                  // All work done — quit so wait_for() in the caller unblocks
+                  double n = static_cast<double>(total_);
+                  std::cout << "\n===== ACTOR-FACADE THROUGHPUT PHASE BREAKDOWN (N=" << N
+                            << ", reps=" << total_ << ") =====\n";
+                  std::cout << "Avg create_in_arg A:                     " << acc_create_inA_ms_  / n << " ms\n";
+                  std::cout << "Avg create_in_arg B:                     " << acc_create_inB_ms_  / n << " ms\n";
+                  std::cout << "Avg create_out_arg C:                    " << acc_create_outC_ms_ / n << " ms\n";
+                  std::cout << "Avg create_in_arg N:                     " << acc_create_inN_ms_  / n << " ms\n";
+                  std::cout << "Avg request\u2192response (dispatch+GPU+D2H): " << acc_dispatch_ms_    / n << " ms\n";
+                  std::cout << "Avg extract_vector:                      " << acc_extract_ms_     / n << " ms\n";
+                  std::cout << "=============================================\n";
                   self_->quit();
                 }
               },

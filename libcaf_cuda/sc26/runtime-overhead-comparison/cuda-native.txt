@@ -1,0 +1,73 @@
+
+===== DRIVER BENCHMARK (N=64) =====
+Device allocation: 0.130547 ms
+H2D copy A: 0.038068 ms
+H2D copy B: 0.007953 ms
+Kernel execution: 0.020718 ms
+D2H copy: 0.019295 ms
+Device free: 0.10965 ms
+TOTAL: 0.216858 ms
+=============================================
+--- warmup complete ---
+
+===== DRIVER BENCHMARK (N=1000) =====
+Device allocation: 0.247518 ms
+H2D copy A: 0.894822 ms
+H2D copy B: 0.829325 ms
+Kernel execution: 0.011874 ms
+D2H copy: 1.85698 ms
+Device free: 0.239667 ms
+TOTAL: 3.84074 ms
+=============================================
+----------------------------------------
+
+===== DRIVER BENCHMARK (N=2000) =====
+Device allocation: 0.390061 ms
+H2D copy A: 3.63767 ms
+H2D copy B: 3.50725 ms
+Kernel execution: 0.01805 ms
+D2H copy: 10.9519 ms
+Device free: 0.312385 ms
+TOTAL: 18.5051 ms
+=============================================
+----------------------------------------
+
+===== DRIVER BENCHMARK (N=4000) =====
+Device allocation: 0.588466 ms
+H2D copy A: 35.2709 ms
+H2D copy B: 14.6547 ms
+Kernel execution: 0.039222 ms
+D2H copy: 97.7214 ms
+Device free: 0.476458 ms
+TOTAL: 148.275 ms
+=============================================
+----------------------------------------
+
+===== DRIVER BENCHMARK (N=8000) =====
+Device allocation: 0.724348 ms
+H2D copy A: 156.913 ms
+H2D copy B: 72.7922 ms
+Kernel execution: 0.042878 ms
+D2H copy: 617.104 ms
+Device free: 0.870654 ms
+TOTAL: 847.577 ms
+=============================================
+----------------------------------------
+
+===== DRIVER BENCHMARK (N=16000) =====
+Device allocation: 1.26256 ms
+H2D copy A: 582.809 ms
+H2D copy B: 234.48 ms
+Kernel execution: 0.039773 ms
+D2H copy: 4322.42 ms
+Device free: 1.90812 ms
+TOTAL: 5141.01 ms
+=============================================
+----------------------------------------
+
+Matrix size : time (ms)
+1000 : 3.84074 ms
+2000 : 18.5051 ms
+4000 : 148.275 ms
+8000 : 847.577 ms
+16000 : 5141.01 ms

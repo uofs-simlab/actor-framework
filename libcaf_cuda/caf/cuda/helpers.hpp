@@ -22,6 +22,17 @@ std::optional<std::vector<T>> extract_vector_or_empty(const std::vector<output_b
     return std::nullopt; // none found
 }
 
+// Move-from overload: caller passes output_buffers as rvalue, data is moved (no copy)
+template <typename T>
+std::optional<std::vector<T>> extract_vector_or_empty(std::vector<output_buffer>&& outputs) {
+    for (auto& out : outputs) {
+        if (auto ptr = std::get_if<std::vector<T>>(&out.data)) {
+            return std::move(*ptr);
+        }
+    }
+    return std::nullopt;
+}
+
 // Extract first matching vector<T> from outputs
 template <typename T>
 std::vector<T> extract_vector(const std::vector<output_buffer>& outputs) {
@@ -31,6 +42,17 @@ std::vector<T> extract_vector(const std::vector<output_buffer>& outputs) {
         }
     }
     return {}; // no matching vector found, return empty vector
+}
+
+// Move-from overload: caller passes output_buffers as rvalue, data is moved (no copy)
+template <typename T>
+std::vector<T> extract_vector(std::vector<output_buffer>&& outputs) {
+    for (auto& out : outputs) {
+        if (auto ptr = std::get_if<std::vector<T>>(&out.data)) {
+            return std::move(*ptr);
+        }
+    }
+    return {};
 }
 
 // Extract vector<T> from outputs[index], or return empty vector if not matching or out of range

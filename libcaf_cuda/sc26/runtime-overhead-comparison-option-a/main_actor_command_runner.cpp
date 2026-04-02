@@ -28,7 +28,6 @@ class MatMult {
   std::vector<int> B_;
   caf::cuda::program_ptr program_;
   using clock = std::chrono::steady_clock;
-  clock::time_point start_;
 
 public:
   MatMult(event_based_actor* self, int N) : self_(self) {
@@ -49,7 +48,7 @@ public:
   behavior make_behavior() {
     return {
       [this](int N) {
-        start_ = clock::now();
+        using ms = std::chrono::duration<double, std::milli>;
 
         int THREADS = 32;
         int BLOCKS = (N + THREADS - 1) / THREADS;
@@ -60,9 +59,27 @@ public:
                                 THREADS,
                                 THREADS,
                                 1);
-        
+
+        auto t_total_start = clock::now();
+
+        // -------------------------
+        // create_in_arg A
+        // -------------------------
+        auto t_a_inarg_start = clock::now();
         auto arg1 = caf::cuda::create_in_arg(std::move(A_));
+        auto t_a_inarg_end = clock::now();
+
+        // -------------------------
+        // create_in_arg B
+        // -------------------------
+        auto t_b_inarg_start = clock::now();
         auto arg2 = caf::cuda::create_in_arg(std::move(B_));
+        auto t_b_inarg_end = clock::now();
+
+        // -------------------------
+        // runner.run (H2D A+B + kernel + D2H C)
+        // -------------------------
+        auto t_run_start = clock::now();
 
         mmul_command runner;
         // .run() blocks until the GPU finishes
@@ -74,11 +91,31 @@ public:
                                         out<int>(N * N),
                                         in(N));
 
-        double duration = std::chrono::duration<double, std::milli>(
-            clock::now() - start_).count();
+        auto t_run_end = clock::now();
 
+        // -------------------------
+        // extract_vector
+        // -------------------------
+        auto t_extract_start = clock::now();
         std::vector<int> output = caf::cuda::extract_vector<int>(result_buffer);
-        return duration;
+        auto t_extract_end = clock::now();
+
+        auto t_total_end = clock::now();
+        double total_ms = ms(t_total_end - t_total_start).count();
+
+        std::cout << "\n===== COMMAND-RUNNER BENCHMARK (N=" << N << ") =====\n";
+        std::cout << "create_in_arg A:             "
+                  << ms(t_a_inarg_end - t_a_inarg_start).count() << " ms\n";
+        std::cout << "create_in_arg B:             "
+                  << ms(t_b_inarg_end - t_b_inarg_start).count() << " ms\n";
+        std::cout << "runner.run (H2D+kernel+D2H): "
+                  << ms(t_run_end - t_run_start).count() << " ms\n";
+        std::cout << "extract_vector:              "
+                  << ms(t_extract_end - t_extract_start).count() << " ms\n";
+        std::cout << "TOTAL:                       " << total_ms << " ms\n";
+        std::cout << "=============================================\n";
+
+        return total_ms;
       },
     };
   }

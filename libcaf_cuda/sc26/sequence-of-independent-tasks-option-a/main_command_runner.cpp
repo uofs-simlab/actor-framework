@@ -28,6 +28,13 @@ class MatMult {
   caf::cuda::program_ptr program_;
   using clock = std::chrono::steady_clock;
   clock::time_point start_;
+  int iter_count_ = 0;
+  static constexpr int checkpoint_ = 1000;
+  double acc_create_inA_ms_ = 0;
+  double acc_create_inB_ms_ = 0;
+  double acc_run_ms_        = 0;
+  double acc_extract_ms_    = 0;
+  double acc_total_ms_      = 0;
 
 public:
   MatMult(caf::event_based_actor* self, int N) : self_(self) {
@@ -47,27 +54,75 @@ public:
   caf::behavior make_behavior() {
     return {
       [this](int N) {
-        start_ = clock::now();
+        using ms = std::chrono::duration<double, std::milli>;
 
         int THREADS = 32;
         int BLOCKS = (N + THREADS - 1) / THREADS;
 
         caf::cuda::nd_range dim(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-        mmul_command runner;
 
+        auto t_total_start = clock::now();
+
+        // -------------------------
+        // create_in_arg A
+        // -------------------------
+        auto t_a_start = clock::now();
+        auto arg1 = caf::cuda::create_in_arg(A_);
+        auto t_a_end = clock::now();
+
+        // -------------------------
+        // create_in_arg B
+        // -------------------------
+        auto t_b_start = clock::now();
+        auto arg2 = caf::cuda::create_in_arg(B_);
+        auto t_b_end = clock::now();
+
+        // -------------------------
+        // runner.run (H2D A+B + kernel + D2H C)
+        // -------------------------
+        auto t_run_start = clock::now();
+        mmul_command runner;
         auto result_buffer = runner.run(program_,
                                         dim,
                                         self_->id(),
-                                        caf::cuda::create_in_arg(A_),
-                                        caf::cuda::create_in_arg(B_),
+                                        arg1,
+                                        arg2,
                                         caf::cuda::create_out_arg_with_size<int>(N * N),
                                         caf::cuda::create_in_arg(N));
+        auto t_run_end = clock::now();
 
-        double duration = std::chrono::duration<double, std::milli>(
-            clock::now() - start_).count();
-
+        // -------------------------
+        // extract_vector
+        // -------------------------
+        auto t_extract_start = clock::now();
         std::vector<int> output = caf::cuda::extract_vector<int>(result_buffer);
-        return duration;
+        auto t_extract_end = clock::now();
+
+        auto t_total_end = clock::now();
+        double total_ms = ms(t_total_end - t_total_start).count();
+
+        acc_create_inA_ms_ += ms(t_a_end       - t_a_start).count();
+        acc_create_inB_ms_ += ms(t_b_end       - t_b_start).count();
+        acc_run_ms_        += ms(t_run_end     - t_run_start).count();
+        acc_extract_ms_    += ms(t_extract_end - t_extract_start).count();
+        acc_total_ms_      += total_ms;
+
+        ++iter_count_;
+        if (iter_count_ % checkpoint_ == 0) {
+          double n = static_cast<double>(checkpoint_);
+          std::cout << "\n[PHASE BREAKDOWN] After " << iter_count_
+                    << " iterations (N=" << N << "), last " << checkpoint_ << " iters:\n";
+          std::cout << "  Avg create_in_arg A:             " << acc_create_inA_ms_ / n << " ms\n";
+          std::cout << "  Avg create_in_arg B:             " << acc_create_inB_ms_ / n << " ms\n";
+          std::cout << "  Avg runner.run (H2D+kernel+D2H): " << acc_run_ms_        / n << " ms\n";
+          std::cout << "  Avg extract_vector:              " << acc_extract_ms_    / n << " ms\n";
+          std::cout << "  Avg TOTAL per-iteration:         " << acc_total_ms_      / n << " ms\n";
+          // Reset accumulators for next checkpoint window
+          acc_create_inA_ms_ = acc_create_inB_ms_ = acc_run_ms_
+                             = acc_extract_ms_    = acc_total_ms_ = 0;
+        }
+
+        return total_ms;
       }
     };
   }
