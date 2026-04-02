@@ -23,7 +23,7 @@ LDFLAGS=-Wl,-rpath,$(CAF_LIB_DIR) \
 		 		-Wl,-rpath,$(CUDA_LIB_DIR)
 NVCC_ARCH ?= sm_$(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
 
-all: mmul_kernel base_cuda_program actors_program
+all: mmul_kernel base_cuda_program actors_facade actor_command_runner
 
 mmul_kernel: mmul.cu
 	$(NVCC) -g -arch=$(NVCC_ARCH) --cubin mmul.cu -o mmul.cubin
@@ -31,10 +31,16 @@ mmul_kernel: mmul.cu
 base_cuda_program: main_cuda_native.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o main_cuda_native main_cuda_native.cpp $(LIBS) $(LDFLAGS)
 
-actors_program: main_actor_facade.cpp
+actors_facade: main_actor_facade.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o main_actor_facade main_actor_facade.cpp $(LIBS) $(LDFLAGS)
+
+actor_command_runner: main_actor_command_runner.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o main_actor_command_runner main_actor_command_runner.cpp $(LIBS) $(LDFLAGS)
 
 clean:
 	rm -f mmul.cubin
 	rm -f main_cuda_native
 	rm -f main_actor_facade
+	rm -f main_actor_command_runner
+
+.PHONY: all clean

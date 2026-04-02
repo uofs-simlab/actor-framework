@@ -23,3 +23,9 @@ libcaf_cuda/sc26/sequence-of-independent-tasks/compile.sh
 libcaf_cuda/sc26/sequence-of-independent-tasks/main_cuda_native
 libcaf_cuda/sc26/sequence-of-independent-tasks/results.txt
 libcaf_cuda/sc26/sequence-of-independent-tasks/mmul.cubin
+libcaf_cuda/sc26/runtime-overhead-comparison/main_actor_command_runner
+
+libcaf_cuda/sc26/runtime-overhead-comparison/main_actor_facade
+libcaf_cuda/sc26/sequence-of-independent-tasks/main_actor_facade
+libcaf_cuda/sc26/runtime-overhead-comparison/resutls.txt
+libcaf_cuda/sc26/sequence-of-independent-tasks/main_command_runner
