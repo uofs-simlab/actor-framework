@@ -54,6 +54,12 @@ public:
                                 THREADS,
                                 1);
 
+        // Pre-allocate output buffer BEFORE the timed window so that all
+        // pages are demand-faulted (backed by the OS) here, not inside
+        // runner.run_into().  This mirrors the native benchmark which
+        // pre-allocates h_c before t_total_start.
+        std::vector<int> output(static_cast<size_t>(N) * N);
+
         auto t_total_start = clock::now();
 
         // -------------------------
@@ -71,27 +77,22 @@ public:
         auto t_b_inarg_end = clock::now();
 
         // -------------------------
-        // runner.run (H2D A+B + kernel + D2H C)
+        // runner.run_into (H2D A+B + kernel + D2H C into pre-allocated buffer)
         // -------------------------
         auto t_run_start = clock::now();
 
         mmul_command runner;
-        auto result_buffer = runner.run(program_,
-                                        dim,
-                                        self_->id(),
-                                        arg1,
-                                        arg2,
-                                        caf::cuda::create_out_arg_with_size<int>(N * N),
-                                        caf::cuda::create_in_arg(N));
+        runner.run_into(program_,
+                        dim,
+                        self_->id(),
+                        output.data(),
+                        static_cast<size_t>(N) * N,
+                        arg1,
+                        arg2,
+                        caf::cuda::create_out_arg_with_size<int>(N * N),
+                        caf::cuda::create_in_arg(N));
 
         auto t_run_end = clock::now();
-
-        // -------------------------
-        // extract_vector
-        // -------------------------
-        auto t_extract_start = clock::now();
-        std::vector<int> output = caf::cuda::extract_vector<int>(std::move(result_buffer));
-        auto t_extract_end = clock::now();
 
         auto t_total_end = clock::now();
         double total_ms = ms(t_total_end - t_total_start).count();
@@ -101,10 +102,8 @@ public:
                   << ms(t_a_inarg_end - t_a_inarg_start).count() << " ms\n";
         std::cout << "create_in_arg B:             "
                   << ms(t_b_inarg_end - t_b_inarg_start).count() << " ms\n";
-        std::cout << "runner.run (H2D+kernel+D2H): "
+        std::cout << "runner.run_into (H2D+kernel+D2H): "
                   << ms(t_run_end - t_run_start).count() << " ms\n";
-        std::cout << "extract_vector:              "
-                  << ms(t_extract_end - t_extract_start).count() << " ms\n";
         std::cout << "TOTAL:                       " << total_ms << " ms\n";
         std::cout << "=============================================\n";
 

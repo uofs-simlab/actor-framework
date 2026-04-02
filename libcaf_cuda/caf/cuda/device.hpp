@@ -182,6 +182,39 @@ public:
     return result;
   }
 
+  // Bottleneck 2 fix: unchecked variant — uses copy_to_host_unchecked() so
+  // no cuCtxPushCurrent/Pop per buffer.  D2H copies are stream-ordered and
+  // do not require the context to be explicitly on the calling thread's
+  // context stack.
+  template <typename... Ts>
+  std::vector<output_buffer> collect_output_buffers_helper_unchecked(const std::tuple<Ts...>& args) {
+    std::vector<output_buffer> result;
+    std::apply([&](auto&&... mem) {
+      (([&] {
+        if (mem && (mem->access() == OUT || mem->access() == IN_OUT)) {
+          result.emplace_back(output_buffer{buffer_variant{mem->copy_to_host_unchecked()}});
+        }
+      })(), ...);
+    }, args);
+    return result;
+  }
+
+  // Writes the first OUT/IN_OUT mem_ref of type T directly into a caller-supplied
+  // buffer, bypassing the internal std::vector allocation in copy_to_host().
+  // This removes the page-fault cost from the timed window when the caller
+  // pre-allocates `dst` before the timer starts.
+  template <typename T, typename... Ts>
+  void collect_output_buffers_into(const std::tuple<Ts...>& args, T* dst, size_t count) {
+      collect_output_into_seq(args, dst, count, std::index_sequence_for<Ts...>{});
+  }
+
+  // Bottleneck 2 fix: unchecked variant \u2014 uses copy_to_host_unchecked(T*, count)
+  // so that no cuCtxPushCurrent/Pop is performed per buffer.
+  template <typename T, typename... Ts>
+  void collect_output_buffers_into_unchecked(const std::tuple<Ts...>& args, T* dst, size_t count) {
+      collect_output_into_seq_unchecked(args, dst, count, std::index_sequence_for<Ts...>{});
+  }
+
 
 
 
@@ -284,6 +317,47 @@ public:
    return collect_output_buffers_helper(args);
   }
 
+  // Bottleneck 2 fix: unchecked variant of collect_output_buffers.
+  // Uses copy_to_host_unchecked() so that D2H copies are performed without
+  // per-buffer cuCtxPushCurrent/Pop round-trips.
+  template <typename... Ts>
+  std::vector<output_buffer> collect_output_buffers_unchecked(const std::tuple<Ts...>& args) {
+    return collect_output_buffers_helper_unchecked(args);
+  }
+
+  // Allocates and zero-initialises a std::vector<T> for every OUT/IN_OUT
+  // mem_ref in the tuple, returning them wrapped in output_buffer.  Call this
+  // immediately after base_enqueue() while the GPU is running H2D copies and
+  // the kernel so that page-fault cost overlaps with GPU execution.
+  template <typename... Ts>
+  std::vector<output_buffer> preallocate_output_buffers(const std::tuple<Ts...>& args) {
+    std::vector<output_buffer> result;
+    preallocate_output_seq(args, result, std::index_sequence_for<Ts...>{});
+    return result;
+  }
+
+  // Fills every pre-allocated output_buffer in `pre_alloc` with D2H data from
+  // the corresponding OUT/IN_OUT mem_ref in `args`.  Call this when the GPU
+  // stream is idle (i.e. inside the gpu_done_atom handler) instead of the
+  // full collect_output_buffers() so no new allocation takes place.
+  template <typename... Ts>
+  void fill_output_buffers(const std::tuple<Ts...>& args,
+                           std::vector<output_buffer>& pre_alloc) {
+    size_t idx = 0;
+    fill_output_seq(args, pre_alloc, idx, std::index_sequence_for<Ts...>{});
+  }
+
+  // Bottleneck 2 fix: unchecked variant of fill_output_buffers.
+  // Calls copy_to_host_unchecked() so no per-buffer cuCtxPushCurrent/Pop is
+  // needed.  Call this after ensuring the correct CUDA device context is known
+  // to be reachable via the stream (stream-ordered ops do not need a pushed ctx).
+  template <typename... Ts>
+  void fill_output_buffers_unchecked(const std::tuple<Ts...>& args,
+                                     std::vector<output_buffer>& pre_alloc) {
+    size_t idx = 0;
+    fill_output_seq_unchecked(args, pre_alloc, idx, std::index_sequence_for<Ts...>{});
+  }
+
 
 
   // === Old method for legacy tests ===
@@ -374,6 +448,10 @@ mem_ptr<T> scratch_argument(const out<T>& arg, int actor_id, int access) {
 //----------------------------------------------
 
 // allocate a readonly input buffer on the GPU
+// Bottleneck 2+3 fix: cuMemAllocAsync is stream-based and does not require
+// the CUDA context to be current, so no cuCtxPushCurrent/Pop is needed.
+// Memory is served from the stream-ordered driver pool (bottleneck 3), which
+// avoids blocking system-call overhead of cuMemAlloc.
 template <typename T>
 mem_ptr<T> global_argument(const in<T>& arg, CUstream stream, int access) {
   if (arg.is_scalar()) {
@@ -383,16 +461,15 @@ mem_ptr<T> global_argument(const in<T>& arg, CUstream stream, int access) {
   }
   size_t bytes = arg.size() * sizeof(T);
   CUdeviceptr dev_ptr;
-  CHECK_CUDA(cuCtxPushCurrent(getContext()));
-  CHECK_CUDA(cuMemAlloc(&dev_ptr, bytes));
+  CHECK_CUDA(cuMemAllocAsync(&dev_ptr, bytes, stream));
   CHECK_CUDA(cuMemcpyHtoDAsync(dev_ptr, arg.data(), bytes, stream));
-  CHECK_CUDA(cuCtxPopCurrent(nullptr));
   return caf::intrusive_ptr<mem_ref<T>>{
-    new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream),
+    new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream, /*pool_alloc=*/true),
     caf::add_ref};
 }
 
 // allocate a read/write input buffer on the GPU
+// See global_argument for bottleneck 2+3 notes.
 template <typename T>
 mem_ptr<T> global_argument(const in_out<T>& arg, CUstream stream, int access) {
   if (arg.is_scalar()) {
@@ -402,25 +479,22 @@ mem_ptr<T> global_argument(const in_out<T>& arg, CUstream stream, int access) {
   }
   size_t bytes = arg.size() * sizeof(T);
   CUdeviceptr dev_ptr;
-  CHECK_CUDA(cuCtxPushCurrent(getContext()));
-  CHECK_CUDA(cuMemAlloc(&dev_ptr, bytes));
+  CHECK_CUDA(cuMemAllocAsync(&dev_ptr, bytes, stream));
   CHECK_CUDA(cuMemcpyHtoDAsync(dev_ptr, arg.data(), bytes, stream));
-  CHECK_CUDA(cuCtxPopCurrent(nullptr));
   return caf::intrusive_ptr<mem_ref<T>>{
-    new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream),
+    new mem_ref<T>(arg.size(), dev_ptr, access, id_, 0, getContext(), stream, /*pool_alloc=*/true),
     caf::add_ref};
 }
 
 // allocate an output buffer on the GPU
+// See global_argument for bottleneck 2+3 notes.
 template <typename T>
 mem_ptr<T> scratch_argument(const out<T>& arg, CUstream stream, int access) {
   size_t size =  arg.size();
   CUdeviceptr dev_ptr;
-  CHECK_CUDA(cuCtxPushCurrent(getContext()));
-  CHECK_CUDA(cuMemAlloc(&dev_ptr, size * sizeof(T)));
-  CHECK_CUDA(cuCtxPopCurrent(nullptr));
+  CHECK_CUDA(cuMemAllocAsync(&dev_ptr, size * sizeof(T), stream));
   return caf::intrusive_ptr<mem_ref<T>>{
-    new mem_ref<T>(size, dev_ptr, access, id_, 0, getContext(), stream),
+    new mem_ref<T>(size, dev_ptr, access, id_, 0, getContext(), stream, /*pool_alloc=*/true),
     caf::add_ref};
 }  
 
@@ -457,6 +531,120 @@ mem_ptr<T> scratch_argument(const out<T>& arg, CUstream stream, int access) {
       }
     }()), ...);
     return args;
+  }
+
+  // === collect_output_buffers_into helpers ===
+  // Avoiding std::apply + generic lambda + if constexpr (GCC 11 ICE workaround).
+  // Uses explicit std::get<I> with an index_sequence instead.
+
+  // Try to write the element at tuple index I into dst if it's OUT/IN_OUT and
+  // its value_type matches T.  Returns true when the write happens.
+  template <typename T, typename Tuple, std::size_t I>
+  static bool try_output_at(const Tuple& t, T* dst, size_t count) {
+    const auto& mem = std::get<I>(t);
+    using U = typename std::decay_t<decltype(*mem)>::value_type;
+    if constexpr (std::is_same_v<U, T>) {
+      if (mem && (mem->access() == OUT || mem->access() == IN_OUT)) {
+        mem->copy_to_host(dst, count);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Iterate over all tuple indices; stop at the first successful write.
+  template <typename T, typename Tuple, std::size_t... Is>
+  static void collect_output_into_seq(const Tuple& t, T* dst, size_t count,
+                                      std::index_sequence<Is...>) {
+    bool done = false;
+    ((done = done || try_output_at<T, Tuple, Is>(t, dst, count)), ...);
+  }
+
+  // Bottleneck 2 fix: unchecked variant — uses copy_to_host_unchecked.
+  template <typename T, typename Tuple, std::size_t I>
+  static bool try_output_at_unchecked(const Tuple& t, T* dst, size_t count) {
+    const auto& mem = std::get<I>(t);
+    using U = typename std::decay_t<decltype(*mem)>::value_type;
+    if constexpr (std::is_same_v<U, T>) {
+      if (mem && (mem->access() == OUT || mem->access() == IN_OUT)) {
+        mem->copy_to_host_unchecked(dst, count);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  template <typename T, typename Tuple, std::size_t... Is>
+  static void collect_output_into_seq_unchecked(const Tuple& t, T* dst, size_t count,
+                                                std::index_sequence<Is...>) {
+    bool done = false;
+    ((done = done || try_output_at_unchecked<T, Tuple, Is>(t, dst, count)), ...);
+  }
+
+  // === preallocate_output_buffers / fill_output_buffers helpers ===
+  // These two methods allow the actor_facade to pre-allocate (and pre-fault)
+  // the host output buffer(s) immediately after the kernel is queued, while
+  // the GPU is executing H2D copies and the kernel asynchronously.  The
+  // fill step runs when gpu_done_atom fires and does only the D2H DMA.
+
+  // Allocate a zero-initialised std::vector<T> for the element at tuple
+  // index I if it is an OUT/IN_OUT buffer.
+  template <typename Tuple, std::size_t I>
+  static void try_preallocate_at(const Tuple& t, std::vector<output_buffer>& result) {
+    const auto& mem = std::get<I>(t);
+    if (mem && (mem->access() == OUT || mem->access() == IN_OUT)) {
+      using T = typename std::decay_t<decltype(*mem)>::value_type;
+      result.emplace_back(output_buffer{buffer_variant{std::vector<T>(mem->size())}});
+    }
+  }
+
+  template <typename Tuple, std::size_t... Is>
+  static void preallocate_output_seq(const Tuple& t, std::vector<output_buffer>& result,
+                                     std::index_sequence<Is...>) {
+    (try_preallocate_at<Tuple, Is>(t, result), ...);
+  }
+
+  // Copy D2H into the pre-allocated vector at slot idx for the element at
+  // tuple index I if it is an OUT/IN_OUT buffer.
+  template <typename Tuple, std::size_t I>
+  static void try_fill_at(const Tuple& t, std::vector<output_buffer>& pre_alloc,
+                           size_t& idx) {
+    const auto& mem = std::get<I>(t);
+    if (mem && (mem->access() == OUT || mem->access() == IN_OUT)) {
+      if (idx < pre_alloc.size()) {
+        using T = typename std::decay_t<decltype(*mem)>::value_type;
+        auto* ptr = std::get_if<std::vector<T>>(&pre_alloc[idx].data);
+        if (ptr) mem->copy_to_host(ptr->data(), ptr->size());
+        ++idx;
+      }
+    }
+  }
+
+  template <typename Tuple, std::size_t... Is>
+  static void fill_output_seq(const Tuple& t, std::vector<output_buffer>& pre_alloc,
+                               size_t& idx, std::index_sequence<Is...>) {
+    (try_fill_at<Tuple, Is>(t, pre_alloc, idx), ...);
+  }
+
+  // Bottleneck 2 fix: unchecked fill variant — uses copy_to_host_unchecked.
+  template <typename Tuple, std::size_t I>
+  static void try_fill_at_unchecked(const Tuple& t, std::vector<output_buffer>& pre_alloc,
+                                    size_t& idx) {
+    const auto& mem = std::get<I>(t);
+    if (mem && (mem->access() == OUT || mem->access() == IN_OUT)) {
+      if (idx < pre_alloc.size()) {
+        using T = typename std::decay_t<decltype(*mem)>::value_type;
+        auto* ptr = std::get_if<std::vector<T>>(&pre_alloc[idx].data);
+        if (ptr) mem->copy_to_host_unchecked(ptr->data(), ptr->size());
+        ++idx;
+      }
+    }
+  }
+
+  template <typename Tuple, std::size_t... Is>
+  static void fill_output_seq_unchecked(const Tuple& t, std::vector<output_buffer>& pre_alloc,
+                                         size_t& idx, std::index_sequence<Is...>) {
+    (try_fill_at_unchecked<Tuple, Is>(t, pre_alloc, idx), ...);
   }
 };
 

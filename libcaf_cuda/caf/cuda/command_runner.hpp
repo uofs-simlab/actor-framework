@@ -46,6 +46,29 @@ public:
   }
 
   // -------------------------------
+  // Synchronous run_into: actor_id only
+  // Writes the first OUT/IN_OUT result of type T directly into a
+  // caller-supplied buffer (dst), bypassing the internal std::vector
+  // allocation in copy_to_host().  Pre-allocate dst before the timed
+  // window to eliminate the page-fault cost from the measurement.
+  // -------------------------------
+  template <typename T, class... Us>
+  void run_into(program_ptr program,
+                nd_range dims,
+                caf::actor_id actor_id,
+                T* output_dst,
+                size_t output_count,
+                Us&&... xs)
+  {
+      if (!platform_) platform_ = program->get_platform();
+      auto cmd = caf::make_counted<command_t>(std::move(program),
+                                              std::move(dims),
+                                              actor_id,
+                                              std::forward<Us>(xs)...);
+      cmd->enqueue_into(output_dst, output_count);
+  }
+
+  // -------------------------------
   // Synchronous run: actor_id + shared_memory
   // -------------------------------
   template <class... Us>

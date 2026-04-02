@@ -23,13 +23,17 @@ public:
   using value_type = T;
 
   //constructor with CUdeviceptr
+  // pool_alloc: set to true when memory was allocated with cuMemAllocAsync.
+  // When true, reset() uses cuMemFreeAsync instead of cuMemFree so that
+  // de-allocation is non-blocking and memory is returned to the driver pool.
   mem_ref(size_t num_elements,
           CUdeviceptr memory,
           int access,
           int device_id    = 0,
           int context_id   = 0,
 	  CUcontext context = nullptr,
-          CUstream stream  = nullptr)
+          CUstream stream  = nullptr,
+          bool pool_alloc  = false)
     : num_elements_(num_elements),
       memory_(memory),
       access_(access),
@@ -37,7 +41,8 @@ public:
       context_id(context_id),
       stream_(stream),
       ctx(context),
-      is_scalar_(false)
+      is_scalar_(false),
+      pool_alloc_(pool_alloc)
   {
     if (memory_ == 0)
       throw std::runtime_error("mem_ref: null GPU memory pointer");
@@ -99,16 +104,24 @@ public:
   void reset() {
     if (!is_scalar_ && memory_) {
       // Clear the pointer first to prevent a second attempt on double-free or
-      // re-entry.  cuMemFree failure is not rethrown here because reset() is
+      // re-entry.  failure is not rethrown here because reset() is
       // called from the destructor, and throwing from a destructor causes
       // std::terminate().  Log the failure instead.
       CUdeviceptr mem_to_free = memory_;
       memory_ = 0;
-      CUresult err = cuMemFree(mem_to_free);
+      CUresult err;
+      // Botttleneck 3 fix: if memory was allocated with cuMemAllocAsync, free
+      // it with cuMemFreeAsync so the release is non-blocking and the memory
+      // is immediately returned to the driver pool for reuse.
+      if (pool_alloc_ && stream_) {
+        err = cuMemFreeAsync(mem_to_free, stream_);
+      } else {
+        err = cuMemFree(mem_to_free);
+      }
       if (err != CUDA_SUCCESS) {
         const char* err_str = nullptr;
         cuGetErrorString(err, &err_str);
-        std::cerr << "mem_ref: cuMemFree failed during cleanup: "
+        std::cerr << "mem_ref: cuMemFree(Async) failed during cleanup: "
                   << (err_str ? err_str : "unknown error") << "\n";
       }
     }
@@ -138,6 +151,24 @@ public:
 	  return host_data;
   }
 
+  // Bottleneck 2 fix: unchecked variant — no cuCtxPushCurrent/Pop.
+  // cuMemcpyDtoHAsync and cuStreamSynchronize are stream-based operations
+  // that do not require the context to be explicitly on the calling thread's
+  // context stack.  The caller is responsible for ensuring the correct
+  // device is targeted via the stream that was used to allocate this buffer.
+  std::vector<T> copy_to_host_unchecked() const {
+    if (access_ == IN)
+      throw std::runtime_error("Cannot copy a read-only buffer back to host");
+    if (is_scalar_)
+      return std::vector<T>{host_scalar_};
+    std::vector<T> host_data(num_elements_);
+    size_t bytes = num_elements_ * sizeof(T);
+    CUstream s = stream_ ? stream_ : nullptr;
+    CHECK_CUDA(cuMemcpyDtoHAsync(host_data.data(), memory_, bytes, s));
+    if (s) CHECK_CUDA(cuStreamSynchronize(s));
+    else   CHECK_CUDA(cuCtxSynchronize());
+    return host_data;
+  }
 
   //copies buffer back to dst buffer supplied by the user
   //count is number of elements the buffer has
@@ -163,6 +194,22 @@ public:
 		  CHECK_CUDA(cuCtxSynchronize());
 
 	  CHECK_CUDA(cuCtxPopCurrent(nullptr));
+  }
+
+  // Bottleneck 2 fix: unchecked variant for pre-allocated destination buffer.
+  // Same semantics as copy_to_host(T*, size_t) but without ctx push/pop.
+  void copy_to_host_unchecked(T* dst, size_t count) const {
+    if (access_ == IN)
+      throw std::runtime_error("Cannot copy a read-only buffer back to host");
+    if (is_scalar_) {
+      dst[0] = host_scalar_;
+      return;
+    }
+    size_t bytes = count * sizeof(T);
+    CUstream s = stream_ ? stream_ : nullptr;
+    CHECK_CUDA(cuMemcpyDtoHAsync(dst, memory_, bytes, s));
+    if (s) CHECK_CUDA(cuStreamSynchronize(s));
+    else   CHECK_CUDA(cuCtxSynchronize());
   }
 
 
@@ -199,6 +246,9 @@ private:
 
   bool is_scalar_{false};
   T    host_scalar_{};
+  // True when memory was allocated with cuMemAllocAsync (pool-backed).
+  // reset() uses cuMemFreeAsync to return memory to the pool non-blocking.
+  bool pool_alloc_{false};
 };
 
 template <class T>

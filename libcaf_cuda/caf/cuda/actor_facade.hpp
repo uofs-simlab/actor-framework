@@ -145,10 +145,23 @@ private:
     device_ptr dev    = cmd->get_device();
     CUstream   stream = dev->get_stream_for_actor(actor_id_);
 
+    // Pre-allocate (and zero-initialise) the host output buffer(s) NOW, while
+    // the GPU is executing the H2D copies and kernel asynchronously.  This
+    // moves the page-fault cost to overlap with GPU execution rather than
+    // paying it inside the collector (which runs after the stream is already
+    // idle).  For large matrices the GPU H2D+kernel time fully covers the
+    // allocation cost; for small matrices the overlap is partial.
+    auto pre_alloc = dev->preallocate_output_buffers(mem_refs);
+
     // Type-erase the result collection so we can store it in the queue
-    // independent of the concrete mem_ref tuple type.
-    auto collector = [dev, mem_refs]() mutable -> std::vector<output_buffer> {
-      return dev->collect_output_buffers(mem_refs);
+    // independent of the concrete mem_ref tuple type.  The collector now only
+    // does the D2H DMA into the pre-backed pages — no allocation.
+    // Bottleneck 2 fix: fill_output_buffers_unchecked() is used so that no
+    // per-buffer cuCtxPushCurrent/Pop is performed; D2H is stream-ordered.
+    auto collector = [dev, mem_refs,
+                      pre_alloc = std::move(pre_alloc)]() mutable -> std::vector<output_buffer> {
+      dev->fill_output_buffers_unchecked(mem_refs, pre_alloc);
+      return std::move(pre_alloc);
     };
 
     // Register a CUDA host-function callback.  cuLaunchHostFunc guarantees

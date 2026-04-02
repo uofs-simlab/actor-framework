@@ -158,11 +158,28 @@ public:
       : base(std::move(program), std::move(dims), actor_id, shared_memory, device_number, std::forward<Us>(xs)...) {}
 
   // -------------------------------------------------------------------------
-  // Overrides base_enqueue to return collected output_buffers
+  // Overrides base_enqueue to return collected output_buffers.
+  // Bottleneck 2 fix: uses collect_output_buffers_unchecked() so that the
+  // D2H copy is performed without per-buffer cuCtxPushCurrent/Pop.  The CUDA
+  // stream-based copy (cuMemcpyDtoHAsync + cuStreamSynchronize) does not
+  // require the context to be explicitly on the calling thread's context stack.
   // -------------------------------------------------------------------------
   std::vector<output_buffer> enqueue() {
       auto mem_refs = base::base_enqueue();
-      return base::dev_->collect_output_buffers(mem_refs);
+      return base::dev_->collect_output_buffers_unchecked(mem_refs);
+  }
+
+  // -------------------------------------------------------------------------
+  // Like enqueue(), but writes the first OUT/IN_OUT result of type T directly
+  // into a caller-supplied buffer instead of allocating a new std::vector.
+  // The caller must pre-allocate dst[0..count) before the timed window to
+  // avoid page-fault overhead inside the measurement.
+  // Bottleneck 2 fix: uses collect_output_buffers_into_unchecked().
+  // -------------------------------------------------------------------------
+  template <typename T>
+  void enqueue_into(T* dst, size_t count) {
+      auto mem_refs = base::base_enqueue();
+      base::dev_->collect_output_buffers_into_unchecked(mem_refs, dst, count);
   }
 };
 

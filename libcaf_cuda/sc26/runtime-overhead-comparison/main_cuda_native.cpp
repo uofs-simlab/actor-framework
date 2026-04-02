@@ -114,11 +114,10 @@ double runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     cuStreamSynchronize(stream);
     auto t_d2h_end = clock::now();
 
-    auto t_total_end = clock::now();
-    
-    
     // ----------------------------------
     // Free device memory
+    // (included in the total to match the actor benchmark which frees
+    //  device memory inside runner.run_into())
     // ----------------------------------
     auto t_free_start = clock::now();
 
@@ -127,6 +126,8 @@ double runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     checkCU(cuMemFree(d_c), "cuMemFree C");
 
     auto t_free_end = clock::now();
+
+    auto t_total_end = clock::now();
 
 
 
