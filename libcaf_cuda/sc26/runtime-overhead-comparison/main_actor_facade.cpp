@@ -35,14 +35,14 @@ class MatMult {
       for (auto& v : B_) v = dist(rng);
 
       C_.resize(N * N);
-      
     };
 
     caf::behavior make_behavior() {
       return {
         [this](int N) {
-          self_->println("MatMult actor received N={}", N);
           start_ = clock::now();
+
+          auto rp = self_->make_response_promise();
 
           int THREADS = 32;
           int BLOCKS = (N + THREADS - 1) / THREADS;
@@ -61,15 +61,18 @@ class MatMult {
               caf::cuda::create_in_arg(N))
               .request(gpuActor, caf::infinite)
               .then(
-                [this](const std::vector<output_buffer>& result) {
+                [this, rp](const std::vector<output_buffer>& result) mutable {
                   std::vector<int> output = caf::cuda::extract_vector<int>(result);
-                  self_->println("Received result from GPU actor {}, {}, {}, {} ", 
-                                     output[0], output[1], output[2], output[3]);
                   end_ = clock::now();
-                  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_ -
-                  start_).count();
-                  self_->println("Total GPU time: {} ms", duration);
-                }); 
+                  double duration = std::chrono::duration_cast<
+                      std::chrono::milliseconds>(
+                        end_ - start_).count();
+                  rp.deliver(duration);
+                },
+                [rp](const caf::error& err) mutable {
+                  rp.deliver(err);
+                }
+              ); 
         }
       };
     }
@@ -78,11 +81,29 @@ class MatMult {
 
 void caf_main(caf::actor_system& sys) {
   caf::scoped_actor self{sys};
-  auto worker = self->spawn(caf::actor_from_state<MatMult>, 2);
-  self->mail(1000).send(worker);
+  std::vector<int> sizes = {1000, 2000, 4000, 8000, 16000};
+  std::vector<double> results;
+  for (int N : sizes) {
+    auto worker = self->spawn(caf::actor_from_state<MatMult>, N);
+    self->mail(N)
+      .request(worker, caf::infinite)
+      .receive(
+        [&](double duration) {
+          results.push_back(duration);
+        },
+        [&](const caf::error& err) {
+          std::cerr << "Main: Error occurred for N=" << N 
+                    << ": " << to_string(err) << std::endl;
+        }
+      );
+  }
+  // Print summary of results
+  std::cout << "\nMatrix size : time (ms)\n";
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    std::cout << sizes[i] << " : " << results[i] << " ms"
+              << std::endl;
+  }
 
-
-  self->await_all_other_actors_done();
 }
 
 CAF_MAIN(caf::cuda::manager)
