@@ -28,7 +28,6 @@
 #include <caf/all.hpp>
 #include <caf/actor_cast.hpp>
 #include <caf/cuda/all.hpp>
-#include "../common/kernel_paths.hpp"
 
 #include <deque>
 #include <map>
@@ -85,16 +84,6 @@ class WorkerActor {
 
     mc_runner runner_;
 
-    // Keep all mem_ptrs alive until the stream is idle (gpu_done_atom).
-    // Using a tuple matching the runner return: <mem_ptr<int>, mem_ptr<int>, mem_ptr<int>>
-    std::tuple<mem_ptr<int>, mem_ptr<int>, mem_ptr<int>> pending_refs_;
-
-    // The out<int> mem_ptr (alias into pending_refs_ for convenience).
-    mem_ptr<int> result_ptr_ = nullptr;
-
-    // Response promise to deliver the hit count back to the supervisor.
-    typed_response_promise<int> pending_rp_;
-
 public:
     WorkerActor(event_based_actor* self, int index)
         : self_(self), worker_index_(index) {}
@@ -102,14 +91,13 @@ public:
     behavior make_behavior() {
         return {
             // ── Kernel launch request from the supervisor ─────────────────
-            [this](int seed, int num_samples) -> result<int> {
-                pending_rp_ = self_->make_response_promise<int>();
+            [this](int seed, int num_samples) -> int {
 
-                auto& mgr = self_->system().cuda_manager();
+                auto& mgr = caf::cuda::manager::get();
                 // All workers use device 0 on a single-GPU machine.
                 // On multi-GPU hardware, replace 0 with worker_index_.
                 auto program = mgr.create_program_from_cubin(
-                    actor_tests::paths::monte_carlo_cubin, "monteCarloKernel");
+                    "monte_carlo.cubin", "monteCarloKernel");
 
                 nd_range dims(/*grid*/64, 1, 1, /*block*/256, 1, 1);
 
@@ -120,34 +108,27 @@ public:
                 const std::vector<int> zero_buf{0};
                 auto arg_out = create_in_out_arg(zero_buf);
 
-                // run_async_notify: kernel is launched non-blocking; when the
-                // CUDA stream goes idle the runtime calls gpu_done_atom on this
-                // actor from its internal thread.
-                pending_refs_ = runner_.run_async_notify(
+                self_->println("[Worker {:2d}] Launched GPU kernel: "
+                               "seed={}, samples={}", worker_index_, seed, num_samples);
+
+                // For command_runner: actor_id = worker_index_ + 1 to keep streams distinct
+                auto output = runner_.run_async(
                     program, dims,
-                    actor_cast<actor>(self_),
+                    worker_index_ + 1, /*shared_memory=*/0, /*device_number=*/0,
                     arg_seed, arg_samples, arg_out);
 
                 // The in_out<int> result is the third (last) element.
-                result_ptr_ = std::get<2>(pending_refs_);
+                auto result_ptr = std::get<2>(output);
 
-                self_->println("[Worker {:2d}] Launched GPU kernel: "
-                               "seed={}, samples={}", worker_index_, seed, num_samples);
-                return pending_rp_;
-            },
-
-            // ── GPU stream idle callback ───────────────────────────────────
-            [this](gpu_done_atom) {
-                std::vector<int> host = result_ptr_->copy_to_host();
+                // Block thread to wait for GPU and copy result to host.
+                std::vector<int> host = result_ptr->copy_to_host();
                 int M = host.empty() ? 0 : host[0];
 
-                self_->println("[Worker {:2d}] gpu_done_atom: M={}", worker_index_, M);
+                self_->println("[Worker {:2d}] GPU complete: M={}", worker_index_, M);
 
-                // Safe to release device memory now (stream confirmed idle).
-                result_ptr_  = nullptr;
-                pending_refs_ = {};
-
-                pending_rp_.deliver(M);
+                // Safe to release device memory now implicitly as result_ptr goes out of scope.
+                
+                return M;
             }
         };
     }
@@ -346,6 +327,7 @@ public:
 };
 
 void caf_main(actor_system& sys, const config&) {
+    caf::cuda::manager::init(sys);
     constexpr int NUM_WORKERS      = 2;
     constexpr int TOTAL_BATCHES    = 20;
     constexpr int SAMPLES_PER_BATCH = 10'000'000;
@@ -367,6 +349,8 @@ void caf_main(actor_system& sys, const config&) {
 
     // Block until the supervisor signals done (or terminates cleanly).
     self->receive([](done_atom) {});
+    
+    caf::cuda::manager::shutdown();
 }
 
-CAF_MAIN(caf::cuda::manager, id_block::monte_carlo_app)
+CAF_MAIN(id_block::monte_carlo_app)

@@ -31,8 +31,8 @@ mmul_kernel: mmul.cu
 cuda_native: cuda_native.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o cuda_native cuda_native.cpp $(LIBS) $(LDFLAGS)
 
-actors_facade: actor_facade.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -o actors_facade actor_facade.cpp $(LIBS) $(LDFLAGS)
+actor_facade: actor_facade.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o actor_facade actor_facade.cpp $(LIBS) $(LDFLAGS)
 
 command_runner: command_runner.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o command_runner command_runner.cpp $(LIBS) $(LDFLAGS)
