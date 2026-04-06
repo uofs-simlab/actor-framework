@@ -11,3 +11,8 @@ manual/libcaf_core
 manual/libcaf_io
 manual/libcaf_net
 manual/libcaf_openssl
+libcaf_cuda/sc26/Runtime-Overhead/compile.sh
+libcaf_cuda/sc26/Runtime-Overhead/cuda_native
+libcaf_cuda/sc26/Runtime-Overhead/mmul.cubin
+libcaf_cuda/sc26/Sequence-Independent-Tasks/compile.sh
+libcaf_cuda/sc26/Runtime-Overhead/command_runner
