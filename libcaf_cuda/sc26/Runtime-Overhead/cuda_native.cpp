@@ -51,36 +51,18 @@ double runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     // ----------------------------------
     // Device Allocation
     // ----------------------------------
-    auto t_alloc_start = clock::now();
-
     checkCU(cuMemAlloc(&d_a, bytes), "cuMemAlloc d_a");
     checkCU(cuMemAlloc(&d_b, bytes), "cuMemAlloc d_b");
     checkCU(cuMemAlloc(&d_c, bytes), "cuMemAlloc d_c");
 
-    auto t_alloc_end = clock::now();
-
     // ----------------------------------
-    // H2D copy A
+    // H2D copies (async, pipelined with kernel)
     // ----------------------------------
-    auto t_h2d_a_start = clock::now();
-
     checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), bytes, stream), "cuMemcpyHtoDAsync A");
-    //checkCU(cuStreamSynchronize(stream), "sync A");
-
-    auto t_h2d_a_end = clock::now();
-
-    // ----------------------------------
-    // H2D copy B
-    // ----------------------------------
-    auto t_h2d_b_start = clock::now();
-
     checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), bytes, stream), "cuMemcpyHtoDAsync B");
-    //checkCU(cuStreamSynchronize(stream), "sync B");
-
-    auto t_h2d_b_end = clock::now();
 
     // ----------------------------------
-    // Kernel launch + execution
+    // Kernel launch
     // ----------------------------------
     const unsigned int blockX = 32;
     const unsigned int blockY = 32;
@@ -88,8 +70,6 @@ double runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     unsigned int gridY = (N + blockY - 1) / blockY;
 
     void* kernelParams[] = { &d_a, &d_b, &d_c, &N };
-
-    auto t_kernel_start = clock::now();
 
     checkCU(cuLaunchKernel(kernel,
                            gridX, gridY, 1,
@@ -100,72 +80,31 @@ double runMatrixMul(CUmodule module, CUfunction kernel, int N) {
                            nullptr),
             "cuLaunchKernel");
 
-   // checkCU(cuStreamSynchronize(stream), "kernel sync");
-
-    auto t_kernel_end = clock::now();
-
     // ----------------------------------
-    // D2H copy
+    // D2H copy + synchronize all pending GPU work
     // ----------------------------------
-    auto t_d2h_start = clock::now();
-
     cuMemcpyDtoHAsync(h_c.data(), d_c, bytes, stream);
-   // cuMemcpyDtoHAsync(h_c, d_c, bytes, stream);
     cuStreamSynchronize(stream);
-    auto t_d2h_end = clock::now();
 
     // ----------------------------------
     // Free device memory
-    // (included in the total to match the actor benchmark which frees
-    //  device memory inside runner.run_into())
     // ----------------------------------
-    auto t_free_start = clock::now();
-
     checkCU(cuMemFree(d_a), "cuMemFree A");
     checkCU(cuMemFree(d_b), "cuMemFree B");
     checkCU(cuMemFree(d_c), "cuMemFree C");
 
-    auto t_free_end = clock::now();
-
     auto t_total_end = clock::now();
-
-
-
 
     // ----------------------------------
     // Destroy stream
     // ----------------------------------
     checkCU(cuStreamDestroy(stream), "cuStreamDestroy");
 
-
     // ----------------------------------
     // Print Results
+    // (Sub-timings omitted: intermediate async ops have no sync point
+    //  so CPU-side timestamps do not reflect actual GPU phase durations.)
     // ----------------------------------
-
-    std::cout << "Device allocation: "
-              << ms(t_alloc_end - t_alloc_start).count()
-              << " ms\n";
-
-    std::cout << "H2D copy A: "
-              << ms(t_h2d_a_end - t_h2d_a_start).count()
-              << " ms\n";
-
-    std::cout << "H2D copy B: "
-              << ms(t_h2d_b_end - t_h2d_b_start).count()
-              << " ms\n";
-
-    std::cout << "Kernel execution: "
-              << ms(t_kernel_end - t_kernel_start).count()
-              << " ms\n";
-
-    std::cout << "D2H copy: "
-              << ms(t_d2h_end - t_d2h_start).count()
-              << " ms\n";
-
-    std::cout << "Device free: "
-              << ms(t_free_end - t_free_start).count()
-              << " ms\n";
-
     double total_ms = ms(t_total_end - t_total_start).count();
 
     std::cout << "TOTAL: " << total_ms << " ms\n";

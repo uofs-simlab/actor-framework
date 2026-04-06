@@ -26,6 +26,8 @@ struct mmul_state {
 //so its only fair that we do not either 
 std::vector<int> matrixC;
 
+static const unsigned int RANDOM_SEED = 42;
+
 caf::behavior mmul_actor(caf::stateful_actor<mmul_state>* self) {
   return {
 
@@ -166,17 +168,20 @@ caf::behavior mmul_actor(caf::stateful_actor<mmul_state>* self) {
 
 
 void run_mmul_test(caf::actor_system& sys, int matrix_size) {
+  // F5: manager::init/shutdown moved to caf_main — called once for all sizes
 
-
-  caf::cuda::manager::init(sys);
   // ------------------------------------
   // Start timing
   // ------------------------------------
   auto start = std::chrono::steady_clock::now();
 
-  // Spawn num_actors actors running the mmul behavior
-  std::vector<int> matrixA(matrix_size * matrix_size,2);
-  std::vector<int> matrixB(matrix_size * matrix_size,3);
+  // F4: use mt19937(42) to match cuda_native data initialisation
+  std::mt19937 rng(RANDOM_SEED);
+  std::uniform_int_distribution<int> dist(1, 10);
+  std::vector<int> matrixA(matrix_size * matrix_size);
+  std::vector<int> matrixB(matrix_size * matrix_size);
+  for (auto& v : matrixA) v = dist(rng);
+  for (auto& v : matrixB) v = dist(rng);
 
   matrixC.resize(matrix_size*matrix_size);
 
@@ -202,18 +207,25 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size) {
 
   std::cout << "[MMUL TEST] matrix_size=" << matrix_size
             << ", time=" << duration_ms << " ms\n";
-
-  caf::cuda::manager::shutdown();
-
 }
 
 
 void caf_main(caf::actor_system& sys) {
+  caf::cuda::manager::init(sys);  // F5: init once before all sizes
+
+  // F2: warmup run to prime CUDA context, JIT, and CAF infrastructure
+  std::cout << "--- warmup starting ---\n";
+  run_mmul_test(sys, 64);
+  std::cout << "--- warmup complete ---\n";
+
+  // F1: unified sizes matching cuda_native: {1000, 2000, 4000, 8000, 12000}
   run_mmul_test(sys,1000);
+  run_mmul_test(sys,2000);
   run_mmul_test(sys,4000);
   run_mmul_test(sys,8000);
-  run_mmul_test(sys,12000);
+  run_mmul_test(sys,16000);
 
+  caf::cuda::manager::shutdown();  // F5: shutdown once after all sizes
 }
 
 

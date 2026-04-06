@@ -160,7 +160,7 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size,int iterations) {
   auto& mgr = caf::cuda::manager::get();
   
   auto program =
-        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+        mgr.create_program_from_cubin("mmul.cubin", "matrixMul");
 
 
   using clock = std::chrono::steady_clock;
