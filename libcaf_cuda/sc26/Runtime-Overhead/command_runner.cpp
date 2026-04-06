@@ -218,7 +218,7 @@ void caf_main(caf::actor_system& sys) {
   run_mmul_test(sys, 64);
   std::cout << "--- warmup complete ---\n";
 
-  // F1: unified sizes matching cuda_native: {1000, 2000, 4000, 8000, 12000}
+  // F1: unified sizes matching cuda_native: {1000, 2000, 4000, 8000, 16000}
   run_mmul_test(sys,1000);
   run_mmul_test(sys,2000);
   run_mmul_test(sys,4000);
