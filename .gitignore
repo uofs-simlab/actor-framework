@@ -1,6 +1,6 @@
 .make-release-steps.bash
 .push-doxygen-steps.bash
-Makefile
+# Makefile
 bin/*
 build/*
 doxygen-log.txt
@@ -16,3 +16,4 @@ libcaf_cuda/sc26/Runtime-Overhead/cuda_native
 libcaf_cuda/sc26/Runtime-Overhead/mmul.cubin
 libcaf_cuda/sc26/Sequence-Independent-Tasks/compile.sh
 libcaf_cuda/sc26/Runtime-Overhead/command_runner
+libcaf_cuda/sc26/Fault-Tolerance/compile.sh
