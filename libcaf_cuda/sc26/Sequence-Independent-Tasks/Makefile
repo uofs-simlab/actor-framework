@@ -28,14 +28,14 @@ all: mmul_kernel base_cuda_program actor_facade actor_command_runner
 mmul_kernel: mmul.cu
 	$(NVCC) -g -arch=$(NVCC_ARCH) --cubin mmul.cu -o mmul.cubin
 
-base_cuda_program: main_cuda_native.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -o main_cuda_native main_cuda_native.cpp $(LIBS) $(LDFLAGS)
+base_cuda_program: cuda_native.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o main_cuda_native cuda_native.cpp $(LIBS) $(LDFLAGS)
 
-actor_facade: main_actor_facade.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -o main_actor_facade main_actor_facade.cpp $(LIBS) $(LDFLAGS)
+actor_facade: actor_facade.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o main_actor_facade actor_facade.cpp $(LIBS) $(LDFLAGS)
 
-actor_command_runner: main_command_runner.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -o main_command_runner main_command_runner.cpp $(LIBS) $(LDFLAGS)
+actor_command_runner: command_runner.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o main_command_runner command_runner.cpp $(LIBS) $(LDFLAGS)
 
 clean:
 	rm -f mmul.cubin
