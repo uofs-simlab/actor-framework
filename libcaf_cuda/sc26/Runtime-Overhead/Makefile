@@ -26,7 +26,7 @@ NVCC_ARCH ?= sm_$(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 all: mmul_kernel cuda_native command_runner actor_facade
 
 mmul_kernel: mmul.cu
-	$(NVCC) -g -arch=$(NVCC_ARCH) --cubin mmul.cu -o mmul.cubin
+	$(NVCC) -arch=$(NVCC_ARCH) --cubin mmul.cu -o mmul.cubin
 
 cuda_native: cuda_native.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o cuda_native cuda_native.cpp $(LIBS) $(LDFLAGS)

@@ -3,12 +3,13 @@
 Sequence-Independent-Tasks Benchmark Harness
 =============================================
 Runs main_cuda_native, main_actor_facade, and main_command_runner each
-NUM_RUNS times.  For each run the script captures the [MILESTONE] lines
-emitted every 1 000 iterations and records them.  The output file contains:
+NUM_RUNS times. Each run is expected to execute one timed 10 000-iteration
+series, emit cumulative [MILESTONE] lines every 1 000 iterations, and print
+one final [SERIES RESULT] line. The output file contains:
 
   1. All raw [MILESTONE] and [SERIES RESULT] lines from every run.
-  2. Per-series statistics (mean / min / max / stddev of the cumulative
-     elapsed time at each 1 000-iteration milestone across all runs).
+  2. Statistics across runs for the 10 000-iteration series at each
+      1 000-iteration milestone (mean / min / max / stddev).
   3. Incremental time per 1 000-iteration step (derived from adjacent
      milestones) — this shows how long each individual 1 000-iteration
      "slice" took on average.
@@ -48,12 +49,13 @@ BINARIES = {
 RE_MILESTONE = re.compile(
     r"\[MILESTONE\]\s+(\d+)\s*/\s*(\d+)\s+iterations,\s+elapsed\s*=\s*([\d.]+)"
 )
-# [SERIES RESULT] Matrix 1000x1000, iterations = 5000, total ... time = 2601.3 ms
+# [SERIES RESULT] Matrix 1000x1000, iterations = 10000, total ... time = 2601.3 ms
 RE_SERIES = re.compile(
     r"\[SERIES RESULT\].*iterations\s*=\s*(\d+).*?=\s*([\d.]+)\s*ms"
 )
 
 ENV = {**os.environ, "CUDA_VISIBLE_DEVICES": "0"}
+TARGET_ITERATIONS = 10000
 
 # ---------------------------------------------------------------------------
 # Running
@@ -95,7 +97,8 @@ def parse_output(stdout: str) -> RunData:
     Returns:
         milestones: {series_total: {milestone_iter: elapsed_ms}}
         series_totals: {series_total: elapsed_ms}  (from [SERIES RESULT] lines)
-    The 'series_total' key is the total iterations for that series (e.g. 3000).
+    The 'series_total' key is the total iterations for that series.
+    For this benchmark, each run should normally only contain total=10000.
     """
     milestones: dict[int, dict[int, float]] = {}
     series_totals: dict[int, float] = {}

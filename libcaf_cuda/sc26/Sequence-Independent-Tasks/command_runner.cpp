@@ -157,6 +157,8 @@ void run_mmul_test(caf::actor_system& sys,
 
 
 void caf_main(caf::actor_system& sys) {
+  constexpr int matrix_size = 1000;
+  constexpr int total_iterations = 10000;
 
   caf::cuda::manager::init(sys);  // S4 fix: init once before all series
 
@@ -165,11 +167,10 @@ void caf_main(caf::actor_system& sys) {
 
   // S2 fix: warmup run to prime CUDA context before timed series
   std::cout << "--- warmup starting ---\n";
-  run_mmul_test(sys, program, 1000, 10, /*is_warmup=*/true);
+  run_mmul_test(sys, program, matrix_size, 10, /*is_warmup=*/true);
   std::cout << "--- warmup complete ---\n";
 
-  for (int i = 1000; i < 11000; i += 1000)
-	  run_mmul_test(sys, program, 1000, i);
+  run_mmul_test(sys, program, matrix_size, total_iterations);
 
   caf::cuda::manager::shutdown();  // S4 fix: shutdown once after all series
 

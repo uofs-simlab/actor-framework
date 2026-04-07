@@ -209,8 +209,15 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size) {
             << ", time=" << duration_ms << " ms\n";
 }
 
+class config : public actor_system_config {
+public:
+  config() {
+      set("caf.scheduler.max-threads", 1u);
+  }
+};
 
-void caf_main(caf::actor_system& sys) {
+
+void caf_main(caf::actor_system& sys, const config& cfg) {
   caf::cuda::manager::init(sys);  // F5: init once before all sizes
 
   // F2: warmup run to prime CUDA context, JIT, and CAF infrastructure

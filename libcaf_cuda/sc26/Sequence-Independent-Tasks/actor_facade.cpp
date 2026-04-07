@@ -126,16 +126,17 @@ void run_series(caf::actor_system& sys, int matrix_size, int iterations,
 }
 
 void caf_main(caf::actor_system& sys) {
+  constexpr int matrix_size = 1000;
+  constexpr int total_iterations = 10000;
+
   caf::cuda::manager::init(sys);  // S4 fix: init once before all series
 
   // S2 fix: warmup run to prime CUDA context and CAF infrastructure
   std::cout << "--- warmup starting ---\n";
-  run_series(sys, 1000, 10, /*is_warmup=*/true);
+  run_series(sys, matrix_size, 10, /*is_warmup=*/true);
   std::cout << "--- warmup complete ---\n";
 
-  for (int i = 1000; i <= 10000; i += 1000) {
-    run_series(sys, 1000, i);
-  }
+  run_series(sys, matrix_size, total_iterations);
 
   caf::cuda::manager::shutdown();  // S4 fix: shutdown once after all series
 }
