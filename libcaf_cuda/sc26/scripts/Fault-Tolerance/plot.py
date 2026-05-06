@@ -738,6 +738,42 @@ def main() -> None:
     # ── Baseline ─────────────────────────────────────────────────────────────
     baseline: Optional[RunData] = None
     if args.baseline:
+        if not args.baseline.exists():
+            if args.run:
+                print(f"  Baseline log {args.baseline} not found. Generating it now...")
+                cwd = args.run.parent
+                base_extra = args.args.split() if args.args else []
+                # Remove any existing fault injection flags and force baseline mode.
+                filtered = []
+                skip = False
+                for a in base_extra:
+                    if skip:
+                        skip = False
+                        continue
+                    if a in ("--num-faults", "-F"):
+                        skip = True
+                        continue
+                    if a in ("--no-fault", "-n"):
+                        continue
+                    filtered.append(a)
+                filtered.append("--no-fault")
+
+                cmd = [str(args.run.resolve())] + filtered
+                print(f"  Executing baseline run: {' '.join(cmd)}", flush=True)
+                res = subprocess.run(cmd, capture_output=True, text=True,
+                                     cwd=str(cwd.resolve()), timeout=7200)
+                if res.returncode == 0:
+                    args.baseline.parent.mkdir(parents=True, exist_ok=True)
+                    args.baseline.write_text(res.stdout)
+                    print(f"  Baseline log saved to {args.baseline}")
+                else:
+                    print(f"  FATAL: Baseline generation failed (exit {res.returncode})", file=sys.stderr)
+                    sys.exit(res.returncode)
+            else:
+                print(f"  ERROR: Baseline file {args.baseline} not found and no --run binary provided to create it.",
+                      file=sys.stderr)
+                sys.exit(1)
+
         baseline = load_log(args.baseline)
 
     # ── Primary run ──────────────────────────────────────────────────────────
