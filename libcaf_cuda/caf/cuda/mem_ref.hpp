@@ -98,7 +98,9 @@ public:
   //sets all its attributes to null or -1
   void reset() {
     if (!is_scalar_ && memory_) {
-      CHECK_CUDA(cuMemFree(memory_));
+      CHECK_CUDA(cuCtxPushCurrent(ctx));
+      CHECK_CUDA(cuMemFreeAsync(memory_, stream_));
+      CHECK_CUDA(cuCtxPopCurrent(nullptr));
       memory_ = 0;
     }
     num_elements_ = 0;
