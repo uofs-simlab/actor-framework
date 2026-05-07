@@ -103,7 +103,7 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_actor_state>* self) 
 
       // Invoke the new async copy with a callback. 
       // When the GPU is done, this lambda runs on a driver thread.
-      matrixC_ptr->copy_to_host_async([self_hdl, h_a = std::move(h_a), h_b = std::move(h_b), N](std::vector<int> h_c) mutable {
+      mmul.copy_to_host_async(matrixC_ptr, [self_hdl, h_a = std::move(h_a), h_b = std::move(h_b), N](std::vector<int> h_c) mutable {
         std::cout << "GPU Work Complete. Callback triggered. Notifying actor..." << std::endl;
         // Use anon_mail to safely send the data back to the actor system.
         caf::anon_mail(std::move(h_a), std::move(h_b), std::move(h_c), N).send(self_hdl);

@@ -90,11 +90,12 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
 					arg1, arg2, arg3, arg4);
 
 			auto bufferC = std::get<2>(result);
+            auto self_hdl = caf::actor_cast<caf::actor>(self);
 
             // Asynchronously copy data back to host. This triggers a message to 'self' 
             // when the transfer is finished, instead of blocking the actor thread.
-            bufferC->copy_to_host_async([self](std::vector<int>&& /*data*/) {
-                caf::anon_mail(uint64_t{1}).send(self);
+            mmul_command.copy_to_host_async(bufferC, [self_hdl](std::vector<int>&& /*data*/) {
+                caf::anon_mail(uint64_t{1}).send(self_hdl);
             });
 		},
         [=](uint64_t /* completion_token */) {
@@ -232,7 +233,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_waves = 1;
 
     const std::vector<int> actor_counts = {
-	  30000,40000,50000
+	  1,30000,40000,50000
     };
 
 
