@@ -72,147 +72,59 @@ void serial_matrix_multiply(const std::vector<int>& a,
 // Stateful actor behavior
 caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
   return {
-    // 1st handler: Just int N, and who to send the matrices to
-    [=](int N, std::vector<caf::actor> receivers) {
+    // 1. Initial trigger: Setup data, launch kernel, and register the async callback.
+    [=](int N) {
+      std::cout << "Starting Async Callback Test with N=" << N << std::endl;
+      
+      // Initialize test data on host
+      std::vector<int> h_a(N * N);
+      std::vector<int> h_b(N * N);
+      std::iota(h_a.begin(), h_a.end(), 1);
+      std::iota(h_b.begin(), h_b.end(), 1);
 
-        caf::cuda::manager& mgr = caf::cuda::manager::get();
-        //create the program and configure the dimesnions of the kernel
-        auto program = mgr.create_program_from_fatbin("../generate_random_matrix.fatbin","generate_random_matrix");
-	int THREADS = 256;
-	int BLOCKS = (N*N + THREADS - 1) / THREADS;
-  	caf::cuda::nd_range dim(BLOCKS,1, 1, THREADS,1, 1);
+      caf::cuda::manager& mgr = caf::cuda::manager::get();
+      auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
-	//tag the arguments so that caf::cuda knows what to do with them	
-         auto arg1 = caf::cuda::create_out_arg(N*N); //output buffer indicate its size, caf::cuda will handle the rest
-          auto arg2 = caf::cuda::create_in_arg(N*N); //matrix size
-          auto arg3 = caf::cuda::create_in_arg(rand()); //seed
-	  auto arg4 = caf::cuda::create_in_arg(9999); //max valux
-	  
-          auto arg3B = caf::cuda::create_in_arg(rand()); //seed
-	  int device_number= 74; //arbitary number to show that 
-				 //can give illusion of selecting gpus that are
-				 //not there
+      const int THREADS = 32;
+      const int BLOCKS = (N + THREADS - 1) / THREADS;
+      caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
+      // Launch the kernel asynchronously using host vectors.
+      // run_async returns a tuple of mem_ptrs for each argument.
+      auto results = mmul.run_async(program, dims, self->state().id, 
+                                    caf::cuda::create_in_arg(h_a),
+                                    caf::cuda::create_in_arg(h_b),
+                                    caf::cuda::create_out_arg(N * N),
+                                    caf::cuda::create_in_arg(N));
 
-	  //launch kernels and collect their outputs
-	  auto tempA = randomMatrix.run_async(program,dim, self -> state().id,0,device_number,arg1,arg2,arg3,arg4);
-	  auto tempB = randomMatrix.run_async(program,dim, self -> state().id,0,device_number,arg1,arg2,arg3B,arg4);
-	  caf::cuda::mem_ptr<int> matrixA =  std::get<0>(tempA);
-	  caf::cuda::mem_ptr<int> matrixB = std::get<0>(tempB);
+      // The output matrix 'c' is the 3rd argument (index 2).
+      auto matrixC_ptr = std::get<2>(results);
+      auto self_hdl = caf::actor_cast<caf::actor>(self);
 
-	  //ensure the data is actually done being worked on
-	  matrixA -> synchronize();
-	  matrixB -> synchronize();
-
-	  std::cout << "Broadcasting\n";
-	  //broadcast the result out to receviers.
-	  for (auto actor: receivers) {
-	  
-		  self->mail(3,matrixA,matrixB,N,device_number).send(actor);
-	  }
-
+      // Invoke the new async copy with a callback. 
+      // When the GPU is done, this lambda runs on a driver thread.
+      matrixC_ptr->copy_to_host_async([self_hdl, h_a = std::move(h_a), h_b = std::move(h_b), N](std::vector<int> h_c) mutable {
+        std::cout << "GPU Work Complete. Callback triggered. Notifying actor..." << std::endl;
+        // Use anon_mail to safely send the data back to the actor system.
+        caf::anon_mail(std::move(h_a), std::move(h_b), std::move(h_c), N).send(self_hdl);
+      });
     },
 
-    // 2nd handler: GPU atom + matrices + N, launches a kenrel and sends its result to itself for verification
-    [=](const caf::cuda::mem_ptr<int> matrixA,
-        const caf::cuda::mem_ptr<int> matrixB, int N,int device_number) {
- 
-
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-  //create program and dims   
-  auto program = mgr.create_program_from_cubin("../mmul.cubin","matrixMul");
-  const int THREADS = 32;
-  const int BLOCKS = (N + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-    //create args
-    auto arg1 = matrixA;
-    auto arg2 = matrixB;
-    auto arg3 = caf::cuda::create_out_arg(N*N);
-    auto arg4 = caf::cuda::create_in_arg(N);
-
-
-    auto tempC = mmulAsync.run(program,dims,self -> state().id,0,device_number,arg1,arg2,arg3,arg4);
-
-    std::vector<int> matrix1 = matrixA -> copy_to_host();
-    std::vector<int> matrix2 = matrixB -> copy_to_host();    
-    std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC,2);
-
-    //verify its own result 
-    self -> mail(matrix1,matrix2,matrixC,N).send(self);
-
-    },
-
- // 3nd handler: GPU atom + matrices + N, launches a kenrel using shared memory and sends its result to itself for verification
-    [=](int x,const caf::cuda::mem_ptr<int> matrixA,
-        const caf::cuda::mem_ptr<int> matrixB, int N,int device_number) {
- 
-
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-  //create program and dims   
-  auto program = mgr.create_program_from_cubin("../shared_mmul.cubin","matrixMul");
-  const int THREADS = 32;
-  const int BLOCKS = (N + THREADS - 1) / THREADS;
-  caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-  int shared_mem = 8192; //we need 8KB of shared memory here
-    //create args
-    auto arg1 = matrixA;
-    auto arg2 = matrixB;
-    auto arg3 = caf::cuda::create_out_arg(N*N);
-    auto arg4 = caf::cuda::create_in_arg(N);
-
-
-    auto tempC = mmulAsync.run(program,dims,self -> state().id,shared_mem,device_number,arg1,arg2,arg3,arg4);
-
-    std::vector<int> matrix1 = matrixA -> copy_to_host();
-    std::vector<int> matrix2 = matrixB -> copy_to_host();    
-    std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC,2);
-
-    //verify its own result 
-    self -> mail(matrix1,matrix2,matrixC,N).send(self);
-
-    },
-
-
-
-    // 3rd handler: CPU atom + matrices + N
+    // 2. Verification handler: Called when the async callback sends the data.
     [=](const std::vector<int>& matrixA,
     const std::vector<int> &matrixB,
     const std::vector<int> &matrixC, int N) {
 
+    std::cout << "Actor received results. Verifying correctness..." << std::endl;
     std::vector<int> result(N * N);
-
     serial_matrix_multiply(matrixA, matrixB, result, N);
 
     if (result == matrixC) {
-        std::cout << "actor with id " << self->state().id << " references match\n";
+        std::cout << "SUCCESS: Actor id=" << self->state().id << " results match!" << std::endl;
     }
     else {
-        std::cout << "actor with id " << self->state().id << " references did not match\n";
-
+        std::cout << "FAILURE: Actor id=" << self->state().id << " results do NOT match!" << std::endl;
     }
-
-
-    /*
-    auto print_matrix = [N](const std::vector<int>& mat, const std::string& name) {
-            std::cout << name << ":\n";
-            for (int i = 0; i < N; ++i) {
-                for (int j = 0; j < N; ++j) {
-                    std::cout << mat[i * N + j] << " ";
-                }
-                std::cout << "\n";
-            }
-            std::cout << std::endl;
-        };
-
-        print_matrix(matrixA, "Matrix A");
-        print_matrix(matrixB, "Matrix B");
-        print_matrix(result, "Result Matrix");
-        print_matrix(matrixC, "GPU Result Matrix");
-	*/
     self->quit();
     }
   };
@@ -220,33 +132,14 @@ caf::behavior mmul_async_actor_fun(caf::stateful_actor<mmul_actor_state>* self) 
 
 
 void run_async_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
-  if (num_actors < 1) {
-    std::cerr << "[ERROR] Number of actors must be >= 1\n";
-    return;
-  }
-
-  // Spawn num_actors actors running the mmul behavior
-  std::vector<caf::actor> actors;
-  actors.reserve(num_actors);
-  for (int i = 0; i < num_actors; ++i) {
-    actors.push_back(sys.spawn(mmul_async_actor_fun));
-  }
-
-  // Actor 0 generates matrices and broadcasts to others 
-  caf::anon_mail(matrix_size, actors).send(actors[0]);
-
-   sys.await_all_actors_done();
+  auto worker = sys.spawn(mmul_async_actor_fun);
+  caf::anon_mail(matrix_size).send(worker);
+  sys.await_all_actors_done();
 }
-
 
 void caf_main(caf::actor_system& sys) {
   caf::cuda::manager::init(sys);
-
-  //run_async_mmul_test(sys,100,1);
-
- 
+  run_async_mmul_test(sys, 1024, 1);
 }
-
-
 
 CAF_MAIN()
