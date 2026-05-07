@@ -35,12 +35,12 @@ platform::platform() {
       CUctxCreateParams ctx_params = {};
       check(cuCtxCreate(&contexts_[i], 
                         &ctx_params, 
-                        CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, 
+                        CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, 
                         cuda_device),"creating context");
     }
 #else
     check(cuCtxCreate(&contexts_[i], 
-                      CU_CTX_SCHED_BLOCKING_SYNC | CU_CTX_MAP_HOST, 
+                      CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, 
                       cuda_device),"creating context");
 #endif
     devices_[i] = make_counted<device>(cuda_device, contexts_[i], name, i);
@@ -121,4 +121,3 @@ void platform::release_streams_for_actor(int actor_id) {
 }
 
 } // namespace caf::cuda
-
