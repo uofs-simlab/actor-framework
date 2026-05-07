@@ -8,6 +8,7 @@
 #include <chrono>
 #include <iostream>
 #include "caf/cuda/types.hpp"
+#include <caf/actor.hpp>
 //#include "caf/cuda/utility.hpp"
 #include <cuda.h>
 #include <atomic>
@@ -153,6 +154,91 @@ public:
 	  CHECK_CUDA(cuCtxPopCurrent(nullptr));
   }
 
+  /**
+   * @brief Asynchronously copies GPU memory to a host buffer and triggers a user-defined callback.
+   * 
+   * This version allows the user to provide their own destination buffer.
+   * 
+   * @param dst Pointer to the destination host memory. Must remain valid until the callback executes.
+   * @param count Number of elements to copy.
+   * @param callback A function/lambda with the signature void(T* data, size_t size).
+   */
+  template <typename F>
+  void copy_to_host_async(T* dst, size_t count, F callback) const {
+    if (access_ == IN)
+      throw std::runtime_error("Cannot copy a read-only buffer back to host");
+
+    struct State {
+      caf::intrusive_ptr<const mem_ref<T>> self;
+      T* dst;
+      size_t count;
+      F user_callback;
+    };
+
+    auto* state = new State{this, dst, count, std::move(callback)};
+
+    CHECK_CUDA(cuCtxPushCurrent(ctx));
+    CUstream s = stream_ ? stream_ : nullptr;
+
+    if (!is_scalar_) {
+      size_t bytes = count * sizeof(T);
+      CHECK_CUDA(cuMemcpyDtoHAsync(dst, memory_, bytes, s));
+    }
+
+    auto host_fn = [](void* userData) {
+      auto* s_ptr = static_cast<State*>(userData);
+      if (s_ptr->self->is_scalar_)
+        s_ptr->dst[0] = s_ptr->self->host_scalar_;
+      
+      s_ptr->user_callback(s_ptr->dst, s_ptr->count);
+      delete s_ptr;
+    };
+
+    CHECK_CUDA(cuLaunchHostFunc(s, host_fn, state));
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+  }
+
+  /**
+   * @brief Asynchronously copies GPU memory and provides an std::vector<T> to the callback.
+   * 
+   * This version manages the host buffer for you.
+   * 
+   * @param callback A function/lambda with the signature void(std::vector<T>&& data).
+   */
+  template <typename F>
+  void copy_to_host_async(F callback) const {
+    if (access_ == IN)
+      throw std::runtime_error("Cannot copy a read-only buffer back to host");
+
+    struct State {
+      caf::intrusive_ptr<const mem_ref<T>> self;
+      std::vector<T> buffer;
+      F user_callback;
+    };
+
+    auto* state = new State{this, std::vector<T>(num_elements_), std::move(callback)};
+
+    CHECK_CUDA(cuCtxPushCurrent(ctx));
+    CUstream s = stream_ ? stream_ : nullptr;
+
+    if (!is_scalar_) {
+      size_t bytes = num_elements_ * sizeof(T);
+      CHECK_CUDA(cuMemcpyDtoHAsync(state->buffer.data(), memory_, bytes, s));
+    }
+
+    auto host_fn = [](void* userData) {
+      auto* s_ptr = static_cast<State*>(userData);
+      if (s_ptr->self->is_scalar_)
+        s_ptr->buffer[0] = s_ptr->self->host_scalar_;
+
+      s_ptr->user_callback(std::move(s_ptr->buffer));
+      delete s_ptr;
+    };
+
+    CHECK_CUDA(cuLaunchHostFunc(s, host_fn, state));
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+  }
+
 
 
     //reference counting for auto garabage collection
@@ -193,4 +279,3 @@ template <class T>
 using mem_ptr = caf::intrusive_ptr<mem_ref<T>>;
 
 } // namespace caf::cuda
-
