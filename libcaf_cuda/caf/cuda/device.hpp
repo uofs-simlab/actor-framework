@@ -383,7 +383,7 @@ mem_ptr<T> global_argument(const in<T>& arg, CUstream stream, int access) {
   size_t bytes = arg.size() * sizeof(T);
   CUdeviceptr dev_ptr;
   CHECK_CUDA(cuCtxPushCurrent(getContext()));
-  CHECK_CUDA(cuMemAlloc(&dev_ptr, bytes));
+  CHECK_CUDA(cuMemAllocAsync(&dev_ptr, bytes, stream));
   CHECK_CUDA(cuMemcpyHtoDAsync(dev_ptr, arg.data(), bytes, stream));
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
   return caf::intrusive_ptr<mem_ref<T>>(
@@ -400,7 +400,7 @@ mem_ptr<T> global_argument(const in_out<T>& arg, CUstream stream, int access) {
   size_t bytes = arg.size() * sizeof(T);
   CUdeviceptr dev_ptr;
   CHECK_CUDA(cuCtxPushCurrent(getContext()));
-  CHECK_CUDA(cuMemAlloc(&dev_ptr, bytes));
+  CHECK_CUDA(cuMemAllocAsync(&dev_ptr, bytes, stream));
   CHECK_CUDA(cuMemcpyHtoDAsync(dev_ptr, arg.data(), bytes, stream));
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
   return caf::intrusive_ptr<mem_ref<T>>(
@@ -413,7 +413,7 @@ mem_ptr<T> scratch_argument(const out<T>& arg, CUstream stream, int access) {
   size_t size =  arg.size();
   CUdeviceptr dev_ptr;
   CHECK_CUDA(cuCtxPushCurrent(getContext()));
-  CHECK_CUDA(cuMemAlloc(&dev_ptr, size * sizeof(T)));
+  CHECK_CUDA(cuMemAllocAsync(&dev_ptr, size * sizeof(T), stream));
   CHECK_CUDA(cuCtxPopCurrent(nullptr));
   return caf::intrusive_ptr<mem_ref<T>>(
     new mem_ref<T>(size, dev_ptr, access, id_, 0, getContext(), stream));
@@ -456,4 +456,3 @@ mem_ptr<T> scratch_argument(const out<T>& arg, CUstream stream, int access) {
 };
 
 } // namespace caf::cuda
-
