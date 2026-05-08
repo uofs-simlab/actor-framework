@@ -100,9 +100,24 @@ public:
   //sets all its attributes to null or -1
   void reset() {
     if (!is_scalar_ && memory_) {
-      CHECK_CUDA(cuCtxPushCurrent(ctx));
-      CHECK_CUDA(cuMemFreeAsync(memory_, stream_));
-      CHECK_CUDA(cuCtxPopCurrent(nullptr));
+      if (ctx) {
+        CUresult res = cuCtxPushCurrent(ctx);
+        if (res == CUDA_SUCCESS) {
+          CUresult free_res = cuMemFreeAsync(memory_, stream_);
+          if (free_res != CUDA_SUCCESS) {
+            const char* err_str = nullptr;
+            cuGetErrorString(free_res, &err_str);
+            std::cerr << "[ERROR] cuMemFreeAsync failed in mem_ref::reset: " 
+                      << (err_str ? err_str : "unknown error") << std::endl;
+          }
+          cuCtxPopCurrent(nullptr);
+        } else {
+          const char* err_str = nullptr;
+          cuGetErrorString(res, &err_str);
+          std::cerr << "[ERROR] cuCtxPushCurrent failed in mem_ref::reset: " 
+                    << (err_str ? err_str : "unknown error") << std::endl;
+        }
+      }
       memory_ = 0;
     }
     num_elements_ = 0;
