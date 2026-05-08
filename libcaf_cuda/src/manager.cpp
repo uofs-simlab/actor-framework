@@ -179,6 +179,11 @@ device_ptr manager::find_device(int id) {
 
 }
 
+double manager::available_memory_mb(int id) {
+  auto dev = find_device(id);
+  return dev ? dev->available_memory_mb() : 0.0;
+}
+
 //creates a program ptr given a kernel and a string 
 program_ptr manager::create_program(const char * kernel,
                                     const std::string& name,

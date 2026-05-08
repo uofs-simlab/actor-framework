@@ -177,7 +177,7 @@ public:
 
   int get_num_devices();
 
-
+  double available_memory_mb(int id = 0);
 
   caf::actor get_scheduler_actor();
 
@@ -221,4 +221,3 @@ private:
 };
 
 } // namespace caf::cuda
-
