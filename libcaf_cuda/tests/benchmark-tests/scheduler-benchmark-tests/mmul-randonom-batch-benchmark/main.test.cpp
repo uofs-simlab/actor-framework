@@ -99,6 +99,10 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
             // Calculate memory needed for A, B, C
             size_t memory_needed = (size_t)N * N * sizeof(int) * 3; // A, B, C
 
+            // std::cout << "total memory bytes is " << st.total_device_memory_bytes << "\n";
+            // std::cout << "current allocated memory bytes is " << st.current_allocated_memory_bytes << "\n";
+            // std::cout << "memory needed is " << memory_needed << "\n";
+
             if (st.current_allocated_memory_bytes + memory_needed > st.total_device_memory_bytes) {
                 return make_error(sec::runtime_error, "Device Actor: Not enough memory");
             }
@@ -152,15 +156,14 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
 
     return {
         [=](request_work_atom) {
-            if (self->state().in_flight_tasks_count >= self->state().max_in_flight_tasks) {
+            auto& st = self->state();
+            if (st.in_flight_tasks_count >= st.max_in_flight_tasks || st.draining) {
                 return; // Already at max capacity, don't request more yet
             }
 
-            self->mail(get_work_atom_v).request(self->state().device_actor, infinite).then(
+            st.in_flight_tasks_count++; // Mark as pending immediately
+            self->mail(get_work_atom_v).request(st.device_actor, infinite).then(
                 [=](int N, in<int> matrixA, in<int> matrixB) {
-                    auto& st = self->state();
-                    st.in_flight_tasks_count++; 
-
                     // GPU Pipeline: Transfer -> Kernel -> Copyback
                     auto arg1 = mmul_command.transfer_memory(st.device_id, st.stream_id, std::move(matrixA));
                     auto arg2 = mmul_command.transfer_memory(st.device_id, st.stream_id, std::move(matrixB));
@@ -183,6 +186,7 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                 },
                 [=](error& err) {
                     auto& st = self->state();
+                    st.in_flight_tasks_count--; // Revert pending status on failure
                     if (err == sec::runtime_error) {
                         // Not enough memory, retry after a delay
                         self->println("Worker {}: Not enough memory, retrying for work...", st.stream_id);
@@ -203,7 +207,6 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
             st.in_flight_tasks_count--; // Decrement count
             self->mail(1).send(st.supervisor); // Notify supervisor
             self->mail(release_memory_atom_v, N_completed).send(st.device_actor); // Release memory
-            self->mail(request_work_atom_v).send(self); // Request next task if capacity allows
             
             if (st.draining && st.in_flight_tasks_count == 0) {
                 self->mail(worker_done_atom_v).send(st.device_actor);
@@ -295,8 +298,8 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_N = 2048;
     const int num_sizes = 10;
 
-    const int workers_per_gpu = 16; // Admission control: only 16 concurrent tasks per GPU
-    const int max_in_flight_tasks_per_worker = 2; // Each worker keeps 2 tasks in flight
+    const int workers_per_gpu = 8; // Admission control: only 16 concurrent tasks per GPU
+    const int max_in_flight_tasks_per_worker = 3; // Each worker keeps 2 tasks in flight
 
     const std::vector<int> actor_counts = {
 	  1,30000,40000,50000
