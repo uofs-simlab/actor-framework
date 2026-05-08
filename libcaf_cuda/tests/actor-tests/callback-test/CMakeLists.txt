@@ -41,4 +41,12 @@ target_link_libraries(test
     CUDA::nvrtc
 )
 
-
+add_executable(memory_stress_test memory_stress.test.cpp)
+target_compile_definitions(memory_stress_test PRIVATE CAF_ENABLE_LOGGING)
+target_link_libraries(memory_stress_test
+  PRIVATE
+    "${CAF_BUILD}/libcaf_core/libcaf_core.so"
+    "${CAF_BUILD}/libcaf_io/libcaf_io.so"
+    "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
+    CUDA::nvrtc
+)
