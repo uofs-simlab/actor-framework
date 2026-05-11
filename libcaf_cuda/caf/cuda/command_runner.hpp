@@ -214,84 +214,29 @@ public:
     }
 
 
-    /**
-     * @brief Asynchronously copies GPU memory and provides an std::vector<T> to the callback.
-     * 
-     * The mem_ptr is kept alive until the callback completes.
-     */
-    template <typename T, typename F>
-    void copy_to_host_async(mem_ptr<T> ptr, F callback) {
-      if (ptr->access() == IN)
-        throw std::runtime_error("Cannot copy a read-only buffer back to host");
+    // -------------------------------------------------------------------------
+    // COPY BACK
+    // -------------------------------------------------------------------------
 
-      struct State {
-        std::vector<T> buffer;
-        F user_callback;
-        bool is_scalar;
-        T host_scalar;
-      };
-
-      auto* state = new State{std::vector<T>(ptr->size()), std::move(callback), ptr->is_scalar(), *ptr->host_scalar_ptr()};
-
-      CHECK_CUDA(cuCtxPushCurrent(ptr->get_ctx()));
-      CUstream s = ptr->stream();
-
-      if (!ptr->is_scalar()) {
-        size_t bytes = ptr->size() * sizeof(T);
-        CHECK_CUDA(cuMemcpyDtoHAsync(state->buffer.data(), ptr->mem(), bytes, s));
-      }
-
-      auto host_fn = [](void* userData) {
-        auto* s_ptr = static_cast<State*>(userData);
-        if (s_ptr->is_scalar)
-          s_ptr->buffer[0] = s_ptr->host_scalar;
-
-        s_ptr->user_callback(std::move(s_ptr->buffer));
-        
-        delete s_ptr;
-      };
-
-      CHECK_CUDA(cuLaunchHostFunc(s, host_fn, state));
-      CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    // Synchronous copy back
+    template <typename T>
+    std::vector<T> copy_to_host(mem_ptr<T> ptr) {
+        copy_back_command<T> cmd(std::move(ptr));
+        return cmd.run();
     }
 
-    /**
-     * @brief Asynchronously copies GPU memory to a user-provided host buffer.
-     */
+    // Asynchronous copy back (default)
+    template <typename T, typename F>
+    void copy_to_host_async(mem_ptr<T> ptr, F callback) {
+        auto cmd = caf::make_counted<copy_back_command<T>>(std::move(ptr));
+        cmd->run_async(std::move(callback));
+    }
+
+    // Asynchronous copy back to user-provided buffer
     template <typename T, typename F>
     void copy_to_host_async(mem_ptr<T> ptr, T* dst, size_t count, F callback) {
-      if (ptr->access() == IN)
-        throw std::runtime_error("Cannot copy a read-only buffer back to host");
-
-      struct State {
-        T* dst;
-        size_t count;
-        F user_callback;
-        bool is_scalar;
-        T host_scalar;
-      };
-
-      auto* state = new State{dst, count, std::move(callback), ptr->is_scalar(), *ptr->host_scalar_ptr()};
-
-      CHECK_CUDA(cuCtxPushCurrent(ptr->get_ctx()));
-      CUstream s = ptr->stream();
-
-      if (!ptr->is_scalar()) {
-        size_t bytes = count * sizeof(T);
-        CHECK_CUDA(cuMemcpyDtoHAsync(dst, ptr->mem(), bytes, s));
-      }
-
-      auto host_fn = [](void* userData) {
-        auto* s_ptr = static_cast<State*>(userData);
-        if (s_ptr->is_scalar)
-          s_ptr->dst[0] = s_ptr->host_scalar;
-
-        s_ptr->user_callback(s_ptr->dst, s_ptr->count);
-        delete s_ptr;
-      };
-
-      CHECK_CUDA(cuLaunchHostFunc(s, host_fn, state));
-      CHECK_CUDA(cuCtxPopCurrent(nullptr));
+        auto cmd = caf::make_counted<copy_back_command<T>>(std::move(ptr));
+        cmd->run_async(dst, count, std::move(callback));
     }
 
 
