@@ -190,14 +190,28 @@ public:
     // MEMORY TRANSFER
     // Single transfer per command, returns device buffer
     // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // MEMORY TRANSFER
+    // Single transfer per command, returns device buffer
+    // -------------------------------------------------------------------------
     template <typename T>
     mem_ptr<raw_t<T>> transfer_memory(int device_number,
                                       int stream_id,
                                       T arg)
     {
-        // stack-allocate memory_command and execute transfer
+        // default: asynchronous transfer
         memory_command<T> cmd(device_number, stream_id, std::move(arg));
         return cmd.enqueue();
+    }
+
+    // Synchronous transfer for testing
+    template <typename T>
+    mem_ptr<raw_t<T>> transfer_memory_sync(int device_number,
+                                           int stream_id,
+                                           T arg)
+    {
+        memory_command<T> cmd(device_number, stream_id, std::move(arg));
+        return cmd.run_sync();
     }
 
    // -------------------------------------------------------------------------
@@ -209,8 +223,14 @@ public:
     mem_ptr<raw_t<T>> transfer_memory(const response_token_ptr& token,
                                       T arg)
     {
-        // stack-allocate memory_command and execute transfer
-        return transfer_memory(token -> getDeviceNumber(),token -> getStreamId(),arg); 
+        return transfer_memory(token->getDeviceNumber(), token->getStreamId(), std::move(arg));
+    }
+
+    template <typename T>
+    mem_ptr<raw_t<T>> transfer_memory_sync(const response_token_ptr& token,
+                                           T arg)
+    {
+        return transfer_memory_sync(token->getDeviceNumber(), token->getStreamId(), std::move(arg));
     }
 
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <utility>
+#include <type_traits>
 
 #include <caf/ref_counted.hpp>
 #include <caf/intrusive_ptr.hpp>
@@ -38,6 +39,48 @@ public:
   result_type enqueue() {
     CUstream stream = dev_->get_stream_for_actor(stream_id_);
     return dev_->make_arg(arg_, stream);
+  }
+
+  // -------------------------------------------------------------------------
+  // Execute memory transfer synchronously (blocking)
+  // -------------------------------------------------------------------------
+  result_type run_sync() {
+    CHECK_CUDA(cuCtxPushCurrent(dev_->getContext()));
+    CUstream stream = dev_->get_stream_for_actor(stream_id_);
+
+    int access = NOT_IN_USE;
+    if constexpr (std::is_same_v<T, in<raw_t<T>>>)
+      access = IN;
+    else if constexpr (std::is_same_v<T, out<raw_t<T>>>)
+      access = OUT;
+    else if constexpr (std::is_same_v<T, in_out<raw_t<T>>>)
+      access = IN_OUT;
+
+    if (arg_.is_scalar()) {
+      raw_t<T> val{};
+      if constexpr (!std::is_same_v<T, out<raw_t<T>>>) {
+        val = arg_.getscalar();
+      }
+      auto res = caf::make_counted<mem_ref<raw_t<T>>>(val, access, dev_->getId(), 0, dev_->getContext(), stream);
+      CHECK_CUDA(cuCtxPopCurrent(nullptr));
+      return res;
+    }
+
+    size_t size = arg_.size();
+    size_t bytes = size * sizeof(raw_t<T>);
+    CUdeviceptr mem;
+
+    // Synchronous allocation
+    CHECK_CUDA(cuMemAlloc(&mem, bytes));
+
+    if constexpr (!std::is_same_v<T, out<raw_t<T>>>) {
+      // Synchronous copy from host to device
+      CHECK_CUDA(cuMemcpyHtoD(mem, arg_.data(), bytes));
+    }
+
+    auto res = caf::make_counted<mem_ref<raw_t<T>>>(size, mem, access, dev_->getId(), 0, dev_->getContext(), stream);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    return res;
   }
 
 private:
