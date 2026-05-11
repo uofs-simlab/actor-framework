@@ -108,6 +108,28 @@ public:
     return ptr_->copy_to_host();
   }
 
+  // Enqueue the transfer on the stream without any host callback or synchronization
+  void enqueue(T* dst, size_t count) {
+    if (ptr_->access() == IN)
+      throw std::runtime_error("Cannot copy a read-only buffer back to host");
+
+    CHECK_CUDA(cuCtxPushCurrent(ptr_->get_ctx()));
+    CUstream s = ptr_->stream();
+
+    if (ptr_->is_scalar()) {
+      // For scalars, the value is already on the host.
+      // This assignment happens immediately on the CPU and is NOT stream-ordered.
+      // If stream ordering is required for scalars, use run_async with a callback.
+      dst[0] = *ptr_->host_scalar_ptr();
+    } else {
+      size_t bytes = count * sizeof(T);
+      // Pure asynchronous copy with no host-side tracking.
+      CHECK_CUDA(cuMemcpyDtoHAsync(dst, ptr_->mem(), bytes, s));
+    }
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+  }
+
   // Asynchronous execution with internal buffer allocation
   template <typename F>
   void run_async(F callback) {
