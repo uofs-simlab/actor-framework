@@ -29,9 +29,12 @@ include_directories(
 )
 
 
-# 5) Declare your executable
+# 5) Declare your executables
 add_executable(test main.test.cpp)
 target_compile_definitions(test PRIVATE CAF_ENABLE_LOGGING)
+
+add_executable(work-stealing work-stealing.cpp)
+target_compile_definitions(work-stealing PRIVATE CAF_ENABLE_LOGGING)
 
 target_link_libraries(test
   PRIVATE
@@ -41,4 +44,10 @@ target_link_libraries(test
     CUDA::nvrtc
 )
 
-
+target_link_libraries(work-stealing
+  PRIVATE
+    "${CAF_BUILD}/libcaf_core/libcaf_core.so"
+    "${CAF_BUILD}/libcaf_io/libcaf_io.so"
+    "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
+    CUDA::nvrtc
+)
