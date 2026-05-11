@@ -42,6 +42,8 @@ command mmul_command;
 
 struct mmul_state {
 	caf::cuda::program_ptr program;
+	int total_expected = 0;
+	int results_received = 0;
 };
 
 //global output buffer meant to disclude it from timing
@@ -53,13 +55,12 @@ std::vector<int> matrixC;
 
 
 caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
-		caf::cuda::program_ptr mmul_kernel) {
-  
+		caf::cuda::program_ptr mmul_kernel, int iterations) {
 
 	self ->state().program = mmul_kernel;
+	self ->state().total_expected = iterations;
 
 return {
-
     [=](const std::vector<int>& matrixA,
         const std::vector<int>& matrixB,
         int N) {
@@ -131,14 +132,16 @@ return {
 
 	    caf::cuda::mem_ptr<int> dC = std::get<2>(output);
 
-
-	    dC->copy_to_host(matrixC.data(),N*N);
-
-            auto t_copy_end = clock::now();
-            auto t_total_end = clock::now();
-
+            auto self_hdl = caf::actor_cast<caf::actor>(self);
+            mmul_command.copy_to_host_async(dC, matrixC.data(), N*N, [self_hdl](int*, size_t) {
+                caf::anon_mail(kernel_done_atom_v).send(self_hdl);
+            });
+    },
+    [=](kernel_done_atom) {
+        if (++self->state().results_received == self->state().total_expected) {
+            self->quit();
+        }
     }
-
   };
 }
 
@@ -167,12 +170,11 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size,int iterations) {
 
   auto start = std::chrono::steady_clock::now();
 
-  caf::actor a =sys.spawn(mmul_actor_fun,program);
+  caf::actor a = sys.spawn(mmul_actor_fun, program, iterations);
 
   for (int i = 0; i < iterations; i++) 
 	  anon_mail(matrixA,matrixB,matrix_size).send(a);
 
-  anon_send_exit(a,caf::exit_reason::kill);
   // Wait for all actors to finish
   sys.await_all_actors_done();
 
