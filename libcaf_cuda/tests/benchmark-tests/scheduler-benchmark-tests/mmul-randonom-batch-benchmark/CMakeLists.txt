@@ -36,6 +36,9 @@ target_compile_definitions(test PRIVATE CAF_ENABLE_LOGGING)
 add_executable(work-stealing work-stealing.cpp)
 target_compile_definitions(work-stealing PRIVATE CAF_ENABLE_LOGGING)
 
+add_executable(cuda-baseline cuda-baseline.cpp)
+target_link_libraries(cuda-baseline PRIVATE CUDA::cuda_driver)
+
 target_link_libraries(test
   PRIVATE
     "${CAF_BUILD}/libcaf_core/libcaf_core.so"
