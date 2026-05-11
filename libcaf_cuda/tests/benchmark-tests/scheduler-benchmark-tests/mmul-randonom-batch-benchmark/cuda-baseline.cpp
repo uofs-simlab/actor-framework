@@ -5,6 +5,7 @@
 #include <random>
 #include <thread>
 #include <algorithm>
+#include <functional>
 #include <stdexcept> // For runtime_error
 
 struct Task {
@@ -54,16 +55,16 @@ void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_g
         void *kernel_args[] = { &d_a, &d_b, &d_c, &N };
 
         // Kernel dimensions
-        dim3 threads(32, 32);
-        dim3 blocks((N + 31) / 32, (N + 31) / 32);
+        unsigned int block_dim = 32;
+        unsigned int grid_dim = (N + block_dim - 1) / block_dim;
 
-        cuLaunchKernel(kernel_func, blocks.x, blocks.y, blocks.z,
-                       threads.x, threads.y, threads.z,
+        cuLaunchKernel(kernel_func, grid_dim, grid_dim, 1,
+                       block_dim, block_dim, 1,
                        0, stream, kernel_args, nullptr);
         
         // Simulating the result retrieval (Copy back)
         std::vector<int> h_res(N * N);
-        cuMemcpyDtoHAsync(reinterpret_cast<CUdeviceptr>(h_res.data()), d_c, bytes, stream);
+        cuMemcpyDtoHAsync(h_res.data(), d_c, bytes, stream);
 
         // Free GPU memory for this task
         cuMemFreeAsync(d_a, stream);
