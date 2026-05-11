@@ -122,12 +122,39 @@ int main() {
     std::vector<CUfunction> kernel_funcs(num_gpus);
     CUmodule module;
 
+    // Create a CUDA context for each device
+    for (int i = 0; i < num_gpus; ++i) {
+        CUdevice dev;
+        cuDeviceGet(&dev, i);
+        err = cuCtxCreate(&contexts[i], 0, dev); // Flag 0 for default context creation
+        if (err != CUDA_SUCCESS) {
+            const char* err_str;
+            cuGetErrorString(err, &err_str);
+            std::cerr << "Error creating context for device " << i << ": " << err_str << std::endl;
+            // Clean up already created contexts
+            for (int j = 0; j < i; ++j) cuCtxDestroy(contexts[j]);
+            return 1;
+        }
+    }
+
+    // Make the context for device 0 current on the main thread before loading the module
+    err = cuCtxPushCurrent(contexts[0]);
+    if (err != CUDA_SUCCESS) {
+        const char* err_str;
+        cuGetErrorString(err, &err_str);
+        std::cerr << "Error pushing context for device 0: " << err_str << std::endl;
+        for (int i = 0; i < num_gpus; ++i) cuCtxDestroy(contexts[i]);
+        return 1;
+    }
+
     // Load the cubin module (assuming mmul.cu is compiled to mmul.cubin)
     err = cuModuleLoad(&module, "../mmul.cubin");
     if (err != CUDA_SUCCESS) {
         const char* err_str;
         cuGetErrorString(err, &err_str);
         std::cerr << "Error loading module ../mmul.cubin: " << err_str << std::endl;
+        cuCtxPopCurrent(nullptr); // Pop context on error
+        for (int i = 0; i < num_gpus; ++i) cuCtxDestroy(contexts[i]);
         return 1;
     }
 
@@ -137,18 +164,26 @@ int main() {
         const char* err_str;
         cuGetErrorString(err, &err_str);
         std::cerr << "Error getting function matrixMul: " << err_str << std::endl;
+        cuCtxPopCurrent(nullptr); // Pop context on error
+        cuModuleUnload(module);
+        for (int i = 0; i < num_gpus; ++i) cuCtxDestroy(contexts[i]);
         return 1;
     }
+
+    // Pop the context from the main thread
+    err = cuCtxPopCurrent(nullptr);
+    if (err != CUDA_SUCCESS) {
+        const char* err_str;
+        cuGetErrorString(err, &err_str);
+        std::cerr << "Error popping context from main thread: " << err_str << std::endl;
+        cuModuleUnload(module);
+        for (int i = 0; i < num_gpus; ++i) cuCtxDestroy(contexts[i]);
+        return 1;
+    }
+
     // Assuming all GPUs can use the same function handle from the same module.
     for (int i = 1; i < num_gpus; ++i) {
         kernel_funcs[i] = kernel_funcs[0];
-    }
-
-    // Create a CUDA context for each device
-    for (int i = 0; i < num_gpus; ++i) {
-        CUdevice dev;
-        cuDeviceGet(&dev, i);
-        cuCtxCreate(&contexts[i], 0, dev); // Flag 0 for default context creation
     }
 
     // ─────────────────────────────────────────────────────────────────────────
