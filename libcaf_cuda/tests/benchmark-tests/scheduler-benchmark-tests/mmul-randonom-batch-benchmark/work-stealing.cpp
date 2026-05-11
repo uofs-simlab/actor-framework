@@ -276,7 +276,7 @@ void caf_main(caf::actor_system& sys) {
     caf::cuda::manager_config cfg(false);
     caf::cuda::manager::init(sys, cfg);
 
-    int total_tasks = 2000;
+    int total_tasks = 30000;
     int workers_per_gpu = 8;
     int max_in_flight = 3;
 
