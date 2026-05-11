@@ -10,6 +10,8 @@
 #include <numeric>
 #include <random>
 #include "caf/actor_registry.hpp"
+#include <deque>
+#include <unordered_map>
 #include <unordered_set>
 //#include <caf/atoms.hpp>
 
@@ -25,6 +27,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(mmul_benchmark, caf::id_block::cuda::end)
     CAF_ADD_ATOM(mmul_benchmark, release_memory_atom)
     CAF_ADD_ATOM(mmul_benchmark, request_work_atom)
     CAF_ADD_ATOM(mmul_benchmark, worker_done_atom)
+    CAF_ADD_ATOM(mmul_benchmark, refill_buffer_atom)
 CAF_END_TYPE_ID_BLOCK(mmul_benchmark)
 
 // Command runners for GPU operations
@@ -63,24 +66,54 @@ MatrixPool create_matrix_pool_random(
     return pool;
 }
 
-// ---------------------------- DEVICE/GPU ACTOR ----------------------------
-// Holds the data partitions and dispatches tasks to workers.
-struct device_actor_state {
-    MatrixPool pool;
+// ---------------------------- GLOBAL TASK POOL ----------------------------
+// The central source of truth for work. Implements a pull-based model.
+struct task_pool_state {
     std::vector<int> tasks;
     size_t next_task_idx = 0;
+};
+
+caf::behavior global_task_pool(caf::stateful_actor<task_pool_state>* self, std::vector<int> tasks) {
+    self->state().tasks = std::move(tasks);
+    return {
+        [=](get_work_atom, size_t batch_size) -> result<std::vector<int>> {
+            auto& st = self->state();
+            if (st.next_task_idx >= st.tasks.size())
+                return sec::end_of_stream;
+            size_t count = std::min(batch_size, st.tasks.size() - st.next_task_idx);
+            std::vector<int> batch(st.tasks.begin() + st.next_task_idx, 
+                                   st.tasks.begin() + st.next_task_idx + count);
+            st.next_task_idx += count;
+            return batch;
+        }
+    };
+}
+
+// ---------------------------- DEVICE/GPU ACTOR ----------------------------
+// Manages memory for a specific GPU and steals (pulls) work from the Global Pool.
+struct device_actor_state {
+    MatrixPool pool;
+    caf::actor global_pool;
+    std::deque<int> local_tasks; // Local buffer to keep GPU busy
     size_t total_device_memory_bytes = 0;
     size_t current_allocated_memory_bytes = 0;
     int active_workers = 0;
     int device_id = -1;
+    size_t batch_size = 0;
+    size_t low_water_mark = 0;
+    bool fetching = false;
 };
 
 caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
-                               MatrixPool pool, std::vector<int> tasks, int num_workers, int dev_id) {
+                               MatrixPool pool, caf::actor global_pool, int num_workers, int dev_id, int max_in_flight) {
     self->state().pool = std::move(pool);
-    self->state().tasks = std::move(tasks);
+    self->state().global_pool = global_pool;
     self->state().device_id = dev_id;
     self->state().active_workers = num_workers;
+
+    // Dynamically calculate prefetch markers based on the total pipeline capacity
+    self->state().low_water_mark = static_cast<size_t>(num_workers * max_in_flight);
+    self->state().batch_size = self->state().low_water_mark * 2;
 
     caf::cuda::manager& mgr = caf::cuda::manager::get();
     caf::cuda::device_ptr dev_obj = mgr.find_device(dev_id);
@@ -88,34 +121,75 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
         self->state().total_device_memory_bytes = dev_obj->total_memory_bytes();
     }
 
+    // Helper to refill the local task buffer from the global pool
+    auto refill = [=]() {
+        auto& st = self->state();
+        if (st.fetching || st.local_tasks.size() >= st.low_water_mark + st.batch_size)
+            return;
+
+        st.fetching = true;
+        self->mail(get_work_atom_v, (size_t)st.batch_size).request(st.global_pool, infinite).then(
+            [=](std::vector<int>& batch) {
+                auto& st_inner = self->state();
+                for (int N : batch)
+                    st_inner.local_tasks.push_back(N);
+                st_inner.fetching = false;
+                if (st_inner.local_tasks.size() < st_inner.low_water_mark)
+                    self->mail(refill_buffer_atom_v).send(self);
+            },
+            [=](error& err) {
+                self->state().fetching = false;
+            }
+        );
+    };
+
     return {
-        [=](get_work_atom) -> result<int, in<int>, in<int>> {
+        [=](refill_buffer_atom) {
+            refill();
+        },
+        [=](get_work_atom) -> caf::result<int, in<int>, in<int>> {
             auto& st = self->state();
-            if (st.next_task_idx >= st.tasks.size())
-                return sec::end_of_stream; // Explicit signal: work is done
 
-            int N = st.tasks[st.next_task_idx]; // Peek, don't increment yet
+            // If we have tasks locally, satisfy the request immediately
+            if (!st.local_tasks.empty()) {
+                int N = st.local_tasks.front();
+                size_t memory_needed = (size_t)N * N * sizeof(int) * 3;
+                if (st.current_allocated_memory_bytes + memory_needed > st.total_device_memory_bytes)
+                    return make_error(sec::runtime_error, "Device Actor: Not enough memory");
+                
+                st.local_tasks.pop_front();
+                st.current_allocated_memory_bytes += memory_needed;
+                
+                // Proactively steal more work if the buffer is getting low
+                if (st.local_tasks.size() < st.low_water_mark)
+                    refill();
 
-            // Calculate memory needed for A, B, C
-            size_t memory_needed = (size_t)N * N * sizeof(int) * 3; // A, B, C
-
-            // std::cout << "total memory bytes is " << st.total_device_memory_bytes << "\n";
-            // std::cout << "current allocated memory bytes is " << st.current_allocated_memory_bytes << "\n";
-            // std::cout << "memory needed is " << memory_needed << "\n";
-
-            if (st.current_allocated_memory_bytes + memory_needed > st.total_device_memory_bytes) {
-                return make_error(sec::runtime_error, "Device Actor: Not enough memory");
+                return {N, caf::cuda::create_in_arg(st.pool.A[N]), 
+                           caf::cuda::create_in_arg(st.pool.B[N])};
             }
 
-            // If memory is available, reserve it and dispatch
-            st.current_allocated_memory_bytes += memory_needed;
-            N = st.tasks[st.next_task_idx++]; // Now actually take the task
-            return {N, caf::cuda::create_in_arg(st.pool.A[N]), caf::cuda::create_in_arg(st.pool.B[N])};
+            // Buffer empty: must fetch from global pool reactively
+            auto promise = self->make_response_promise<int, in<int>, in<int>>();
+            self->mail(get_work_atom_v, (size_t)st.batch_size).request(st.global_pool, infinite).then(
+                [=](std::vector<int>& batch) mutable {
+                    auto& st_inner = self->state();
+                    int N = batch.front();
+                    for(size_t i = 1; i < batch.size(); ++i) st_inner.local_tasks.push_back(batch[i]);
+                    
+                    size_t needed = (size_t)N * N * sizeof(int) * 3;
+                    st_inner.current_allocated_memory_bytes += needed;
+                    promise.deliver(N, caf::cuda::create_in_arg(st_inner.pool.A[N]), 
+                                       caf::cuda::create_in_arg(st_inner.pool.B[N]));
+                },
+                [=](error& err) mutable { promise.deliver(err); }
+            );
+            return promise;
         },
         [=](release_memory_atom, int N_completed) {
             auto& st = self->state();
             size_t memory_released = (size_t)N_completed * N_completed * sizeof(int) * 3;
             st.current_allocated_memory_bytes -= memory_released;
+            refill(); // Try to get more work now that memory is free
         },
         [=](worker_done_atom) {
             auto& st = self->state();
@@ -232,36 +306,22 @@ caf::behavior supervisor_actor_fun(
     int workers_per_gpu,
     int max_in_flight_tasks_per_worker,
     MatrixPool pool,
-    const std::vector<int>& Ns
+    std::vector<int> Ns
     ) {
     self->state().total_tasks = total_tasks;
     self->state().start_time = std::chrono::steady_clock::now();
+
+    auto pool_actor = self->spawn(global_task_pool, std::move(Ns));
 
     caf::cuda::manager& mgr = caf::cuda::manager::get();
     int num_gpus = mgr.get_num_devices();
     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
-    // Partition tasks across GPUs and spawn one Device Actor per GPU
-    size_t tasks_per_gpu_base = Ns.size() / num_gpus;
-    size_t remainder_tasks = Ns.size() % num_gpus;
-
     for (int i = 0; i < num_gpus; ++i) {
-        size_t current_gpu_tasks_count = tasks_per_gpu_base + (i < remainder_tasks ? 1 : 0);
-        auto start_it = Ns.begin();
-        std::advance(start_it, i * tasks_per_gpu_base + std::min((size_t)i, remainder_tasks));
+        auto broker = self->spawn(gpu_device_actor, pool, pool_actor, workers_per_gpu, i, max_in_flight_tasks_per_worker);
         
-        auto end_it = start_it;
-        std::advance(end_it, current_gpu_tasks_count);
-
-        std::vector<int> gpu_tasks(start_it, end_it);
-
-        auto dev_actor = self->spawn(gpu_device_actor, pool, std::move(gpu_tasks), workers_per_gpu, i);
-        
-        // Spawn workers for this GPU
-        for (int j = 0; j < workers_per_gpu; ++j) {
-            int stream_id = (i * 1000) + j; // Unique stream per worker
-            self->spawn(mmul_worker_fun, self, dev_actor, program, i, stream_id, max_in_flight_tasks_per_worker);
-        }
+        for (int j = 0; j < workers_per_gpu; ++j)
+            self->spawn(mmul_worker_fun, self, broker, program, i, (i * 1000) + j, max_in_flight_tasks_per_worker);
     }
 
     return {
