@@ -55,9 +55,9 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     // ----------------------------------
     auto t_alloc_start = clock::now();
 
-    checkCU(cuMemAlloc(&d_a, bytes), "cuMemAlloc d_a");
-    checkCU(cuMemAlloc(&d_b, bytes), "cuMemAlloc d_b");
-    checkCU(cuMemAlloc(&d_c, bytes), "cuMemAlloc d_c");
+    checkCU(cuMemAllocAsync(&d_a, bytes, stream), "cuMemAllocAsync d_a");
+    checkCU(cuMemAllocAsync(&d_b, bytes, stream), "cuMemAllocAsync d_b");
+    checkCU(cuMemAllocAsync(&d_c, bytes, stream), "cuMemAllocAsync d_c");
 
     auto t_alloc_end = clock::now();
 
@@ -124,9 +124,9 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     // ----------------------------------
     auto t_free_start = clock::now();
 
-    checkCU(cuMemFree(d_a), "cuMemFree A");
-    checkCU(cuMemFree(d_b), "cuMemFree B");
-    checkCU(cuMemFree(d_c), "cuMemFree C");
+    checkCU(cuMemFreeAsync(d_a, stream), "cuMemFreeAsync A");
+    checkCU(cuMemFreeAsync(d_b, stream), "cuMemFreeAsync B");
+    checkCU(cuMemFreeAsync(d_c, stream), "cuMemFreeAsync C");
 
     auto t_free_end = clock::now();
 

@@ -137,10 +137,9 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
             // copy to host
             // -------------------------
             auto t_copy_start = clock::now();
-
-            //std::vector<int> matrixC = dC->copy_to_host();
-
-	    dC->copy_to_host(matrixC.data(),N*N);
+            
+            mmul_command.copy_to_host_async(dC, matrixC.data(), N * N);
+            dC->synchronize();
 
             auto t_copy_end = clock::now();
             auto t_total_end = clock::now();
@@ -283,9 +282,8 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
 
 	    caf::cuda::mem_ptr<int> dC = std::get<2>(output);
 
-            //std::vector<int> matrixC = dC->copy_to_host();
-
-	    dC->copy_to_host(matrixC.data(),N*N);
+            mmul_command.copy_to_host_async(dC, matrixC.data(), N * N);
+            dC->synchronize();
 
             auto t_copy_end = clock::now();
             auto t_total_end = clock::now();
