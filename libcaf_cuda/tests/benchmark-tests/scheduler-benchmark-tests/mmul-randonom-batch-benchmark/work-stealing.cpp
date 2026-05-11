@@ -190,11 +190,12 @@ caf::behavior mmul_worker(caf::stateful_actor<worker_state>* self,
             if (st.in_flight >= st.max_in_flight || st.draining) return;
             st.in_flight++;
             self->mail(get_work_atom_v).request(st.device_actor, infinite).then(
-                [=](int N, in<int> A, in<int> B) {
-                    auto a1 = mmul_command.transfer_memory(st.dev_id, st.stream_id, std::move(A));
-                    auto a2 = mmul_command.transfer_memory(st.dev_id, st.stream_id, std::move(B));
+                [=](int N, in<int> A, in<int> B) mutable {
+                    auto& st_inner = self->state();
+                    auto a1 = mmul_command.transfer_memory(st_inner.dev_id, st_inner.stream_id, std::move(A));
+                    auto a2 = mmul_command.transfer_memory(st_inner.dev_id, st_inner.stream_id, std::move(B));
                     caf::cuda::nd_range dims((N + 31) / 32, (N + 31) / 32, 1, 32, 32, 1);
-                    auto res = mmul_kernel.run_async(st.program, dims, st.stream_id, 0, st.dev_id,
+                    auto res = mmul_kernel.run_async(st_inner.program, dims, st_inner.stream_id, 0, st_inner.dev_id,
                                                      a1, a2, caf::cuda::create_out_arg<int>(N * N),
                                                      caf::cuda::create_in_arg<int>(N));
                     auto self_ptr = caf::actor_cast<caf::actor>(self);
@@ -202,12 +203,13 @@ caf::behavior mmul_worker(caf::stateful_actor<worker_state>* self,
                         caf::anon_mail(task_done_atom_v, N).send(self_ptr);
                     });
                 },
-                [=](error& err) {
-                    st.in_flight--;
+                [=](error& err) mutable {
+                    auto& st_inner = self->state();
+                    st_inner.in_flight--;
                     if (err == sec::end_of_stream) {
-                        st.draining = true;
-                        if (st.in_flight == 0) {
-                            self->mail(worker_done_atom_v).send(st.device_actor);
+                        st_inner.draining = true;
+                        if (st_inner.in_flight == 0) {
+                            self->mail(worker_done_atom_v).send(st_inner.device_actor);
                             self->quit();
                         }
                     } else {
