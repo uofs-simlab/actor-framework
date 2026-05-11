@@ -245,6 +245,13 @@ public:
         return cmd.run();
     }
 
+    // Enqueue copy back without any host-side synchronization or callback
+    template <typename T>
+    void copy_to_host_async(mem_ptr<T> ptr, T* dst, size_t count) {
+        copy_back_command<T> cmd(std::move(ptr));
+        cmd.enqueue(dst, count);
+    }
+
     // Asynchronous copy back (default)
     template <typename T, typename F>
     void copy_to_host_async(mem_ptr<T> ptr, F callback) {
