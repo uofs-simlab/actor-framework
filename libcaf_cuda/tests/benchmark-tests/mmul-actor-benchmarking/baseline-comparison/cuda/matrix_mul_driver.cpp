@@ -86,9 +86,9 @@ int main() {
             // Allocate device memory each iteration
             // ----------------------------------
             CUdeviceptr d_a, d_b, d_c;
-            checkCU(cuMemAlloc(&d_a, elements * sizeof(int)), "cuMemAlloc d_a");
-            checkCU(cuMemAlloc(&d_b, elements * sizeof(int)), "cuMemAlloc d_b");
-            checkCU(cuMemAlloc(&d_c, elements * sizeof(int)), "cuMemAlloc d_c");
+            checkCU(cuMemAllocAsync(&d_a, elements * sizeof(int), stream), "cuMemAllocAsync d_a");
+            checkCU(cuMemAllocAsync(&d_b, elements * sizeof(int), stream), "cuMemAllocAsync d_b");
+            checkCU(cuMemAllocAsync(&d_c, elements * sizeof(int), stream), "cuMemAllocAsync d_c");
 
             // ----------------------------------
             // Copy persistent host buffers to device
@@ -109,9 +109,9 @@ int main() {
             // ----------------------------------
             // Free device memory
             // ----------------------------------
-            checkCU(cuMemFree(d_a), "cuMemFree d_a");
-            checkCU(cuMemFree(d_b), "cuMemFree d_b");
-            checkCU(cuMemFree(d_c), "cuMemFree d_c");
+            checkCU(cuMemFreeAsync(d_a, stream), "cuMemFreeAsync d_a");
+            checkCU(cuMemFreeAsync(d_b, stream), "cuMemFreeAsync d_b");
+            checkCU(cuMemFreeAsync(d_c, stream), "cuMemFreeAsync d_c");
         }
 
         // Synchronize stream after series
