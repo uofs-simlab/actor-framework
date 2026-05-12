@@ -205,6 +205,37 @@ void caf_main(caf::actor_system& sys) {
 }
 
 
+int main(int argc, char** argv) {
+  // Initialize user defined types and messages if needed.
+  //init_global_meta_objects<custom_types_1>();
+  
+  // Initialize the global type information.
+  core::init_global_meta_objects();
 
+  // Create the config.
+  actor_system_config cfg;
 
-CAF_MAIN()
+  // --- SINGLE THREAD CONFIGURATION ---
+  cfg.set("caf.scheduler.max-threads", 1);
+  cfg.set("caf.scheduler.policy", "sharing"); 
+  // ------------------------------------
+
+  // Read CLI options. (Note: CLI flags like --caf.scheduler.max-threads=4 
+  // will override the hardcoded '1' above if provided by the user).
+  auto err = cfg.parse(argc, argv);
+  if (err)
+    return EXIT_FAILURE;
+
+  if (cfg.helptext_printed())
+    return 0;
+
+  // Create the actor system (the scheduler starts here).
+  actor_system sys{cfg};
+
+  // Run user-defined code.
+  caf_main(sys);
+  
+  return 0;
+}
+
+// CAF_MAIN()
