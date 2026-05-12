@@ -127,7 +127,7 @@ return {
       auto output = command.run_async(
 		      self->state().program,
 		      dims,
-		      1,
+		      1, 0, device,
 		      arg1,arg2,out<int>{N*N},in<int>{N});
 
 	    caf::cuda::mem_ptr<int> dC = std::get<2>(output);
