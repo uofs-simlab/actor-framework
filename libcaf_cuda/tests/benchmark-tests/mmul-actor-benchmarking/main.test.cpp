@@ -269,7 +269,7 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
       caf::cuda::mmul_async_command<int> command;
       auto output = command.run_async(
 		      program,dims,
-		      1,
+		      1, 0, device,
 		      arg1,arg2,out<int>{N*N},in<int>{N});
 
        auto t_response_received = clock::now();
