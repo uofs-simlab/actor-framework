@@ -175,9 +175,9 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
 }
 
 int main(int argc, char** argv) {
-    std::vector<int> sizes = {1000, 4000, 8000, 12000};
+  std::vector<int> sizes = {1000, 4000, 8000, 12000};
     
-   //std::vector<int> sizes = {8000};	
+//   std::vector<int> sizes = {12000};	
    if (argc > 1) {
         sizes.clear();
         for (int i = 1; i < argc; ++i) sizes.push_back(std::stoi(argv[i]));
