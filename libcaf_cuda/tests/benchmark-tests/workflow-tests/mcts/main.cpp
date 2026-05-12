@@ -29,15 +29,16 @@ struct game_state {
 // Command runner for the GPU Simulation kernel
 // The kernel takes the current game state and returns a win probability (float)
 using simulation_command = caf::cuda::command_runner<
-    in<game_state>, // Input game state
-    out<float>,     // Output score
-    in<int>         // Seed offset
+    caf::cuda::in<game_state>, // Input game state
+    caf::cuda::out<float>,     // Output score
+    caf::cuda::in<int>         // Seed offset
 >;
 
 struct mcts_node_state {
     game_state state;
     caf::actor parent;
     std::vector<caf::actor> children;
+    int stream_id = -1;
     
     int visits = 0;
     float total_value = 0.0f;
@@ -55,10 +56,12 @@ struct mcts_node_state {
 caf::behavior mcts_node_fun(caf::stateful_actor<mcts_node_state>* self, 
                             caf::actor parent, 
                             game_state state,
-                            caf::cuda::program_ptr sim_prog) {
+                            caf::cuda::program_ptr sim_prog,
+                            int stream_id) {
     self->state().parent = parent;
     self->state().state = state;
     self->state().sim_program = sim_prog;
+    self->state().stream_id = (stream_id == -1) ? static_cast<int>(self->id()) : stream_id;
 
     return {
         // Traversal / Selection Phase
@@ -86,23 +89,26 @@ caf::behavior mcts_node_fun(caf::stateful_actor<mcts_node_state>* self,
         [=](simulate_atom) {
             simulation_command cmd;
             int device = 0;
-            int actor_id = static_cast<int>(self->id());
+            int stream_id = self->state().stream_id;
+            int node_id = static_cast<int>(self->id()); // Unique ID for RNG seed
 
             // Prepare GPU arguments
             auto in_state = caf::cuda::create_in_arg(self->state().state);
             auto out_score = caf::cuda::create_out_arg_with_size<float>(1);
-            auto seed_arg = caf::cuda::create_in_arg(actor_id);
+            auto seed_arg = caf::cuda::create_in_arg(node_id);
 
             // Configure Kernel Dims (1 block, 1 thread for a single simulation rollout)
             // In a real scenario, you'd run many rollouts in parallel on the GPU.
             caf::cuda::nd_range dims(1, 1, 1, 1, 1, 1);
 
-            auto results = cmd.run(self->state().sim_program, dims, actor_id, in_state, out_score, seed_arg);
-            float win_rate = caf::cuda::extract_vector<float>(results)[0];
-
-            // After GPU returns result, trigger Expansion and Backpropagation
-            self->mail(expand_atom_v).send(self);
-            self->mail(update_atom_v, win_rate).send(self);
+            // Use run_async to avoid blocking the actor thread
+            auto results = cmd.run_async(self->state().sim_program, dims, stream_id, in_state, out_score, seed_arg);
+            auto score_ptr = std::get<1>(results);
+            auto self_hdl = caf::actor_cast<caf::actor>(self);
+            cmd.copy_to_host_async(score_ptr, [self_hdl](std::vector<float> win_rates) {
+                caf::anon_mail(expand_atom_v).send(self_hdl);
+                caf::anon_mail(update_atom_v, win_rates[0]).send(self_hdl);
+            });
         },
 
         // Expansion Phase: Spawning child actors for new moves
@@ -116,8 +122,9 @@ caf::behavior mcts_node_fun(caf::stateful_actor<mcts_node_state>* self,
                 
                 auto child = self->spawn(mcts_node_fun, 
                                        caf::actor_cast<caf::actor>(self), 
-                                       next_state, 
-                                       self->state().sim_program);
+                                       next_state,
+                                       self->state().sim_program,
+                                       self->state().stream_id);
                 self->state().children.push_back(child);
             }
             self->state().is_expanded = true;
@@ -152,7 +159,7 @@ void run_mcts_demo(caf::actor_system& sys) {
     for(int& i : initial_state.board) i = 0;
 
     // Spawn the Root actor
-    auto root = sys.spawn(mcts_node_fun, nullptr, initial_state, program);
+    auto root = sys.spawn(mcts_node_fun, nullptr, initial_state, program, -1);
 
     std::cout << "Starting MCTS iterations..." << std::endl;
 
