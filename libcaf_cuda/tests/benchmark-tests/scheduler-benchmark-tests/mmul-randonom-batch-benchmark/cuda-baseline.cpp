@@ -93,30 +93,32 @@ int main() {
         return 1;
     }
 
+    const int streams_per_gpu = 8;
+    std::vector<int> task_counts = {30000, 40000, 50000};
+
     int num_gpus;
     cuDeviceGetCount(&num_gpus);
-    
     if (num_gpus == 0) {
         std::cerr << "No CUDA devices found." << std::endl;
         return 1;
     }
 
-    const int total_tasks = 30000;
-    const int streams_per_gpu = 8;
+    for (int total_tasks : task_counts) {
+    std::cout << "=====================================" << std::endl;
+    std::cout << "Task count: " << total_tasks << " (10% Heavy, 90% Light)" << std::endl;
 
     std::vector<Task> all_tasks;
     std::mt19937 rng(42);
     std::uniform_real_distribution<double> dist(0.0, 1.0);
 
-    std::cout << "Generating " << total_tasks << " tasks (10% Heavy, 90% Light)..." << std::endl;
     for (int i = 0; i < total_tasks; ++i) {
         if (dist(rng) < 0.1) all_tasks.push_back({2048});
         else all_tasks.push_back({256});
     }
 
     // Prepare Host-side MatrixPool (on CPU)
-    std::vector<int> h_256(256 * 256, 1);
-    std::vector<int> h_2048(2048 * 2048, 1);
+    static std::vector<int> h_256(256 * 256, 1);
+    static std::vector<int> h_2048(2048 * 2048, 1);
 
     std::vector<CUcontext> contexts(num_gpus);
     std::vector<CUfunction> kernel_funcs(num_gpus);
@@ -194,7 +196,6 @@ int main() {
         partitions[i % num_gpus].push_back(all_tasks[i]);
     }
 
-    std::cout << "Starting Static Partitioning Benchmark on " << num_gpus << " GPUs..." << std::endl;
     auto start = std::chrono::steady_clock::now();
 
     std::vector<std::thread> threads;
@@ -210,7 +211,6 @@ int main() {
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = end - start;
 
-    std::cout << "Static CUDA Complete." << std::endl;
     std::cout << "Makespan: " << elapsed.count() << "s" << std::endl;
 
     // Cleanup contexts and module
@@ -218,6 +218,7 @@ int main() {
         cuCtxDestroy(contexts[i]);
     }
     cuModuleUnload(module);
+    }
 
     return 0;
 }

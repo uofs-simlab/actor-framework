@@ -264,8 +264,7 @@ caf::behavior supervisor_actor(caf::stateful_actor<supervisor_state>* self,
             if (self->state().done >= self->state().total) {
                 auto elapsed = std::chrono::steady_clock::now() - self->state().start;
                 std::cout << "Dynamic Work-Stealing Complete.\n"
-                          << "Makespan: " << std::chrono::duration<double>(elapsed).count() << "s\n";
-                caf::cuda::manager::shutdown();
+                          << "Task Count: " << self->state().total << " | Makespan: " << std::chrono::duration<double>(elapsed).count() << "s\n";
                 self->quit();
             }
         }
@@ -273,25 +272,30 @@ caf::behavior supervisor_actor(caf::stateful_actor<supervisor_state>* self,
 }
 
 void caf_main(caf::actor_system& sys) {
-    caf::cuda::manager_config cfg(false);
-    caf::cuda::manager::init(sys, cfg);
-
-    int total_tasks = 30000;
     int workers_per_gpu = 8;
     int max_in_flight = 3;
+    std::vector<int> task_counts = {30000, 40000, 50000};
 
-    std::vector<int> Ns;
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> dist(0.0, 1.0); // Power Law setup
+    for (int total_tasks : task_counts) {
+        caf::cuda::manager_config cfg(false);
+        caf::cuda::manager::init(sys, cfg);
+        std::cout << "=====================================\n";
+        std::cout << "Task count: " << total_tasks << "\n";
 
-    // Power Law simulation: 10% Heavy (2048), 90% Light (256)
-    for (int i = 0; i < total_tasks; ++i) {
-        if (dist(rng) < 0.1) Ns.push_back(2048);
-        else Ns.push_back(256);
+        std::vector<int> Ns;
+        std::mt19937 rng(42);
+        std::uniform_real_distribution<double> dist(0.0, 1.0); // Power Law setup
+
+        // Power Law simulation: 10% Heavy (2048), 90% Light (256)
+        for (int i = 0; i < total_tasks; ++i) {
+            if (dist(rng) < 0.1) Ns.push_back(2048);
+            else Ns.push_back(256);
+        }
+
+        sys.spawn(supervisor_actor, total_tasks, std::move(Ns), workers_per_gpu, max_in_flight);
+        sys.await_all_actors_done();
+        caf::cuda::manager::shutdown();
     }
-
-    sys.spawn(supervisor_actor, total_tasks, std::move(Ns), workers_per_gpu, max_in_flight);
-    sys.await_all_actors_done();
 }
 
 CAF_MAIN(id_block::dynamic_work_stealing)
