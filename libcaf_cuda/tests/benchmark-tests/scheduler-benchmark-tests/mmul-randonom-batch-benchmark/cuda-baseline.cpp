@@ -40,29 +40,6 @@ void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_g
         int N = tasks[i].N;
         CUstream stream = streams[i % streams_per_gpu];
         size_t bytes = static_cast<size_t>(N) * N * sizeof(int);
-    // Set the CUDA context for this thread
-    CUresult err = cuCtxSetCurrent(ctx);
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error setting context for device " << device_id << ": " << err_str << std::endl;
-        return;
-    }
-
-    // Prepare Streams
-    std::vector<CUstream> streams(streams_per_gpu);
-    for (int i = 0; i < streams_per_gpu; ++i) {
-        cuStreamCreate(&streams[i], CU_STREAM_NON_BLOCKING);
-    }
-
-    // Use the first stream for initial allocations and cleanup
-    CUstream default_stream = streams[0];
-
-    // Process assigned tasks
-    for (size_t i = 0; i < tasks.size(); ++i) {
-        int N = tasks[i].N;
-        CUstream stream = streams[i % streams_per_gpu];
-        size_t bytes = static_cast<size_t>(N) * N * sizeof(int);
 
         CUdeviceptr d_a, d_b, d_c;
 
@@ -154,7 +131,7 @@ int main() {
     }
 
     // Define parameters for irregular workload
-    const int num_matrix_sizes = 1000// Number of distinct N values
+    const int num_matrix_sizes = 1000; // Number of distinct N values
     const int min_N_val = 32;
     const int max_N_val = 2048;
     const unsigned int pool_seed = 42; // Fixed seed for deterministic pool generation
