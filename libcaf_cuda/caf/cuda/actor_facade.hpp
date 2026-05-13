@@ -19,6 +19,7 @@
 #include "caf/cuda/platform.hpp"
 #include "caf/cuda/program.hpp"
 
+/*
 
 namespace caf::cuda {
 
@@ -100,3 +101,4 @@ private:
 };
 
 } // namespace caf::cuda
+ */
