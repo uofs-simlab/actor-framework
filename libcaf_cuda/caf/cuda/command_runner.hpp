@@ -276,6 +276,22 @@ public:
       plat->release_streams_for_actor(actor_id);
   }
 
+  // -------------------------------
+  // Register a callback on the actor's stream
+  // -------------------------------
+  template <typename F>
+  void add_callback(int stream_id, int device_number, F callback) {
+      auto plat = platform::create();
+      auto dev = plat->schedule(stream_id, device_number);
+      auto stream = dev->get_stream_for_actor(stream_id);
+      auto* f_ptr = new F(std::move(callback));
+      auto res = cuLaunchHostFunc(stream, [](void* data) {
+          auto* f = static_cast<F*>(data);
+          (*f)();
+          delete f;
+      }, f_ptr);
+      if (res != CUDA_SUCCESS) { delete f_ptr; check(res, "cuLaunchHostFunc"); }
+  }
 
 
 
