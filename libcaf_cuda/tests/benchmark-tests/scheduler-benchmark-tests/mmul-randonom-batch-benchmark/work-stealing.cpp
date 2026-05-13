@@ -6,6 +6,7 @@
 #include <random>
 #include <unordered_map>
 #include <deque>
+#include <unordered_set> // For create_matrix_pool_random
 
 using namespace caf;
 using namespace std::chrono_literals;
@@ -31,6 +32,30 @@ struct MatrixPool {
     std::unordered_map<int, std::vector<int>> A;
     std::unordered_map<int, std::vector<int>> B;
 };
+
+MatrixPool create_matrix_pool_random(
+    int num_sizes,
+    int min_N,
+    int max_N,
+    unsigned int seed
+) {
+    MatrixPool pool;
+    std::mt19937 rng(seed);
+    // Ensure N values are multiples of 32 for typical matrix sizes
+    std::uniform_int_distribution<int> dist_N(min_N / 32, max_N / 32);
+
+    std::unordered_set<int> used_Ns;
+
+    while (used_Ns.size() < static_cast<size_t>(num_sizes)) {
+        int N_val = dist_N(rng) * 32;
+        if (N_val == 0) continue; // Avoid N=0
+        if (used_Ns.insert(N_val).second) {
+            pool.A[N_val] = std::vector<int>(N_val * N_val, 1);
+            pool.B[N_val] = std::vector<int>(N_val * N_val, 1);
+        }
+    }
+    return pool;
+}
 
 // ---------------------------- GLOBAL TASK POOL ----------------------------
 // The central source of truth for work. Implements a pull-based model.
@@ -70,7 +95,7 @@ struct device_actor_state {
     bool fetching = false;
 };
 
-caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
+caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self, // Changed signature
                                MatrixPool pool, caf::actor global_pool, int num_workers, int dev_id, int max_in_flight) {
     self->state().pool = std::move(pool);
     self->state().global_pool = global_pool;
@@ -235,25 +260,28 @@ struct supervisor_state {
 };
 
 caf::behavior supervisor_actor(caf::stateful_actor<supervisor_state>* self, 
-                               int total, 
-                               std::vector<int> Ns,
+                               int total,
+                               std::vector<int> Ns_for_tasks, // Renamed for clarity
+                               MatrixPool host_matrix_pool, // Pass the pre-generated pool
                                int workers_per_gpu,
                                int max_in_flight) {
     self->state().total = total;
     self->state().start = std::chrono::steady_clock::now();
-    auto pool = self->spawn(global_task_pool, std::move(Ns));
+    auto pool = self->spawn(global_task_pool, std::move(Ns_for_tasks));
     
-    MatrixPool m_pool;
-    for (int n : {256, 2048}) {
-        m_pool.A[n] = std::vector<int>(n * n, 1);
-        m_pool.B[n] = std::vector<int>(n * n, 1);
-    }
+    // The MatrixPool is now passed as an argument, no need to create it here
+    // MatrixPool m_pool;
+    // for (int n : {256, 2048}) {
+    //     m_pool.A[n] = std::vector<int>(n * n, 1);
+    //     m_pool.B[n] = std::vector<int>(n * n, 1);
+    // }
 
     auto& mgr = caf::cuda::manager::get();
     auto prog = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
     for (int i = 0; i < mgr.get_num_devices(); ++i) {
-        auto broker = self->spawn(gpu_device_actor, m_pool, pool, workers_per_gpu, i, max_in_flight);
+        // Pass the host_matrix_pool to the gpu_device_actor
+        auto broker = self->spawn(gpu_device_actor, host_matrix_pool, pool, workers_per_gpu, i, max_in_flight);
         for (int j = 0; j < workers_per_gpu; ++j)
             self->spawn(mmul_worker, self, broker, prog, i, (i * 100) + j, max_in_flight);
     }
@@ -276,23 +304,38 @@ void caf_main(caf::actor_system& sys) {
     int max_in_flight = 3;
     std::vector<int> task_counts = {30000, 40000, 50000};
 
+    // Define parameters for irregular workload
+    const int num_matrix_sizes = 1000// Number of distinct N values
+    const int min_N_val = 32;
+    const int max_N_val = 2048;
+    const unsigned int pool_seed = 42; // Fixed seed for deterministic pool generation
+
+    // Create the host-side matrix pool once
+    MatrixPool global_host_matrix_pool = create_matrix_pool_random(num_matrix_sizes, min_N_val, max_N_val, pool_seed);
+
+    // Extract available N values from the pool for task generation
+    std::vector<int> available_Ns;
+    for (const auto& pair : global_host_matrix_pool.A) {
+        available_Ns.push_back(pair.first);
+    }
+    if (available_Ns.empty()) {
+        std::cerr << "Error: No matrix sizes generated in the pool." << std::endl;
+        return;
+    }
+
     for (int total_tasks : task_counts) {
         caf::cuda::manager_config cfg(false);
         caf::cuda::manager::init(sys, cfg);
         std::cout << "=====================================\n";
         std::cout << "Task count: " << total_tasks << "\n";
 
-        std::vector<int> Ns;
-        std::mt19937 rng(42);
-        std::uniform_real_distribution<double> dist(0.0, 1.0); // Power Law setup
-
-        // Power Law simulation: 10% Heavy (2048), 90% Light (256)
+        std::vector<int> Ns_for_this_run;
+        std::mt19937 rng_tasks(42); // Fixed seed for task distribution
+        std::uniform_int_distribution<size_t> dist_N_idx(0, available_Ns.size() - 1);
         for (int i = 0; i < total_tasks; ++i) {
-            if (dist(rng) < 0.1) Ns.push_back(2048);
-            else Ns.push_back(256);
+            Ns_for_this_run.push_back(available_Ns[dist_N_idx(rng_tasks)]);
         }
-
-        sys.spawn(supervisor_actor, total_tasks, std::move(Ns), workers_per_gpu, max_in_flight);
+        sys.spawn(supervisor_actor, total_tasks, std::move(Ns_for_this_run), global_host_matrix_pool, workers_per_gpu, max_in_flight);
         sys.await_all_actors_done();
         caf::cuda::manager::shutdown();
     }

@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <functional>
 #include <stdexcept> // For runtime_error
+#include <unordered_map> // For MatrixPool
+#include <unordered_set> // For create_matrix_pool_random
 
 struct Task {
     int N;
@@ -14,7 +16,30 @@ struct Task {
 
 // Per-GPU execution logic
 void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_gpu, 
-                CUcontext ctx, CUfunction kernel_func, const std::vector<int>& h_256, const std::vector<int>& h_2048) {
+                CUcontext ctx, CUfunction kernel_func, const std::unordered_map<int, std::vector<int>>& host_matrix_A, const std::unordered_map<int, std::vector<int>>& host_matrix_B) {
+    // Set the CUDA context for this thread
+    CUresult err = cuCtxSetCurrent(ctx);
+    if (err != CUDA_SUCCESS) {
+        const char* err_str;
+        cuGetErrorString(err, &err_str);
+        std::cerr << "Error setting context for device " << device_id << ": " << err_str << std::endl;
+        return;
+    }
+
+    // Prepare Streams
+    std::vector<CUstream> streams(streams_per_gpu);
+    for (int i = 0; i < streams_per_gpu; ++i) {
+        cuStreamCreate(&streams[i], CU_STREAM_NON_BLOCKING);
+    }
+
+    // Use the first stream for initial allocations and cleanup
+    CUstream default_stream = streams[0];
+
+    // Process assigned tasks
+    for (size_t i = 0; i < tasks.size(); ++i) {
+        int N = tasks[i].N;
+        CUstream stream = streams[i % streams_per_gpu];
+        size_t bytes = static_cast<size_t>(N) * N * sizeof(int);
     // Set the CUDA context for this thread
     CUresult err = cuCtxSetCurrent(ctx);
     if (err != CUDA_SUCCESS) {
@@ -47,9 +72,8 @@ void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_g
         cuMemAllocAsync(&d_c, bytes, stream);
 
         // Perform Host-to-Device transfer
-        const int* h_src = (N == 256) ? h_256.data() : h_2048.data();
-        cuMemcpyHtoDAsync(d_a, h_src, bytes, stream);
-        cuMemcpyHtoDAsync(d_b, h_src, bytes, stream);
+        cuMemcpyHtoDAsync(d_a, host_matrix_A.at(N).data(), bytes, stream);
+        cuMemcpyHtoDAsync(d_b, host_matrix_B.at(N).data(), bytes, stream);
 
         // Kernel arguments for cuLaunchKernel
         void *kernel_args[] = { &d_a, &d_b, &d_c, &N };
@@ -81,6 +105,32 @@ void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_g
     }
 }
 
+struct MatrixPool {
+    std::unordered_map<int, std::vector<int>> A;
+    std::unordered_map<int, std::vector<int>> B;
+};
+
+MatrixPool create_matrix_pool_random(
+    int num_sizes,
+    int min_N,
+    int max_N,
+    unsigned int seed
+) {
+    MatrixPool pool;
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> dist_N(min_N / 32, max_N / 32);
+    std::unordered_set<int> used_Ns;
+    while (used_Ns.size() < static_cast<size_t>(num_sizes)) {
+        int N_val = dist_N(rng) * 32;
+        if (N_val == 0) continue;
+        if (used_Ns.insert(N_val).second) {
+            pool.A[N_val] = std::vector<int>(N_val * N_val, 1);
+            pool.B[N_val] = std::vector<int>(N_val * N_val, 1);
+        }
+    }
+    return pool;
+}
+
 int main() {
     CUresult err;
 
@@ -103,22 +153,32 @@ int main() {
         return 1;
     }
 
-    for (int total_tasks : task_counts) {
-    std::cout << "=====================================" << std::endl;
-    std::cout << "Task count: " << total_tasks << " (10% Heavy, 90% Light)" << std::endl;
+    // Define parameters for irregular workload
+    const int num_matrix_sizes = 1000// Number of distinct N values
+    const int min_N_val = 32;
+    const int max_N_val = 2048;
+    const unsigned int pool_seed = 42; // Fixed seed for deterministic pool generation
 
-    std::vector<Task> all_tasks;
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> dist(0.0, 1.0);
+    // Create the host-side matrix pool once
+    MatrixPool global_host_matrix_pool = create_matrix_pool_random(num_matrix_sizes, min_N_val, max_N_val, pool_seed);
 
-    for (int i = 0; i < total_tasks; ++i) {
-        if (dist(rng) < 0.1) all_tasks.push_back({2048});
-        else all_tasks.push_back({256});
+    // Extract available N values from the pool for task generation
+    std::vector<int> available_Ns;
+    for (const auto& pair : global_host_matrix_pool.A) {
+        available_Ns.push_back(pair.first);
+    }
+    if (available_Ns.empty()) {
+        std::cerr << "Error: No matrix sizes generated in the pool." << std::endl;
+        return 1;
     }
 
-    // Prepare Host-side MatrixPool (on CPU)
-    static std::vector<int> h_256(256 * 256, 1);
-    static std::vector<int> h_2048(2048 * 2048, 1);
+    for (int total_tasks : task_counts) {
+    std::cout << "=====================================" << std::endl;
+    std::cout << "Task count: " << total_tasks << " (Irregular Workload)" << std::endl;
+
+    std::vector<Task> all_tasks;
+    std::mt19937 rng_tasks(42); // Fixed seed for task distribution
+    std::uniform_int_distribution<size_t> dist_N_idx(0, available_Ns.size() - 1);
 
     std::vector<CUcontext> contexts(num_gpus);
     std::vector<CUfunction> kernel_funcs(num_gpus);
@@ -188,6 +248,11 @@ int main() {
         kernel_funcs[i] = kernel_funcs[0];
     }
 
+    for (int i = 0; i < total_tasks; ++i) {
+        int N_for_task = available_Ns[dist_N_idx(rng_tasks)];
+        all_tasks.push_back({N_for_task});
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Static Round-Robin Partitioning
     // ─────────────────────────────────────────────────────────────────────────
@@ -200,8 +265,7 @@ int main() {
 
     std::vector<std::thread> threads;
     for (int i = 0; i < num_gpus; ++i) { // Pass context and kernel function to each worker
-        threads.emplace_back(gpu_worker, i, std::ref(partitions[i]), streams_per_gpu, 
-                            contexts[i], kernel_funcs[i], std::ref(h_256), std::ref(h_2048));
+        threads.emplace_back(gpu_worker, i, std::ref(partitions[i]), streams_per_gpu, contexts[i], kernel_funcs[i], std::ref(global_host_matrix_pool.A), std::ref(global_host_matrix_pool.B));
     }
 
     for (auto& t : threads) {
