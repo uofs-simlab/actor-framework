@@ -185,9 +185,12 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   
   //atoms 
   CAF_ADD_ATOM(cuda, kernel_done_atom)
-  //CAF_ADD_ATOM(cuda, become)
-  //CAF_ADD_ATOM(cuda, launch_behavior)
-  //CAF_ADD_ATOM(cuda, update_behavior)
+  CAF_ADD_ATOM(cuda, htod_atom)
+  CAF_ADD_ATOM(cuda, kernel_atom)
+  CAF_ADD_ATOM(cuda, dtoh_atom)
+  CAF_ADD_ATOM(cuda, htod_done_atom)
+  CAF_ADD_ATOM(cuda, dtoh_done_atom)
+  CAF_ADD_ATOM(cuda, gpu_done_atom)
 
 CAF_END_TYPE_ID_BLOCK(cuda)
 
