@@ -2,6 +2,7 @@
 
 #include "caf/cuda/command.hpp"
 #include "caf/cuda/memory_command.hpp"
+#include <cuda.h>
 #include <thread>
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/nd_range.hpp"
