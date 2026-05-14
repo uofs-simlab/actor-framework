@@ -131,7 +131,7 @@ int main() {
     }
 
     // Define parameters for irregular workload
-    const int num_matrix_sizes = 1000; // Number of distinct N values
+    const int num_matrix_sizes = 60; // Number of distinct N values
     const int min_N_val = 32;
     const int max_N_val = 2048;
     const unsigned int pool_seed = 42; // Fixed seed for deterministic pool generation
