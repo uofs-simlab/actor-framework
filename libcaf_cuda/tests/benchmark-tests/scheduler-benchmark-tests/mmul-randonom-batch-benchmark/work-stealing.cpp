@@ -247,7 +247,13 @@ caf::behavior mmul_worker(caf::stateful_actor<worker_state>* self,
             self->state().in_flight--;
             self->mail(1).send(self->state().supervisor);
             self->mail(release_memory_atom_v, N).send(self->state().device_actor);
-            self->mail(request_work_atom_v).send(self);
+            
+            if (self->state().draining && self->state().in_flight == 0) {
+                self->mail(worker_done_atom_v).send(self->state().device_actor);
+                self->quit();
+            } else if (!self->state().draining) {
+                self->mail(request_work_atom_v).send(self);
+            }
         }
     };
 }
@@ -302,10 +308,10 @@ caf::behavior supervisor_actor(caf::stateful_actor<supervisor_state>* self,
 void caf_main(caf::actor_system& sys) {
     int workers_per_gpu = 8;
     int max_in_flight = 3;
-    std::vector<int> task_counts = {30000, 40000, 50000};
+    std::vector<int> task_counts = {50000,100000};
 
     // Define parameters for irregular workload
-    const int num_matrix_sizes = 1000; // Number of distinct N values
+    const int num_matrix_sizes = 60; // Number of distinct N values
     const int min_N_val = 32;
     const int max_N_val = 2048;
     const unsigned int pool_seed = 42; // Fixed seed for deterministic pool generation

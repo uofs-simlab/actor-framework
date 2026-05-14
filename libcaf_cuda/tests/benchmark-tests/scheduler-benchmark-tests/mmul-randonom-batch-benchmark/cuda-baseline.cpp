@@ -121,7 +121,7 @@ int main() {
     }
 
     const int streams_per_gpu = 8;
-    std::vector<int> task_counts = {30000, 40000, 50000};
+    std::vector<int> task_counts = {50000,100000};
 
     int num_gpus;
     cuDeviceGetCount(&num_gpus);
