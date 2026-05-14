@@ -2,6 +2,7 @@
 
 #include "caf/cuda/command.hpp"
 #include "caf/cuda/memory_command.hpp"
+#include <cuda.h>
 #include <thread>
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/nd_range.hpp"
@@ -204,14 +205,15 @@ public:
         return cmd.enqueue();
     }
 
-    // Synchronous transfer for testing
-    template <typename T>
-    mem_ptr<raw_t<T>> transfer_memory_sync(int device_number,
-                                           int stream_id,
-                                           T arg)
+    // Bulk asynchronous transfer: returns std::tuple<mem_ptr<raw_t<Us>>...>
+    template <class... Us>
+    auto transfer_memory(int device_number,
+                         int stream_id,
+                         Us&&... args)
     {
-        memory_command<T> cmd(device_number, stream_id, std::move(arg));
-        return cmd.run_sync();
+        auto cmd = caf::make_counted<bulk_memory_command<std::decay_t<Us>...>>(
+          device_number, stream_id, std::forward<Us>(args)...);
+        return cmd->enqueue();
     }
 
    // -------------------------------------------------------------------------
@@ -226,13 +228,15 @@ public:
         return transfer_memory(token->getDeviceNumber(), token->getStreamId(), std::move(arg));
     }
 
-    template <typename T>
-    mem_ptr<raw_t<T>> transfer_memory_sync(const response_token_ptr& token,
-                                           T arg)
+    // Bulk asynchronous transfer using a response token
+    template <class... Us>
+    auto transfer_memory(const response_token_ptr& token,
+                         Us&&... args)
     {
-        return transfer_memory_sync(token->getDeviceNumber(), token->getStreamId(), std::move(arg));
+        return transfer_memory(token->getDeviceNumber(), 
+                               token->getStreamId(), 
+                               std::forward<Us>(args)...);
     }
-
 
     // -------------------------------------------------------------------------
     // COPY BACK
@@ -275,6 +279,22 @@ public:
       plat->release_streams_for_actor(actor_id);
   }
 
+  // -------------------------------
+  // Register a callback on the actor's stream
+  // -------------------------------
+  template <typename F>
+  void add_callback(int stream_id, int device_number, F callback) {
+      auto plat = platform::create();
+      auto dev = plat->schedule(stream_id, device_number);
+      auto stream = dev->get_stream_for_actor(stream_id);
+      auto* f_ptr = new F(std::move(callback));
+      auto res = cuLaunchHostFunc(stream, [](void* data) {
+          auto* f = static_cast<F*>(data);
+          (*f)();
+          delete f;
+      }, f_ptr);
+      if (res != CUDA_SUCCESS) { delete f_ptr; check(res, "cuLaunchHostFunc"); }
+  }
 
 
 

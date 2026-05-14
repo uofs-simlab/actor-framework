@@ -2,6 +2,7 @@
 
 #include <utility>
 #include <type_traits>
+#include <tuple>
 
 #include <caf/ref_counted.hpp>
 #include <caf/intrusive_ptr.hpp>
@@ -41,53 +42,43 @@ public:
     return dev_->make_arg(arg_, stream);
   }
 
-  // -------------------------------------------------------------------------
-  // Execute memory transfer synchronously (blocking)
-  // -------------------------------------------------------------------------
-  result_type run_sync() {
-    CHECK_CUDA(cuCtxPushCurrent(dev_->getContext()));
-    CUstream stream = dev_->get_stream_for_actor(stream_id_);
-
-    int access = NOT_IN_USE;
-    if constexpr (std::is_same_v<T, in<raw_t<T>>>)
-      access = IN;
-    else if constexpr (std::is_same_v<T, out<raw_t<T>>>)
-      access = OUT;
-    else if constexpr (std::is_same_v<T, in_out<raw_t<T>>>)
-      access = IN_OUT;
-
-    if (arg_.is_scalar()) {
-      raw_t<T> val{};
-      if constexpr (!std::is_same_v<T, out<raw_t<T>>>) {
-        val = arg_.getscalar();
-      }
-      auto res = caf::make_counted<mem_ref<raw_t<T>>>(val, access, dev_->getId(), 0, dev_->getContext(), stream);
-      CHECK_CUDA(cuCtxPopCurrent(nullptr));
-      return res;
-    }
-
-    size_t size = arg_.size();
-    size_t bytes = size * sizeof(raw_t<T>);
-    CUdeviceptr mem;
-
-    // Synchronous allocation
-    CHECK_CUDA(cuMemAlloc(&mem, bytes));
-
-    if constexpr (!std::is_same_v<T, out<raw_t<T>>>) {
-      // Synchronous copy from host to device
-      CHECK_CUDA(cuMemcpyHtoD(mem, arg_.data(), bytes));
-    }
-
-    auto res = caf::make_counted<mem_ref<raw_t<T>>>(size, mem, access, dev_->getId(), 0, dev_->getContext(), stream);
-    CHECK_CUDA(cuCtxPopCurrent(nullptr));
-    return res;
-  }
-
 private:
   int stream_id_;
   device_ptr dev_;
   T arg_;
 };
+
+// ===========================================================================
+// BULK MEMORY COMMAND
+// Handles multiple transfers at once and returns a tuple of mem_ptrs.
+// ===========================================================================
+template <typename... Ts>
+class bulk_memory_command : public caf::ref_counted {
+public:
+  using result_type = std::tuple<mem_ptr<raw_t<Ts>>...>;
+
+  bulk_memory_command(int device_number,
+                      int stream_id,
+                      Ts... args)
+      : stream_id_(stream_id),
+        args_(std::move(args)...) {
+    dev_ = platform::create()->schedule(stream_id_, device_number);
+  }
+
+  // Asynchronous execution
+  result_type enqueue() {
+    CUstream stream = dev_->get_stream_for_actor(stream_id_);
+    return std::apply([&](auto&&... arg) {
+      return std::make_tuple(dev_->make_arg(arg, stream)...);
+    }, args_);
+  }
+
+private:
+  int stream_id_;
+  device_ptr dev_;
+  std::tuple<Ts...> args_;
+};
+
 
 // ===========================================================================
 // COPY BACK COMMAND
