@@ -85,12 +85,13 @@ MatrixPool create_matrix_pool_random(
     MatrixPool pool;
 
     std::mt19937 rng(seed);
-    std::uniform_int_distribution<int> dist(min_N, max_N);
+    std::uniform_int_distribution<int> dist(min_N / 32, max_N / 32);
 
     std::unordered_set<int> used;
 
     while (used.size() < static_cast<size_t>(num_sizes)) {
-        int N = dist(rng);
+        int N = dist(rng) * 32;
+        if (N == 0) continue;
         if (used.insert(N).second) {
             pool.A[N] = std::vector<int>(N * N, 1);
             pool.B[N] = std::vector<int>(N * N, 1);
@@ -448,6 +449,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
         // Precompute all task Ns for this run
         std::vector<int> sizes;
         for (const auto& [N, _] : pool.A) sizes.push_back(N);
+        std::sort(sizes.begin(), sizes.end());
 
         std::vector<Task> tasks_for_this_run;
         tasks_for_this_run.reserve(num_tasks_for_this_run);

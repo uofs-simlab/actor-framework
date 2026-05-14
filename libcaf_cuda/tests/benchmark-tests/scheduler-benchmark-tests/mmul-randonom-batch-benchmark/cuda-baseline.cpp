@@ -172,6 +172,7 @@ int main() {
     for (const auto& pair : global_host_matrix_pool.A) {
         available_Ns.push_back(pair.first);
     }
+    std::sort(available_Ns.begin(), available_Ns.end());
     if (available_Ns.empty()) {
         std::cerr << "Error: No matrix sizes generated in the pool." << std::endl;
         return 1;
