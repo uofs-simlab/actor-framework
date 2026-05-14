@@ -27,7 +27,8 @@ struct MatrixPool {
 };
 
 // Per-GPU execution logic
-void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_gpu, CUcontext ctx, CUfunction mmul_func, CUfunction vadd_func, CUfunction conv_func, const MatrixPool& pool) {
+void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_gpu, CUcontext ctx, CUfunction mmul_func,
+     CUfunction vadd_func, CUfunction conv_func, const MatrixPool& pool, int* shared_dtoh_buffer) {
     // Set the CUDA context for this thread
     CUresult err = cuCtxSetCurrent(ctx);
     if (err != CUDA_SUCCESS) {
@@ -93,8 +94,7 @@ void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_g
         
         // Simulating the result retrieval (Copy back)
         size_t res_count = (type == MMUL) ? (size_t)N * N : (size_t)N;
-        std::vector<int> h_res(res_count);
-        cuMemcpyDtoHAsync(h_res.data(), d_c, bytes_out, stream);
+        cuMemcpyDtoHAsync(shared_dtoh_buffer, d_c, bytes_out, stream);
 
         // Free GPU memory for this task
         cuMemFreeAsync(d_a, stream);
@@ -313,11 +313,15 @@ int main() {
         partitions[i % num_gpus].push_back(all_tasks[i]);
     }
 
+    // Preallocate a single large host buffer for DTOH transfers to save RAM and keep things fair.
+    std::vector<int> shared_dtoh_buffer((size_t)max_N_val * max_N_val);
+
     auto start = std::chrono::steady_clock::now();
 
     std::vector<std::thread> threads;
     for (int i = 0; i < num_gpus; ++i) { // Pass context and kernel function to each worker
-        threads.emplace_back(gpu_worker, i, std::ref(partitions[i]), streams_per_gpu, contexts[i], mmul_funcs[i], vadd_funcs[i], conv_funcs[i], std::ref(global_host_matrix_pool));
+        threads.emplace_back(gpu_worker, i, std::ref(partitions[i]), streams_per_gpu, contexts[i], mmul_funcs[i], vadd_funcs[i], conv_funcs[i],
+         std::ref(global_host_matrix_pool), shared_dtoh_buffer.data());
     }
 
     for (auto& t : threads) {
