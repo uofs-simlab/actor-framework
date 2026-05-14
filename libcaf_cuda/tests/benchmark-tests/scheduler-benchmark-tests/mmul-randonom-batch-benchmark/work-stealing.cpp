@@ -18,6 +18,34 @@
 using namespace caf;
 using namespace std::chrono_literals;
 
+
+enum TaskType { MMUL = 0, VADD = 1, CONV = 2 };
+
+struct Task {
+    int N;
+    TaskType type;
+};
+
+// Inspect function for TaskType enum to enable CAF serialization
+template <class Inspector>
+bool inspect(Inspector& f, TaskType& x) {
+  auto val = static_cast<int>(x);
+  if (f.apply(val)) {
+    if constexpr (Inspector::is_loading)
+      x = static_cast<TaskType>(val);
+    return true;
+  }
+  return false;
+}
+
+// Inspect function for Task struct to enable CAF serialization
+template <class Inspector>
+bool inspect(Inspector& f, Task& x) {
+  return f.object(x).fields(f.field("N", x.N), f.field("type", x.type));
+};
+
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Atoms
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,15 +55,12 @@ CAF_BEGIN_TYPE_ID_BLOCK(mmul_benchmark, caf::id_block::cuda::end)
     CAF_ADD_ATOM(mmul_benchmark, release_memory_atom)
     CAF_ADD_ATOM(mmul_benchmark, request_work_atom)
     CAF_ADD_ATOM(mmul_benchmark, worker_done_atom)
+    CAF_ADD_TYPE_ID(mmul_benchmark, (TaskType))
+    CAF_ADD_TYPE_ID(mmul_benchmark, (Task))
+    CAF_ADD_TYPE_ID(mmul_benchmark, (std::vector<Task>))
     CAF_ADD_ATOM(mmul_benchmark, refill_buffer_atom)
 CAF_END_TYPE_ID_BLOCK(mmul_benchmark)
 
-enum TaskType { MMUL = 0, VADD = 1, CONV = 2 };
-
-struct Task {
-    int N;
-    TaskType type;
-};
 
 // Command runners for GPU operations
 caf::cuda::command_runner<> mmul_command;
@@ -441,7 +466,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 
             auto sup = sys.spawn(
                 supervisor_actor_fun,
-                (int)Ns_for_this_run.size(), // total_tasks
+                (int)tasks_for_this_run.size(), // total_tasks
                 workers_per_gpu,
                 max_in_flight_tasks_per_worker,
                 pool,
