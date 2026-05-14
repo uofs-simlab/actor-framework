@@ -259,12 +259,13 @@ struct worker_state {
     caf::actor supervisor;
     int max_in_flight_tasks;
     int in_flight_tasks_count = 0;
+    int* dtoh_buffer_ptr = nullptr;
     bool draining = false;
 };
 
 caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                               caf::actor supervisor, caf::actor device_actor, caf::cuda::program_ptr mmul_p, caf::cuda::program_ptr vadd_p, caf::cuda::program_ptr conv_p,
-                              int dev_id, int stream_id, int max_in_flight_tasks) {
+                              int dev_id, int stream_id, int max_in_flight_tasks, int* d_buf) {
     self->state().supervisor = supervisor;
     self->state().device_actor = device_actor;
     self->state().mmul_prog = mmul_p;
@@ -272,6 +273,7 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
     self->state().conv_prog = conv_p;
     self->state().device_id = dev_id;
     self->state().stream_id = stream_id;
+    self->state().dtoh_buffer_ptr = d_buf;
     self->state().max_in_flight_tasks = max_in_flight_tasks;
 
     // Trigger initial work requests up to max_in_flight_tasks
@@ -317,7 +319,7 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                     auto bufferC = std::get<2>(result);
                     auto self_hdl = caf::actor_cast<caf::actor>(self);
 
-                    mmul_command.copy_to_host_async(bufferC, [self_hdl, N_task = N, type](std::vector<int>&&) {
+                    mmul_command.copy_to_host_async(bufferC, st.dtoh_buffer_ptr, (size_t)out_size, [self_hdl, N_task = N, type](int*, size_t) {
                         caf::anon_mail(task_done_atom_v, N_task, type).send(self_hdl);
                     });
                 },
@@ -369,7 +371,8 @@ caf::behavior supervisor_actor_fun(
     int workers_per_gpu,
     int max_in_flight_tasks_per_worker,
     MatrixPool pool,
-    std::vector<Task> tasks
+    std::vector<Task> tasks,
+    int* shared_dtoh_ptr
     ) {
     self->state().total_tasks = total_tasks;
     self->state().start_time = std::chrono::steady_clock::now();
@@ -385,8 +388,9 @@ caf::behavior supervisor_actor_fun(
     for (int i = 0; i < num_gpus; ++i) {
         auto broker = self->spawn(gpu_device_actor, pool, pool_actor, workers_per_gpu, i, max_in_flight_tasks_per_worker);
         
-        for (int j = 0; j < workers_per_gpu; ++j)
-            self->spawn(mmul_worker_fun, self, broker, mmul_p, vadd_p, conv_p, i, (i * 1000) + j, max_in_flight_tasks_per_worker);
+        for (int j = 0; j < workers_per_gpu; ++j) {
+            self->spawn(mmul_worker_fun, self, broker, mmul_p, vadd_p, conv_p, i, (i * 1000) + j, max_in_flight_tasks_per_worker, shared_dtoh_ptr);
+        }
     }
 
     return {
@@ -423,8 +427,8 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_N = 2048;
     const int num_sizes = 60;
 
-    const int workers_per_gpu = 8; // Admission control: only 16 concurrent tasks per GPU
-    const int max_in_flight_tasks_per_worker = 3; // Each worker keeps 2 tasks in flight
+    const int workers_per_gpu = 4; // Admission control: only 16 concurrent tasks per GPU
+    const int max_in_flight_tasks_per_worker = 5; // Each worker keeps 2 tasks in flight
 
     const std::vector<int> actor_counts = {
 	  50000,100000
@@ -463,6 +467,9 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
             tasks_for_this_run.push_back({N, type});
         }
 
+        // Preallocate a single large host buffer for DTOH transfers to save RAM and keep things fair.
+        std::vector<int> shared_dtoh_buffer((size_t)max_N * max_N);
+
         // Execute the supervisor which manages the asynchronous workload
         double elapsed = time_run([&]() {
 
@@ -472,7 +479,8 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
                 workers_per_gpu,
                 max_in_flight_tasks_per_worker,
                 pool,
-                tasks_for_this_run
+                tasks_for_this_run,
+                    shared_dtoh_buffer.data()
             );
 
 	      sys.await_all_actors_done();
