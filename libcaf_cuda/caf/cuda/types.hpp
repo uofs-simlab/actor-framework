@@ -55,6 +55,12 @@ class actor_facade;
 
 } // namespace caf::cuda
 
+// Structure for mapping kernel output indices to specific host memory buffers
+struct output_mapping {
+  int index;
+  void* dst; // Destination host pointer
+  size_t count; // Number of elements to copy
+};
 
 // === buffer_variant and output_buffer outside namespace or inside as needed ===
 
@@ -298,5 +304,3 @@ struct raw_type<caf::cuda::mem_ptr<T>> {
 
 template <typename T>
 using raw_t = typename raw_type<T>::type;
-
-

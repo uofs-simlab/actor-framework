@@ -117,6 +117,20 @@ bool inspect(Inspector& f, std::vector<output_buffer>& x) {
   return f.object(x).fields(f.field("elements", x));
 }
 
+// Serialization support for output_mapping (global namespace)
+template <class Inspector>
+bool inspect(Inspector& f, output_mapping& x) {
+  return f.object(x).fields(f.field("index", x.index),
+                            f.field("dst", x.dst),
+                            f.field("count", x.count));
+}
+
+// Serialization support for std::vector<output_mapping> (global namespace)
+template <class Inspector>
+bool inspect(Inspector& f, std::vector<output_mapping>& x) {
+  return f.object(x).fields(f.field("elements", x));
+}
+
 // Serialization support for raw vector types
 template <class Inspector>
 bool inspect(Inspector& f, std::vector<char>& x) {
@@ -178,6 +192,8 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   CAF_ADD_TYPE_ID(cuda, (buffer_variant))
   CAF_ADD_TYPE_ID(cuda, (output_buffer))
   CAF_ADD_TYPE_ID(cuda, (std::vector<output_buffer>))
+  CAF_ADD_TYPE_ID(cuda, (output_mapping))
+  CAF_ADD_TYPE_ID(cuda, (std::vector<output_mapping>))
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<int>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<float>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<double>))  
@@ -200,3 +216,5 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<double>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<char>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::nd_range)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::program_ptr)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(output_mapping)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<output_mapping>)

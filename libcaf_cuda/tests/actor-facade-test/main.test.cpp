@@ -134,6 +134,56 @@ caf::behavior mmul_advanced_facade_test(caf::stateful_actor<test_actor_state>* s
     };
 }
 
+// Test actor behavior for output_mapping
+caf::behavior mmul_mapping_test(caf::stateful_actor<test_actor_state>* self, 
+                                caf::actor facade, int N) {
+    self->state().N = N;
+    self->state().h_a.assign(N * N, 5);
+    self->state().h_b.assign(N * N, 6);
+    self->state().h_c.assign(N * N, 0); // Target buffer for direct copy
+
+    auto arg1 = caf::cuda::create_in_arg(self->state().h_a);
+    auto arg2 = caf::cuda::create_in_arg(self->state().h_b);
+    auto arg3 = caf::cuda::create_out_arg_with_size<int>(N * N);
+    auto arg4 = caf::cuda::create_in_arg(N);
+
+    // Define the output mapping for index 2 (Matrix C)
+    output_mapping m{2, self->state().h_c.data(), self->state().h_c.size()};
+    std::vector<output_mapping> mappings{m};
+
+    std::cout << "[INFO] Launching output_mapping test..." << std::endl;
+    self->state().start_time = std::chrono::steady_clock::now();
+    
+    // Launch using the mapping-enabled overload
+    self->mail(mappings, arg1, arg2, arg3, arg4).send(facade);
+
+    return {
+        [=](int r_id, int index, std::vector<int> data) {
+            // This should not be called for index 2 because it is mapped
+            if (index == 2) {
+                std::cout << "[ERROR] Received data vector for mapped index 2!" << std::endl;
+            }
+        },
+        [=](int r_id, int index) {
+            if (index == 2) {
+                std::cout << "[MAPPING] Received notification for mapped index 2." << std::endl;
+            } else if (index == -1) {
+                auto end_time = std::chrono::steady_clock::now();
+                std::chrono::duration<double> elapsed = end_time - self->state().start_time;
+                
+                std::cout << "===== Mapping Performance Result =====" << std::endl;
+                std::cout << "Round-trip Latency: " << elapsed.count() << " seconds" << std::endl;
+                
+                // Verify the data was copied directly into h_c
+                verify_mmul(self->state().h_a, self->state().h_b, self->state().h_c, self->state().N);
+                
+                self->send_exit(facade, exit_reason::user_shutdown);
+                self->quit();
+            }
+        }
+    };
+}
+
 void caf_main(caf::actor_system& sys) {
     // Initialize the CUDA subsystem
     caf::cuda::manager::init(sys);
@@ -158,6 +208,9 @@ void caf_main(caf::actor_system& sys) {
     // We can spawn it now; it will execute after the basic tester finishes or in parallel.
     // Note: If you want sequential execution, use request().then() or a supervisor.
     sys.spawn(mmul_advanced_facade_test, facade, N, 0, 777, std::vector<int>{2});
+
+    // 3. Run Mapping Test
+    sys.spawn(mmul_mapping_test, facade, N);
 
     sys.await_all_actors_done();
     caf::cuda::manager::shutdown();
