@@ -10,5 +10,6 @@ echo "Using NVCC arch flag: $SM_ARCH"
 nvcc -arch=$SM_ARCH -cubin mmul.cu -o mmul.cubin
 nvcc -arch=$SM_ARCH -cubin vector_add.cu -o vector_add.cubin
 nvcc -arch=$SM_ARCH -cubin conv1d.cu -o conv1d.cubin
+nvcc -arch=$SM_ARCH -cubin poison.cu -o poison.cubin
 
 echo "Kernels compiled successfully for $SM_ARCH."
