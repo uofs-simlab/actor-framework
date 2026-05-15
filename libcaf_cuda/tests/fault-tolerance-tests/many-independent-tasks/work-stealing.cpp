@@ -18,10 +18,10 @@
 using namespace caf;
 using namespace std::chrono_literals;
 
-
 enum TaskType { MMUL = 0, VADD = 1, CONV = 2 };
 
 struct Task {
+    int id;
     int N;
     TaskType type;
 };
@@ -41,7 +41,7 @@ bool inspect(Inspector& f, TaskType& x) {
 // Inspect function for Task struct to enable CAF serialization
 template <class Inspector>
 bool inspect(Inspector& f, Task& x) {
-  return f.object(x).fields(f.field("N", x.N), f.field("type", x.type));
+  return f.object(x).fields(f.field("id", x.id), f.field("N", x.N), f.field("type", x.type));
 };
 
 
@@ -59,6 +59,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(mmul_benchmark, caf::id_block::cuda::end)
     CAF_ADD_TYPE_ID(mmul_benchmark, (Task))
     CAF_ADD_TYPE_ID(mmul_benchmark, (std::vector<Task>))
     CAF_ADD_ATOM(mmul_benchmark, refill_buffer_atom)
+    CAF_ADD_ATOM(mmul_benchmark, restart_atom)
 CAF_END_TYPE_ID_BLOCK(mmul_benchmark)
 
 
@@ -133,22 +134,198 @@ caf::behavior global_task_pool(caf::stateful_actor<task_pool_state>* self, std::
 struct device_actor_state {
     MatrixPool pool;
     caf::actor global_pool;
+    caf::actor supervisor;
     std::deque<Task> local_tasks; // Local buffer to keep GPU busy
+    std::unordered_map<int, Task> in_progress;
+    std::vector<caf::actor> workers;
     size_t total_device_memory_bytes = 0;
     size_t current_allocated_memory_bytes = 0;
+    int num_workers_target = 0;
     int active_workers = 0;
     int device_id = -1;
     size_t batch_size = 0;
     size_t low_water_mark = 0;
+    int max_in_flight_per_worker = 0;
+    int* shared_dtoh_ptr = nullptr;
+    caf::cuda::program_ptr mmul_p;
+    caf::cuda::program_ptr vadd_p;
+    caf::cuda::program_ptr conv_p;
+    caf::cuda::program_ptr poison_p;
     bool fetching = false;
+    bool resetting = false;
 };
 
+// ---------------------------- WORKER ACTOR ----------------------------
+// Manages 1 stream and pulls work from the Device Actor.
+struct worker_state {
+    int device_id;
+    int stream_id;
+    caf::cuda::program_ptr mmul_prog;
+    caf::cuda::program_ptr vadd_prog;
+    caf::cuda::program_ptr conv_prog;
+    caf::cuda::program_ptr poison_prog;
+    caf::actor device_actor;
+    caf::actor supervisor;
+    int max_in_flight_tasks;
+    int in_flight_tasks_count = 0;
+    int* dtoh_buffer_ptr = nullptr;
+    bool draining = false;
+};
+
+caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
+                              caf::actor supervisor, caf::actor device_actor,
+                              caf::cuda::program_ptr mmul_p, caf::cuda::program_ptr vadd_p, 
+                              caf::cuda::program_ptr conv_p, caf::cuda::program_ptr poison_p,
+                              int dev_id, int stream_id, int max_in_flight_tasks, int* d_buf,
+                              int poison_chance) {
+    self->state().supervisor = supervisor;
+    self->state().device_actor = device_actor;
+    self->state().mmul_prog = mmul_p;
+    self->state().vadd_prog = vadd_p;
+    self->state().conv_prog = conv_p;
+    self->state().poison_prog = poison_p;
+    self->state().device_id = dev_id;
+    self->state().stream_id = stream_id;
+    self->state().dtoh_buffer_ptr = d_buf;
+    self->state().max_in_flight_tasks = max_in_flight_tasks;
+
+    // Trigger initial work requests up to max_in_flight_tasks
+    for (int i = 0; i < max_in_flight_tasks; ++i) {
+        self->mail(request_work_atom_v).send(self);
+    }
+
+    return {
+        [=](request_work_atom) {
+            auto& st = self->state();
+            if (st.in_flight_tasks_count >= st.max_in_flight_tasks || st.draining) {
+                return; // Already at max capacity, don't request more yet
+            }
+
+            st.in_flight_tasks_count++; // Mark as pending immediately
+            self->mail(get_work_atom_v).request(st.device_actor, infinite).then(
+                [=](int task_id, int N, int type, in<int> matrixA, in<int> matrixB) {
+                    auto& st_inner = self->state();
+                    try {
+                        TaskType t_type = static_cast<TaskType>(type);
+
+                        // Randomly decide to poison the context
+                        std::random_device rd;
+                        std::mt19937 gen(rd());
+                        std::uniform_int_distribution<> distrib(0, 99); // 0-99 for percentage
+                        if (distrib(gen) < poison_chance) {
+                            self->println("Worker {}: LAUNCHING POISON KERNEL! KABOOM incoming...", st_inner.stream_id);
+                            auto arg_dummy = mmul_command.transfer_memory(st_inner.device_id, st_inner.stream_id, caf::cuda::create_in_arg(42));
+                            caf::cuda::command_runner<caf::cuda::mem_ptr<int>> poison_runner;
+                            poison_runner.run_async(st_inner.poison_prog, caf::cuda::nd_range(1,1,1,1,1,1), 
+                                                   st_inner.stream_id, 0, st_inner.device_id, arg_dummy);
+                            // The next CUDA call will trigger the error
+                            caf::cuda::command_runner<> sync_runner;
+                            auto dev_obj = caf::cuda::platform::create()->getDevice(st_inner.device_id);
+                            CHECK_CUDA(cuStreamSynchronize(dev_obj->get_stream_for_actor(st_inner.stream_id)));
+                        }
+
+                        // GPU Pipeline: Transfer -> Kernel -> Copyback
+                        auto arg1 = mmul_command.transfer_memory(st_inner.device_id, st_inner.stream_id, std::move(matrixA));
+                        auto arg2 = mmul_command.transfer_memory(st_inner.device_id, st_inner.stream_id, std::move(matrixB));
+
+                        caf::cuda::nd_range dims;
+                        caf::cuda::program_ptr prog;
+                        int out_size;
+                        if (t_type == MMUL) {
+                            dims = caf::cuda::nd_range((N+31)/32, (N+31)/32, 1, 32, 32, 1);
+                            prog = st_inner.mmul_prog;
+                            out_size = N * N;
+                        } else if (t_type == VADD) {
+                            dims = caf::cuda::nd_range((N+255)/256, 1, 1, 256, 1, 1);
+                            prog = st_inner.vadd_prog;
+                            out_size = N;
+                        } else {
+                            dims = caf::cuda::nd_range((N+255)/256, 1, 1, 256, 1, 1);
+                            prog = st_inner.conv_prog;
+                            out_size = N;
+                        }
+
+                        auto result = kernel_runner.run_async(prog, dims, st_inner.stream_id, 0, st_inner.device_id,
+                                                             arg1, arg2, caf::cuda::create_out_arg<int>(out_size), caf::cuda::create_in_arg<int>(N));
+
+                        auto bufferC = std::get<2>(result);
+                        auto self_hdl = caf::actor_cast<caf::actor>(self);
+
+                        mmul_command.copy_to_host_async(bufferC, st_inner.dtoh_buffer_ptr, (size_t)out_size, [self_hdl, task_id, N_task = N, type](int*, size_t) {
+                            caf::anon_mail(task_done_atom_v, task_id, N_task, type).send(self_hdl);
+                        });
+                    } catch (const std::exception& e) {
+                        // Catch any CUDA errors and terminate the worker, triggering device actor's down_handler
+                        self->println("Worker {}: GPU Error Detected: {}. Terminating actor.", st_inner.stream_id, e.what());
+                        self->quit(make_error(sec::runtime_error, e.what()));
+                    }
+                },
+                [=](error& err) {
+                    auto& st = self->state();
+                    st.in_flight_tasks_count--; // Revert pending status on failure
+                    if (err == sec::runtime_error) {
+                        // Not enough memory, retry after a delay
+                        self->println("Worker {}: Not enough memory, retrying for work...", st.stream_id);
+                        self->delayed_anon_send(self, 100ms, request_work_atom_v);
+                    } else if (err == sec::end_of_stream) {
+                        st.draining = true; // Mark as draining, let in-flight finish
+                        if (st.in_flight_tasks_count == 0) {
+                            self->mail(worker_done_atom_v).send(st.device_actor);
+                            mmul_command.release_stream_for_actor(st.stream_id);
+                            self->quit();
+                        }
+                    }
+                }
+            );
+        },
+        [=](task_done_atom, int task_id, int N_completed, int type) {
+            auto& st = self->state();
+            st.in_flight_tasks_count--; // Decrement count
+            self->mail(task_done_atom_v, task_id, N_completed, type).send(st.device_actor); // Notify device actor
+            
+            if (st.draining && st.in_flight_tasks_count == 0) {
+                self->mail(worker_done_atom_v).send(st.device_actor);
+                mmul_command.release_stream_for_actor(st.stream_id);
+                self->quit();
+            } else if (!st.draining) {
+                self->mail(request_work_atom_v).send(self); // Request next task if capacity allows
+            }
+        }
+    };
+}
+
 caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
-                               MatrixPool pool, caf::actor global_pool, int num_workers, int dev_id, int max_in_flight) {
+                               MatrixPool pool, caf::actor global_pool, caf::actor supervisor,
+                               int num_workers, int dev_id, int max_in_flight,
+                               caf::cuda::program_ptr mmul_p, caf::cuda::program_ptr vadd_p,
+                               caf::cuda::program_ptr conv_p, caf::cuda::program_ptr poison_p,
+                               int* d_buf, int poison_chance) {
     self->state().pool = std::move(pool);
     self->state().global_pool = global_pool;
+    self->state().supervisor = supervisor;
     self->state().device_id = dev_id;
-    self->state().active_workers = num_workers;
+    self->state().num_workers_target = num_workers;
+    self->state().max_in_flight_per_worker = max_in_flight;
+    self->state().mmul_p = mmul_p;
+    self->state().vadd_p = vadd_p;
+    self->state().conv_p = conv_p;
+    self->state().poison_p = poison_p;
+    self->state().shared_dtoh_ptr = d_buf;
+
+    auto spawn_workers = [=]() {
+        for (int j = 0; j < self->state().num_workers_target; ++j) {
+            auto w = self->spawn(mmul_worker_fun, self->state().supervisor, self, self->state().mmul_p,
+                                 self->state().vadd_p, self->state().conv_p, self->state().poison_p,
+                                 self->state().device_id, (self->state().device_id * 1000) + j,
+                                 self->state().max_in_flight_per_worker, self->state().shared_dtoh_ptr,
+                                 poison_chance);
+            self->monitor(w);
+            self->state().workers.push_back(w);
+            self->state().active_workers++;
+        }
+    };
+
+    spawn_workers();
 
     // Dynamically calculate prefetch markers based on the total pipeline capacity
     self->state().low_water_mark = static_cast<size_t>(num_workers * max_in_flight);
@@ -182,23 +359,62 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
         );
     };
 
+    self->set_down_handler([=](caf::down_msg& msg) {
+        auto& st = self->state();
+        if (st.resetting) return;
+
+        if (msg.reason != caf::exit_reason::user_shutdown && msg.reason != caf::exit_reason::normal) {
+            self->println("Device Actor {}: Worker failure detected (reason: {}). Resetting context...", st.device_id, msg.reason);
+            st.resetting = true;
+
+            // 1. Kill remaining workers
+            for (auto& w : st.workers) {
+                self->demonitor(w);
+                self->send_exit(w, caf::exit_reason::kill);
+            }
+            st.workers.clear();
+            st.active_workers = 0;
+
+            // 2. Move in-progress tasks back to local queue
+            for (auto& pair : st.in_progress) {
+                st.local_tasks.push_back(pair.second);
+            }
+            st.in_progress.clear();
+
+            // 3. Reset the actual CUDA context
+            caf::cuda::command_runner<> runner;
+            runner.reset_context(st.device_id);
+
+            // 4. Schedule restart after 1 second to let mailbox clear
+            self->delayed_anon_send(self, 1s, restart_atom_v);
+        }
+    });
+
     return {
+        [=](restart_atom) {
+            self->println("Device Actor {}: Restarting workers...", self->state().device_id);
+            self->state().resetting = false;
+            spawn_workers();
+            refill();
+        },
         [=](refill_buffer_atom) {
             refill();
         },
-        [=](get_work_atom) -> caf::result<int, int, in<int>, in<int>> {
+        [=](get_work_atom) -> caf::result<int, int, int, in<int>, in<int>> {
             auto& st = self->state();
+            if (st.resetting) return make_error(sec::runtime_error, "Device is resetting");
 
             // If we have tasks locally, satisfy the request immediately
             if (!st.local_tasks.empty()) {
                 Task t = st.local_tasks.front();
                 int N = t.N;
-                size_t memory_needed = (t.type == MMUL) ? (size_t)N * N * sizeof(int) * 3 : (size_t)N * sizeof(int) * 3; // Approx
+                size_t memory_needed = (t.type == MMUL) ? (size_t)N * N * (size_t)sizeof(int) * 3 : (size_t)N * (size_t)sizeof(int) * 3;
                 if (st.current_allocated_memory_bytes + memory_needed > st.total_device_memory_bytes)
                     return make_error(sec::runtime_error, "Device Actor: Not enough memory");
                 
                 st.local_tasks.pop_front();
                 st.current_allocated_memory_bytes += memory_needed;
+                st.in_progress[t.id] = t;
                 
                 if (st.local_tasks.size() < st.low_water_mark)
                     refill();
@@ -206,12 +422,12 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
                 auto& h_a = (t.type == MMUL) ? st.pool.A[N] : (t.type == VADD ? st.pool.vec_A[N] : st.pool.conv_A[N]);
                 auto& h_b = (t.type == MMUL) ? st.pool.B[N] : (t.type == VADD ? st.pool.vec_B[N] : st.pool.conv_K[N]);
 
-                return {N, static_cast<int>(t.type), caf::cuda::create_in_arg(h_a), 
+                return {t.id, N, static_cast<int>(t.type), caf::cuda::create_in_arg(h_a), 
                            caf::cuda::create_in_arg(h_b)};
             }
 
             // Buffer empty: must fetch from global pool reactively
-            auto promise = self->make_response_promise<int, int, in<int>, in<int>>();
+            auto promise = self->make_response_promise<int, int, int, in<int>, in<int>>();
             self->mail(get_work_atom_v, st.batch_size).request(st.global_pool, infinite).then(
                 [=](std::vector<Task>& batch) mutable {
                     auto& st_inner = self->state();
@@ -219,140 +435,39 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
                     int N = t.N;
                     for(size_t i = 1; i < batch.size(); ++i) st_inner.local_tasks.push_back(batch[i]);
                     
-                    size_t needed = (t.type == MMUL) ? (size_t)N * N * sizeof(int) * 3 : (size_t)N * sizeof(int) * 3; // Approx
+                    size_t needed = (t.type == MMUL) ? (size_t)N * N * (size_t)sizeof(int) * 3 : (size_t)N * (size_t)sizeof(int) * 3;
                     st_inner.current_allocated_memory_bytes += needed;
+                    st_inner.in_progress[t.id] = t;
 
                     auto& h_a = (t.type == MMUL) ? st_inner.pool.A[N] : (t.type == VADD ? st_inner.pool.vec_A[N] : st_inner.pool.conv_A[N]);
                     auto& h_b = (t.type == MMUL) ? st_inner.pool.B[N] : (t.type == VADD ? st_inner.pool.vec_B[N] : st_inner.pool.conv_K[N]);
-                    promise.deliver(N, static_cast<int>(t.type), caf::cuda::create_in_arg(h_a), 
+                    promise.deliver(t.id, N, static_cast<int>(t.type), caf::cuda::create_in_arg(h_a), 
                                        caf::cuda::create_in_arg(h_b));
                 },
                 [=](error& err) mutable { promise.deliver(err); }
             );
             return promise;
         },
-        [=](release_memory_atom, int N_completed, int type) {
+        [=](task_done_atom, int task_id, int N_completed, int type) {
             auto& st = self->state();
-            TaskType t_type = static_cast<TaskType>(type);
-            size_t memory_released = (t_type == MMUL) ? (size_t)N_completed * N_completed * sizeof(int) * 3 : (size_t)N_completed * sizeof(int) * 3; // Approx
-            st.current_allocated_memory_bytes -= memory_released;
+            
+            auto it = st.in_progress.find(task_id);
+            if (it != st.in_progress.end()) {
+                TaskType t_type = static_cast<TaskType>(type);
+                size_t memory_released = (t_type == MMUL) ? (size_t)N_completed * N_completed * (size_t)sizeof(int) * 3 : (size_t)N_completed * (size_t)sizeof(int) * 3;
+                st.current_allocated_memory_bytes -= memory_released;
+                st.in_progress.erase(it);
+                
+                // Notify supervisor that one task is finished
+                self->mail(1).send(st.supervisor);
+            }
+            
             refill(); // Try to get more work now that memory is free
         },
         [=](worker_done_atom) {
             auto& st = self->state();
             if (--st.active_workers <= 0) {
                 self->quit();
-            }
-        }
-    };
-}
-
-// ---------------------------- WORKER ACTOR ----------------------------
-// Manages 1 stream and pulls work from the Device Actor.
-struct worker_state {
-    int device_id;
-    int stream_id;
-    caf::cuda::program_ptr mmul_prog;
-    caf::cuda::program_ptr vadd_prog;
-    caf::cuda::program_ptr conv_prog;
-    caf::actor device_actor;
-    caf::actor supervisor;
-    int max_in_flight_tasks;
-    int in_flight_tasks_count = 0;
-    int* dtoh_buffer_ptr = nullptr;
-    bool draining = false;
-};
-
-caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
-                              caf::actor supervisor, caf::actor device_actor, caf::cuda::program_ptr mmul_p, caf::cuda::program_ptr vadd_p, caf::cuda::program_ptr conv_p,
-                              int dev_id, int stream_id, int max_in_flight_tasks, int* d_buf) {
-    self->state().supervisor = supervisor;
-    self->state().device_actor = device_actor;
-    self->state().mmul_prog = mmul_p;
-    self->state().vadd_prog = vadd_p;
-    self->state().conv_prog = conv_p;
-    self->state().device_id = dev_id;
-    self->state().stream_id = stream_id;
-    self->state().dtoh_buffer_ptr = d_buf;
-    self->state().max_in_flight_tasks = max_in_flight_tasks;
-
-    // Trigger initial work requests up to max_in_flight_tasks
-    for (int i = 0; i < max_in_flight_tasks; ++i) {
-        self->mail(request_work_atom_v).send(self);
-    }
-
-    return {
-        [=](request_work_atom) {
-            auto& st = self->state();
-            if (st.in_flight_tasks_count >= st.max_in_flight_tasks || st.draining) {
-                return; // Already at max capacity, don't request more yet
-            }
-
-            st.in_flight_tasks_count++; // Mark as pending immediately
-            self->mail(get_work_atom_v).request(st.device_actor, infinite).then(
-                [=](int N, int type, in<int> matrixA, in<int> matrixB) {
-                    TaskType t_type = static_cast<TaskType>(type);
-                    // GPU Pipeline: Transfer -> Kernel -> Copyback
-                    auto arg1 = mmul_command.transfer_memory(st.device_id, st.stream_id, std::move(matrixA));
-                    auto arg2 = mmul_command.transfer_memory(st.device_id, st.stream_id, std::move(matrixB));
-
-                    caf::cuda::nd_range dims;
-                    caf::cuda::program_ptr prog;
-                    int out_size;
-                    if (t_type == MMUL) {
-                        dims = caf::cuda::nd_range((N+31)/32, (N+31)/32, 1, 32, 32, 1);
-                        prog = st.mmul_prog;
-                        out_size = N * N;
-                    } else if (t_type == VADD) {
-                        dims = caf::cuda::nd_range((N+255)/256, 1, 1, 256, 1, 1);
-                        prog = st.vadd_prog;
-                        out_size = N;
-                    } else {
-                        dims = caf::cuda::nd_range((N+255)/256, 1, 1, 256, 1, 1);
-                        prog = st.conv_prog;
-                        out_size = N;
-                    }
-
-                    auto result = kernel_runner.run_async(prog, dims, st.stream_id, 0, st.device_id,
-                                                         arg1, arg2, caf::cuda::create_out_arg<int>(out_size), caf::cuda::create_in_arg<int>(N));
-
-                    auto bufferC = std::get<2>(result);
-                    auto self_hdl = caf::actor_cast<caf::actor>(self);
-
-                    mmul_command.copy_to_host_async(bufferC, st.dtoh_buffer_ptr, (size_t)out_size, [self_hdl, N_task = N, type](int*, size_t) {
-                        caf::anon_mail(task_done_atom_v, N_task, type).send(self_hdl);
-                    });
-                },
-                [=](error& err) {
-                    auto& st = self->state();
-                    st.in_flight_tasks_count--; // Revert pending status on failure
-                    if (err == sec::runtime_error) {
-                        // Not enough memory, retry after a delay
-                        self->println("Worker {}: Not enough memory, retrying for work...", st.stream_id);
-                        self->delayed_anon_send(self, 100ms, request_work_atom_v);
-                    } else if (err == sec::end_of_stream) {
-                        st.draining = true; // Mark as draining, let in-flight finish
-                        if (st.in_flight_tasks_count == 0) {
-                            self->mail(worker_done_atom_v).send(st.device_actor);
-                            mmul_command.release_stream_for_actor(st.stream_id);
-                            self->quit();
-                        }
-                    }
-                }
-            );
-        },
-        [=](task_done_atom, int N_completed, int type) {
-            auto& st = self->state();
-            st.in_flight_tasks_count--; // Decrement count
-            self->mail(1).send(st.supervisor); // Notify supervisor
-            self->mail(release_memory_atom_v, N_completed, type).send(st.device_actor); // Release memory
-            
-            if (st.draining && st.in_flight_tasks_count == 0) {
-                self->mail(worker_done_atom_v).send(st.device_actor);
-                mmul_command.release_stream_for_actor(st.stream_id);
-                self->quit();
-            } else if (!st.draining) {
-                self->mail(request_work_atom_v).send(self); // Request next task if capacity allows
             }
         }
     };
@@ -384,13 +499,15 @@ caf::behavior supervisor_actor_fun(
     auto mmul_p = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
     auto vadd_p = mgr.create_program_from_cubin("../vector_add.cubin", "vectorAdd");
     auto conv_p = mgr.create_program_from_cubin("../conv1d.cubin", "conv1d");
+    
+    auto poison_p = mgr.create_program_from_cubin("../poison.cubin", "poison_kernel");
 
     for (int i = 0; i < num_gpus; ++i) {
-        auto broker = self->spawn(gpu_device_actor, pool, pool_actor, workers_per_gpu, i, max_in_flight_tasks_per_worker);
-        
-        for (int j = 0; j < workers_per_gpu; ++j) {
-            self->spawn(mmul_worker_fun, self, broker, mmul_p, vadd_p, conv_p, i, (i * 1000) + j, max_in_flight_tasks_per_worker, shared_dtoh_ptr);
-        }
+        self->spawn(gpu_device_actor, pool, pool_actor, self, workers_per_gpu, i,
+                    max_in_flight_tasks_per_worker, 
+                    mmul_p, vadd_p, conv_p, poison_p,
+                    shared_dtoh_ptr,
+                    10); // 10% chance for a worker to poison the context
     }
 
     return {
@@ -464,7 +581,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
         for (int i = 0; i < num_tasks_for_this_run; ++i) {
             int N = sizes[dist_size(rng)];
             TaskType type = static_cast<TaskType>(dist_type(rng));
-            tasks_for_this_run.push_back({N, type});
+            tasks_for_this_run.push_back({i, N, type});
         }
 
         // Preallocate a single large host buffer for DTOH transfers to save RAM and keep things fair.
