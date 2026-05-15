@@ -54,7 +54,7 @@ target_link_libraries(throughput_mapping_bench_test
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
     CUDA::nvrtc
 )
-)
+
 
 target_link_libraries(latency_bench_test
   PRIVATE

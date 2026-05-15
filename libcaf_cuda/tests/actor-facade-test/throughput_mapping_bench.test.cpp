@@ -99,7 +99,12 @@ int main(int argc, char** argv) {
     actor_system_config cfg;
     cfg.set("caf.scheduler.max-threads", 1);
     cfg.set("caf.scheduler.policy", "sharing");
-    actor_system sys{cfg.parse(argc, argv)};
+
+    auto err = cfg.parse(argc, argv);
+    if (err) return EXIT_FAILURE;
+    if (cfg.helptext_printed()) return 0;
+
+    actor_system sys{cfg};
     caf_main(sys);
     return 0;
 }
