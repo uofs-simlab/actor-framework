@@ -57,6 +57,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(mmul_benchmark, caf::id_block::cuda::end)
     CAF_ADD_ATOM(mmul_benchmark, worker_done_atom)
     CAF_ADD_TYPE_ID(mmul_benchmark, (TaskType))
     CAF_ADD_TYPE_ID(mmul_benchmark, (Task))
+    CAF_ADD_ATOM(mmul_benchmark, worker_failed_atom)
     CAF_ADD_TYPE_ID(mmul_benchmark, (std::vector<Task>))
     CAF_ADD_ATOM(mmul_benchmark, refill_buffer_atom)
     CAF_ADD_ATOM(mmul_benchmark, restart_atom)
@@ -319,7 +320,11 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
                                  self->state().device_id, (self->state().device_id * 1000) + j,
                                  self->state().max_in_flight_per_worker, self->state().shared_dtoh_ptr,
                                  poison_chance);
-            self->monitor(w);
+            self->monitor(w, [self](const error& err) {
+                if (err && err != exit_reason::normal && err != exit_reason::user_shutdown && err != exit_reason::kill) {
+                    anon_mail(worker_failed_atom_v, err).send(self);
+                }
+            });
             self->state().workers.push_back(w);
             self->state().active_workers++;
         }
@@ -359,18 +364,23 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
         );
     };
 
-    self->set_down_handler([=](caf::down_msg& msg) {
-        auto& st = self->state();
-        if (st.resetting) return;
+    return {
+        [=](restart_atom) {
+            self->println("Device Actor {}: Restarting workers...", self->state().device_id);
+            self->state().resetting = false;
+            spawn_workers();
+            refill();
+        },
+        [=](worker_failed_atom, const error& reason) {
+            auto& st = self->state();
+            if (st.resetting) return;
 
-        if (msg.reason != caf::exit_reason::user_shutdown && msg.reason != caf::exit_reason::normal) {
-            self->println("Device Actor {}: Worker failure detected (reason: {}). Resetting context...", st.device_id, msg.reason);
+            self->println("Device Actor {}: Worker failure detected (reason: {}). Resetting context...", st.device_id, reason);
             st.resetting = true;
 
             // 1. Kill remaining workers
             for (auto& w : st.workers) {
-                self->demonitor(w);
-                self->send_exit(w, caf::exit_reason::kill);
+                self->send_exit(w, exit_reason::kill);
             }
             st.workers.clear();
             st.active_workers = 0;
@@ -387,15 +397,6 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
 
             // 4. Schedule restart after 1 second to let mailbox clear
             self->delayed_anon_send(self, 1s, restart_atom_v);
-        }
-    });
-
-    return {
-        [=](restart_atom) {
-            self->println("Device Actor {}: Restarting workers...", self->state().device_id);
-            self->state().resetting = false;
-            spawn_workers();
-            refill();
         },
         [=](refill_buffer_atom) {
             refill();
