@@ -63,6 +63,12 @@ in<T> create_in_arg(const std::vector<T>& buffer) {
   return in<T>{buffer};
 }
 
+//creates a tag of a readonly buffer on the gpu from raw pointer
+template <typename T>
+in<T> create_in_arg(const T* ptr, size_t size) {
+  return in<T>{ptr, size};
+}
+
 template <typename T>
 in<T> create_in_out_arg(std::vector<T>&& buffer) {
     return in<T>{std::move(buffer)}; // moves into variant, no copy
@@ -105,6 +111,12 @@ in_out<T> create_in_out_arg(std::vector<T>&& buffer) {
 template <typename T>
 in_out<T> create_in_out_arg(const std::vector<T>& buffer) {
   return in_out<T>{buffer};
+}
+
+// Create `in_out<T>` from raw pointer
+template <typename T>
+in_out<T> create_in_out_arg(const T* ptr, size_t size) {
+  return in_out<T>{ptr, size};
 }
 
 } //namespace caf cuda

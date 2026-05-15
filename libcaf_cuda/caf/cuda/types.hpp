@@ -105,6 +105,10 @@ public:
   explicit in_impl(std::vector<T>&& buf)
     : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
 
+  // raw pointer constructor
+  explicit in_impl(const T* ptr, size_t size)
+    : scalar_{}, ptr_{ptr}, size_{size}, is_scalar_{false} {}
+
   bool is_scalar() const {
     check_valid();
     return is_scalar_;
@@ -231,6 +235,10 @@ public:
 
   explicit in_out_impl(std::vector<T>&& buf)
     : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
+
+  // raw pointer constructor
+  explicit in_out_impl(const T* ptr, size_t size)
+    : scalar_{}, ptr_{ptr}, size_{size}, is_scalar_{false} {}
 
   bool is_scalar() const {
     check_valid();
