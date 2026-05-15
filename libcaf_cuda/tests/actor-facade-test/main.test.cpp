@@ -61,31 +61,70 @@ caf::behavior mmul_facade_test(caf::stateful_actor<test_actor_state>* self,
     auto arg3 = caf::cuda::create_out_arg_with_size<int>(N * N);
     auto arg4 = caf::cuda::create_in_arg(N);
 
-    std::cout << "[INFO] Launching actor_facade test for N=" << N << "..." << std::endl;
+    std::cout << "[INFO] Launching Basic actor_facade test..." << std::endl;
     self->state().start_time = std::chrono::steady_clock::now();
     
-    // Send work to the facade.
-    // The facade will return individual buffers and a completion signal.
+    // Basic call: Copy everything back by default
     self->mail(arg1, arg2, arg3, arg4).send(facade);
 
     return {
-        // Handler for data returned from device (corresponds to OUT/IN_OUT buffers)
         [=](int r_id, int index, std::vector<int> data) {
-            // index 2 is matrix 'c' in matrixMul(a, b, c, N)
-            if (index == 2) {
-                self->state().h_c = std::move(data);
-            }
+            if (index == 2) self->state().h_c = std::move(data);
         },
-        // Handler for the completion signal (-1)
+        [=](int r_id, int index) {
+            if (index == -1) {
+                auto end_time = std::chrono::steady_clock::now();
+                std::chrono::duration<double> elapsed = end_time - self->state().start_time;
+                std::cout << "[BASIC] Latency: " << elapsed.count() << "s" << std::endl;
+                verify_mmul(self->state().h_a, self->state().h_b, self->state().h_c, self->state().N);
+                self->quit();
+            }
+        }
+    };
+}
+
+// New Separate Actor for Advanced Testing (Stream, Device, Selective Index)
+caf::behavior mmul_advanced_facade_test(caf::stateful_actor<test_actor_state>* self, 
+                                        caf::actor facade, int N,
+                                        int device_num, int stream_id,
+                                        std::vector<int> output_indices) {
+    self->state().N = N;
+    self->state().h_a.assign(N * N, 3); // Use different values to ensure fresh run
+    self->state().h_b.assign(N * N, 4);
+    self->state().h_c.resize(N * N);
+
+    auto arg1 = caf::cuda::create_in_arg(self->state().h_a);
+    auto arg2 = caf::cuda::create_in_arg(self->state().h_b);
+    auto arg3 = caf::cuda::create_out_arg_with_size<int>(N * N);
+    auto arg4 = caf::cuda::create_in_arg(N);
+
+    std::cout << "[INFO] Launching Advanced actor_facade test:" << std::endl;
+    std::cout << "       Device: " << device_num << ", Stream: " << stream_id 
+              << ", Indices: { ";
+    for(int i : output_indices) std::cout << i << " ";
+    std::cout << "}" << std::endl;
+              
+    self->state().start_time = std::chrono::steady_clock::now();
+    
+    // Advanced call: Use specific routing and selective index copy-back
+    self->mail(device_num, stream_id, output_indices, arg1, arg2, arg3, arg4).send(facade);
+
+    return {
+        [=](int r_id, int index, std::vector<int> data) {
+            // Verify that we ONLY get index 2, as requested in output_indices
+            bool requested = std::find(output_indices.begin(), output_indices.end(), index) != output_indices.end();
+            if (!requested) {
+                std::cout << "[ERROR] Received unrequested index: " << index << std::endl;
+            }
+            if (index == 2) self->state().h_c = std::move(data);
+        },
         [=](int r_id, int index) {
             if (index == -1) {
                 auto end_time = std::chrono::steady_clock::now();
                 std::chrono::duration<double> elapsed = end_time - self->state().start_time;
                 
-                std::cout << "\n===== actor_facade Performance Result =====" << std::endl;
-                std::cout << "Round-trip Latency: " << std::fixed << std::setprecision(6) 
-                          << elapsed.count() << " seconds" << std::endl;
-
+                std::cout << "===== Advanced Performance Result =====" << std::endl;
+                std::cout << "Round-trip Latency: " << elapsed.count() << " seconds" << std::endl;
                 verify_mmul(self->state().h_a, self->state().h_b, self->state().h_c, self->state().N);
                 
                 self->send_exit(facade, exit_reason::user_shutdown);
@@ -112,11 +151,16 @@ void caf_main(caf::actor_system& sys) {
         "../mmul.cubin", "matrixMul", dims,
         in<int>{}, in<int>{}, out<int>{}, in<int>{});
 
-    // Spawn the test coordinator actor
-    sys.spawn(mmul_facade_test, facade, N);
+    // 1. Run Basic Test
+    auto basic_tester = sys.spawn(mmul_facade_test, facade, N);
+    
+    // 2. Run Advanced Test (Stream 777, Device 0, Index 2 Only)
+    // We can spawn it now; it will execute after the basic tester finishes or in parallel.
+    // Note: If you want sequential execution, use request().then() or a supervisor.
+    sys.spawn(mmul_advanced_facade_test, facade, N, 0, 777, std::vector<int>{2});
 
     sys.await_all_actors_done();
     caf::cuda::manager::shutdown();
 }
 
-CAF_MAIN(cuda)
+CAF_MAIN(id_block::cuda)
