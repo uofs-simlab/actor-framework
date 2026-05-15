@@ -12,23 +12,34 @@ struct throughput_state {
     int results_received = 0;
     std::chrono::steady_clock::time_point start_time;
     int N;
+    std::vector<int> h_a;
+    std::vector<int> h_b;
+    in<int> arg1;
+    in<int> arg2;
+    out<int> arg3;
+    in<int> arg4;
 };
 
 caf::behavior throughput_manager(caf::stateful_actor<throughput_state>* self, 
                                  caf::actor facade, int N, int iterations) {
-    self->state().total_expected = iterations;
-    self->state().N = N;
+    auto& st = self->state();
+    st.total_expected = iterations;
+    st.N = N;
 
-    std::vector<int> h_a(N * N, 2);
-    std::vector<int> h_b(N * N, 3);
-    self->state().start_time = std::chrono::steady_clock::now();
+    // Initialize data and reuseable kernel arguments in state
+    st.h_a.assign(N * N, 2);
+    st.h_b.assign(N * N, 3);
+    st.arg1 = caf::cuda::create_in_arg(st.h_a);
+    st.arg2 = caf::cuda::create_in_arg(st.h_b);
+    st.arg3 = caf::cuda::create_out_arg_with_size<int>(N * N);
+    st.arg4 = caf::cuda::create_in_arg(N);
+
+    // Only copy back index 2 (Matrix C)
+    std::vector<int> output_indices = {2};
+    st.start_time = std::chrono::steady_clock::now();
 
     for (int i = 0; i < iterations; ++i) {
-        auto arg1 = caf::cuda::create_in_arg(h_a);
-        auto arg2 = caf::cuda::create_in_arg(h_b);
-        auto arg3 = caf::cuda::create_out_arg_with_size<int>(N * N);
-        auto arg4 = caf::cuda::create_in_arg(N);
-        self->mail(arg1, arg2, arg3, arg4).send(facade);
+        self->mail(output_indices, st.arg1, st.arg2, st.arg3, st.arg4).send(facade);
     }
 
     return {
@@ -79,4 +90,20 @@ void caf_main(caf::actor_system& sys) {
     }
 }
 
-CAF_MAIN(id_block::cuda)
+int main(int argc, char** argv) {
+    core::init_global_meta_objects();
+    actor_system_config cfg;
+    
+    // Single thread configuration per user snippet
+    cfg.set("caf.scheduler.max-threads", 1);
+    cfg.set("caf.scheduler.policy", "sharing");
+    
+    auto err = cfg.parse(argc, argv);
+    if (err) return EXIT_FAILURE;
+    if (cfg.helptext_printed()) return 0;
+
+    actor_system sys{cfg};
+    caf_main(sys);
+    
+    return 0;
+}

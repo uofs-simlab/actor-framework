@@ -10,24 +10,33 @@ using namespace std::chrono_literals;
 struct latency_test_state {
     std::chrono::steady_clock::time_point start_time;
     int N;
+    std::vector<int> h_a;
+    std::vector<int> h_b;
+    in<int> arg1;
+    in<int> arg2;
+    out<int> arg3;
+    in<int> arg4;
 };
 
 caf::behavior latency_manager(caf::stateful_actor<latency_test_state>* self, 
                               caf::actor facade, int N) {
-    self->state().N = N;
+    auto& st = self->state();
+    st.N = N;
     
-    std::vector<int> h_a(N * N, 2);
-    std::vector<int> h_b(N * N, 3);
-    
-    auto arg1 = caf::cuda::create_in_arg(std::move(h_a));
-    auto arg2 = caf::cuda::create_in_arg(std::move(h_b));
-    auto arg3 = caf::cuda::create_out_arg_with_size<int>(N * N);
-    auto arg4 = caf::cuda::create_in_arg(N);
+    // Initialize data and reuseable kernel arguments in state
+    st.h_a.assign(N * N, 2);
+    st.h_b.assign(N * N, 3);
+    st.arg1 = caf::cuda::create_in_arg(st.h_a);
+    st.arg2 = caf::cuda::create_in_arg(st.h_b);
+    st.arg3 = caf::cuda::create_out_arg_with_size<int>(N * N);
+    st.arg4 = caf::cuda::create_in_arg(N);
 
-    self->state().start_time = std::chrono::steady_clock::now();
+    // Only copy back index 2 (Matrix C)
+    std::vector<int> output_indices = {2};
+    st.start_time = std::chrono::steady_clock::now();
     
-    // Launch the work
-    self->mail(arg1, arg2, arg3, arg4).send(facade);
+    // Launch the work with selective index-based copy-back
+    self->mail(output_indices, st.arg1, st.arg2, st.arg3, st.arg4).send(facade);
 
     return {
         [=](int r_id, int index, std::vector<int> data) {
@@ -89,4 +98,3 @@ int main(int argc, char** argv) {
     
     return 0;
 }
-
