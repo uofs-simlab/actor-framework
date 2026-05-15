@@ -79,22 +79,4 @@ void caf_main(caf::actor_system& sys) {
     }
 }
 
-int main(int argc, char** argv) {
-    core::init_global_meta_objects();
-    actor_system_config cfg;
-    
-    // Single thread configuration per user snippet
-    cfg.set("caf.scheduler.max-threads", 1);
-    cfg.set("caf.scheduler.policy", "sharing");
-    
-    auto err = cfg.parse(argc, argv);
-    if (err) return EXIT_FAILURE;
-    if (cfg.helptext_printed()) return 0;
-
-    actor_system sys{cfg};
-    caf_main(sys);
-    
-    return 0;
-}
-
 CAF_MAIN(id_block::cuda)
