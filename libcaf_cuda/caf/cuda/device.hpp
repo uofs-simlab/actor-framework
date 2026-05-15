@@ -55,6 +55,17 @@ public:
   CUcontext getContext(int) { return context_; }
 
 
+  // Resets the CUDA context for this device.
+  // Destroys the old context and reinitializes the stream pool with the new one.
+  void reset_context(CUcontext new_ctx) {
+    // Destroy the old context
+    if (context_) {
+      check(cuCtxDestroy(context_), "cuCtxDestroy in device::reset_context");
+    }
+    // Set the new context and reinitialize the stream table
+    context_ = new_ctx;
+    stream_table_ = DeviceStreamTable(context_, stream_table_.pool_size());
+  }
   // Number of streaming multiprocessors (SMs)
   int num_sms() const noexcept { return sm_count_; }
 

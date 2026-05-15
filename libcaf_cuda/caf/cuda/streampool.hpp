@@ -52,6 +52,9 @@ public:
   size_t num_available() const;
 
 private:
+  // Add a getter for max_size_
+  size_t max_size() const { return max_size_; }
+
   /// Create a new CUDA stream in the context `ctx_`.
   CUstream create_stream();
 
@@ -81,6 +84,9 @@ public:
   /// Release the stream assigned to an actor back to the pool and erase the mapping.
   void release_stream(int actor_id);
 
+  // Add a getter for pool_size
+  size_t pool_size() const { return pool_.max_size(); }
+
 private:
   StreamPool pool_;
   std::unordered_map<int, CUstream> table_; ///< actor_id -> stream
@@ -88,4 +94,3 @@ private:
 };
 
 } // namespace caf::cuda
-

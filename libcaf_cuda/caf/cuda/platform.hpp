@@ -46,6 +46,26 @@ public:
   //releases a stream for an actor
   void release_streams_for_actor(int actor_id);
 
+  // Resets the CUDA context for a specific device.
+  // This will destroy the existing context for the device, create a new one,
+  // and update the device object and platform's internal records.
+  void reset_device_context(int device_id) {
+    if (device_id < 0 || device_id >= static_cast<int>(devices_.size())) {
+      throw std::out_of_range("Invalid device_id for reset_device_context");
+    }
+
+    device_ptr dev_obj = devices_[device_id];
+    CUdevice cu_dev = dev_obj->getDevice(); // Get the underlying CUdevice
+
+    // Create a new context
+    CUcontext new_ctx;
+    CHECK_CUDA(cuCtxCreate(&new_ctx, 0, cu_dev));
+
+    // Update the device object and platform's internal contexts_ vector
+    dev_obj->reset_context(new_ctx);
+    contexts_[device_id] = new_ctx;
+  }
+
   //returns how many devices are currently on the GPU
   int get_num_devices();
 
@@ -67,4 +87,3 @@ inline void intrusive_ptr_add_ref(platform* p) { p->ref(); }
 inline void intrusive_ptr_release(platform* p) { p->deref(); }
 
 } // namespace caf::cuda
-

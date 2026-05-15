@@ -296,6 +296,14 @@ public:
       if (res != CUDA_SUCCESS) { delete f_ptr; check(res, "cuLaunchHostFunc"); }
   }
 
+  // -------------------------------
+  // Resets the CUDA context for a given device number.
+  // This will force the device to flush its stream pool and create a new context.
+  // -------------------------------
+  void reset_context(int device_number) {
+      auto plat = platform::create();
+      plat->reset_device_context(device_number);
+  }
 
 
 
