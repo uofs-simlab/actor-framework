@@ -18,10 +18,10 @@ caf::behavior throughput_manager(caf::stateful_actor<throughput_state>* self,
                                  caf::actor facade, int N, int iterations) {
     self->state().total_expected = iterations;
     self->state().N = N;
-    self->state().start_time = std::chrono::steady_clock::now();
 
     std::vector<int> h_a(N * N, 2);
     std::vector<int> h_b(N * N, 3);
+    self->state().start_time = std::chrono::steady_clock::now();
 
     for (int i = 0; i < iterations; ++i) {
         auto arg1 = caf::cuda::create_in_arg(h_a);
