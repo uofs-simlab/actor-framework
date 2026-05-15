@@ -85,7 +85,7 @@ private:
     auto results = runner.run_async(program_, dims_, stream_id, 0, 
                                     device_num, std::forward<Us>(xs)...);
 
-    auto sender = this->current_sender();
+    auto sender = actor_cast<actor>(this->current_sender());
     auto r_id = reply_id_;
 
     if (output_indices.empty()) {
