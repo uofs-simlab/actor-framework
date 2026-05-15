@@ -10,6 +10,7 @@
 #include <shared_mutex>
 #include <tuple>
 #include <mutex>
+#include <memory>
 
 #include <caf/intrusive_ptr.hpp>
 #include <caf/ref_counted.hpp>
@@ -32,7 +33,7 @@ public:
       context_(context),
       id_(id),
       name_(name),
-      stream_table_(context, stream_pool_size) {
+      stream_table_(std::make_unique<DeviceStreamTable>(context, stream_pool_size)) {
  	      init_device_properties();
       }
 
@@ -64,7 +65,7 @@ public:
     }
     // Set the new context and reinitialize the stream table
     context_ = new_ctx;
-    stream_table_ = DeviceStreamTable(context_, stream_table_.pool_size());
+    stream_table_ = std::make_unique<DeviceStreamTable>(context_, stream_table_->pool_size());
   }
   // Number of streaming multiprocessors (SMs)
   int num_sms() const noexcept { return sm_count_; }
@@ -112,12 +113,12 @@ public:
 
   //returns the CUStream associated with the actor id 
   CUstream get_stream_for_actor(int actor_id) {
-    return stream_table_.get_stream(actor_id);
+    return stream_table_->get_stream(actor_id);
   }
 
   //releases the CUStream associated with the actor id 
   void release_stream_for_actor(int actor_id) {
-    stream_table_.release_stream(actor_id);
+    stream_table_->release_stream(actor_id);
   }
 
 
@@ -308,7 +309,7 @@ private:
   CUcontext context_;
   int id_;
   const char* name_;
-  DeviceStreamTable stream_table_;
+  std::unique_ptr<DeviceStreamTable> stream_table_;
   std::mutex stream_mutex_;
 
   // Cached GPU properties (queried once during construction)

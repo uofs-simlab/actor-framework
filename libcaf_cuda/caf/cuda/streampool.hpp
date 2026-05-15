@@ -51,9 +51,12 @@ public:
   /// Return number of streams currently available in the pool.
   size_t num_available() const;
 
-private:
   // Add a getter for max_size_
   size_t max_size() const { return max_size_; }
+
+  
+private:
+  
 
   /// Create a new CUDA stream in the context `ctx_`.
   CUstream create_stream();
