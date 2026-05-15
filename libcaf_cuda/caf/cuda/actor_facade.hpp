@@ -10,8 +10,8 @@
 #include <caf/anon_mail.hpp>
 #include <caf/event_based_actor.hpp>
 #include <caf/response_promise.hpp>
-
 #include <cuda.h>
+#include <utility> // For std::index_sequence, std::integral_constant
 
 #include "caf/cuda/command.hpp"
 #include "caf/cuda/global.hpp"
@@ -19,7 +19,6 @@
 #include "caf/cuda/platform.hpp"
 #include "caf/cuda/program.hpp"
 
-/*
 
 namespace caf::cuda {
 
@@ -55,41 +54,103 @@ public:
 
   caf::behavior make_behavior() override {
     return {
-      [this](atom_value stage, int device_num, Ts... args) {
-        enqueue_impl(device_num, stage, std::move(args)...);
+      [this](int device_num, int stream_id, std::vector<int> output_indices, Ts... args) {
+        enqueue_impl(device_num, stream_id, std::move(output_indices), std::forward<Ts>(args)...);
       },
-      [this](atom_value stage, Ts... args) {
-        enqueue_impl(-1, stage, std::move(args)...);
+      [this](int device_num, int stream_id, Ts... args) {
+        // Copy everything back if indices are omitted
+        enqueue_impl(device_num, stream_id, {}, std::forward<Ts>(args)...);
+      },
+      [this](int device_num, std::vector<int> output_indices, Ts... args) {
+        enqueue_impl(device_num, static_cast<int>(actor_id_), std::move(output_indices),
+                     std::forward<Ts>(args)...);
+      },
+      [this](std::vector<int> output_indices, Ts... args) {
+        enqueue_impl(-1, static_cast<int>(actor_id_), std::move(output_indices),
+                     std::forward<Ts>(args)...);
+      },
+      [this](int device_num, Ts... args) {
+        // Copy everything back if indices are omitted
+        enqueue_impl(device_num, static_cast<int>(actor_id_), {}, std::forward<Ts>(args)...);
       },
       [this](Ts... args) {
-        enqueue_impl(-1, kernel_atom_v, std::move(args)...);
+        // Copy everything back if indices are omitted
+        enqueue_impl(-1, static_cast<int>(actor_id_), {}, std::forward<Ts>(args)...);
       }
     };
   }
 
 private:
   template <class... Us>
-  void enqueue_impl(int device_num, atom_value stage, Us&&... xs) {
+  void enqueue_impl(int device_num, int stream_id, std::vector<int> output_indices, Us&&... xs) {
     command_runner<Ts...> runner;
-    // Pass actor_id_ as stream_id, and the received device_num
-    auto results = runner.run_async(program_, dims_, actor_id_, 0, device_num, std::forward<Us>(xs)...);
+    // Launch kernel asynchronously
+    auto results = runner.run_async(program_, dims_, stream_id, 0, 
+                                    device_num, std::forward<Us>(xs)...);
 
     auto sender = this->current_sender();
     auto r_atom = reply_atom_;
-    auto stream_id = actor_id_;
 
-    atom_value stage_done = gpu_done_atom_v;
-    if (stage == htod_atom_v) stage_done = htod_done_atom_v;
-    else if (stage == kernel_atom_v) stage_done = kernel_done_atom_v;
-    else if (stage == dtoh_atom_v) stage_done = dtoh_done_atom_v;
+    // If no indices specified, default to copying all arguments back
+    if (output_indices.empty()) {
+      for (int i = 0; i < static_cast<int>(sizeof...(Ts)); ++i) {
+        output_indices.push_back(i);
+      }
+    }
 
-    // Pass actor_id_ as stream_id, and the received device_num to add_callback
-    runner.add_callback(stream_id, device_num, [sender, r_atom, stage_done, results]() mutable {
-      auto msg = caf::make_message(stage_done, results);
-      if (r_atom != 0) {
-        caf::anon_mail(r_atom, std::move(msg)).send(sender);
-      } else {
-        caf::anon_mail(std::move(msg)).send(sender);
+    // Track if we actually queued any transfers to host
+    // Even if we don't, we will send a final 'done' signal via callback
+    // to ensure the stream is drained.
+
+    if (!output_indices.empty()) {
+        // Helper to dispatch a lambda based on a runtime index
+        auto switch_on_index = [&](int runtime_idx, auto&& func, auto... Is) {
+            ([&] {
+                if (runtime_idx == Is) {
+                    func(std::integral_constant<int, Is>{});
+                }
+            }(), ...);
+        };
+
+        for (int idx : output_indices) {
+            if (idx >= 0 && idx < sizeof...(Ts)) {
+                switch_on_index(idx, [&](auto current_idx_constant) {
+                    // Compile-time index extraction
+                    constexpr std::size_t Index = current_idx_constant; // Compile-time index
+                    using MemPtrType = std::tuple_element_t<Index, mem_tuple>;
+                    using ValueType = typename MemPtrType::element_type::value_type;
+
+                    MemPtrType mem_ptr = std::get<Index>(results);
+
+                    // Only copy if the mem_ptr is valid and has OUT or IN_OUT access
+                    if (mem_ptr && (mem_ptr->access() == OUT || mem_ptr->access() == IN_OUT)) {
+                        runner.copy_to_host_async(mem_ptr, 
+                          [sender, r_atom, Index](std::vector<ValueType>&& data) {
+                            // Send back the data along with the original index
+                            if (sender) { // Ensure sender is still valid
+                                if (r_atom != 0) {
+                                    caf::anon_mail(r_atom, Index, std::move(data)).send(sender);
+                                } else {
+                                    caf::anon_mail(Index, std::move(data)).send(sender);
+                                }
+                            }
+                        });
+                    }
+                }, std::make_index_sequence<sizeof...(Ts)>{});
+            } else {
+                this->println("Warning: Output index {} is out of bounds (0-{})", idx, sizeof...(Ts) - 1);
+            }
+        }
+    }
+
+    // Finally, alert the sender that everything is finished.
+    // This callback is queued on the stream after all kernel and transfer commands.
+    runner.add_callback(stream_id, device_num, [sender, r_atom]() mutable {
+      if (sender) {
+        if (r_atom != 0)
+          caf::anon_mail(r_atom, gpu_done_atom_v).send(sender);
+        else
+          caf::anon_mail(gpu_done_atom_v).send(sender);
       }
     });
   }
@@ -101,4 +162,3 @@ private:
 };
 
 } // namespace caf::cuda
- */
