@@ -116,9 +116,16 @@ struct task_pool_state {
 
 caf::behavior global_task_pool(caf::stateful_actor<task_pool_state>* self, std::vector<Task> tasks) {
     self->state().tasks = std::move(tasks);
+    self->println("Global task pool spawned with {} tasks", self->state().tasks.size());
+
+    self->attach_functor([self](const error& reason) {
+        self->println("global task pool quitting, reason: {}", reason);
+    });
+
     return {
         [=](get_work_atom, size_t batch_size) -> result<std::vector<Task>> {
             auto& st = self->state();
+            // std::cout << "refilling\n";
             if (st.next_task_idx >= st.tasks.size())
                 return sec::end_of_stream;
             size_t count = std::min(batch_size, st.tasks.size() - st.next_task_idx);
@@ -192,6 +199,7 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
 
     // Trigger initial work requests up to max_in_flight_tasks
     for (int i = 0; i < max_in_flight_tasks; ++i) {
+
         self->mail(request_work_atom_v).send(self);
     }
 
@@ -201,11 +209,14 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
             if (st.in_flight_tasks_count >= st.max_in_flight_tasks || st.draining) {
                 return; // Already at max capacity, don't request more yet
             }
+            // std::cout << "Worker requesting work\n";
 
             st.in_flight_tasks_count++; // Mark as pending immediately
             self->mail(get_work_atom_v).request(st.device_actor, infinite).then(
                 [=](int task_id, int N, int type, in<int> matrixA, in<int> matrixB) {
                     auto& st_inner = self->state();
+                        // std::cout << "Worker got work\n";
+
                     try {
                         TaskType t_type = static_cast<TaskType>(type);
 
@@ -220,9 +231,9 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                             poison_runner.run_async(st_inner.poison_prog, caf::cuda::nd_range(1,1,1,1,1,1), 
                                                    st_inner.stream_id, 0, st_inner.device_id, arg_dummy);
                             // The next CUDA call will trigger the error
-                            caf::cuda::command_runner<> sync_runner;
-                            auto dev_obj = caf::cuda::platform::create()->getDevice(st_inner.device_id);
-                            CHECK_CUDA(cuStreamSynchronize(dev_obj->get_stream_for_actor(st_inner.stream_id)));
+                            // caf::cuda::command_runner<> sync_runner;
+                            // // auto dev_obj = caf::cuda::platform::create()->getDevice(st_inner.device_id);
+                            // // CHECK_CUDA(cuStreamSynchronize(dev_obj->get_stream_for_actor(st_inner.stream_id)));
                         }
 
                         // GPU Pipeline: Transfer -> Kernel -> Copyback
@@ -263,6 +274,7 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                 },
                 [=](error& err) {
                     auto& st = self->state();
+                    self->println("Worker {}: encountered error: {}", st.stream_id, err);
                     st.in_flight_tasks_count--; // Revert pending status on failure
                     if (err == sec::runtime_error) {
                         // Not enough memory, retry after a delay
@@ -315,6 +327,7 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
 
     auto spawn_workers = [=]() {
         for (int j = 0; j < self->state().num_workers_target; ++j) {
+            // std::cout << "device actor creating workers\n";
             auto w = self->spawn(mmul_worker_fun, self->state().supervisor, self, self->state().mmul_p,
                                  self->state().vadd_p, self->state().conv_p, self->state().poison_p,
                                  self->state().device_id, (self->state().device_id * 1000) + j,
@@ -345,10 +358,12 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
     // Helper to refill the local task buffer from the global pool
     auto refill = [=]() {
         auto& st = self->state();
+        // std::cout << "calling refill\n";
         if (st.fetching || st.local_tasks.size() >= st.low_water_mark + st.batch_size)
             return;
 
         st.fetching = true;
+        // std::cout << "refilling buffer\n";
         self->mail(get_work_atom_v, st.batch_size).request(st.global_pool, infinite).then(
             [=](std::vector<Task>& batch) {
                 auto& st_inner = self->state();
@@ -357,13 +372,19 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
                 st_inner.fetching = false;
                 if (st_inner.local_tasks.size() < st_inner.low_water_mark)
                     self->mail(refill_buffer_atom_v).send(self);
+                // std::cout << "refilled buffer\n";
+
             },
             [=](error& err) {
+                // std::cout << "Hello\n";
                 self->state().fetching = false;
             }
         );
     };
 
+    self->attach_functor([self, dev_id](const error& reason) {
+        self->println("device actor {} quitting, reason: {}", dev_id, reason);
+    });
     return {
         [=](restart_atom) {
             self->println("Device Actor {}: Restarting workers...", self->state().device_id);
@@ -402,6 +423,7 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
             refill();
         },
         [=](get_work_atom) -> caf::result<int, int, int, in<int>, in<int>> {
+            // std::cout << "Device actor giving work\n";
             auto& st = self->state();
             if (st.resetting) return make_error(sec::runtime_error, "Device is resetting");
 
@@ -479,6 +501,7 @@ struct supervisor_actor_state {
     int total_tasks;
     int completed = 0;
     std::chrono::steady_clock::time_point start_time;
+    std::vector<caf::actor> device_actors;
 };
 
 caf::behavior supervisor_actor_fun(
@@ -503,12 +526,15 @@ caf::behavior supervisor_actor_fun(
     
     auto poison_p = mgr.create_program_from_cubin("../poison.cubin", "poison_kernel");
 
+    // std::cout << "creating workers\n";
     for (int i = 0; i < num_gpus; ++i) {
-        self->spawn(gpu_device_actor, pool, pool_actor, self, workers_per_gpu, i,
-                    max_in_flight_tasks_per_worker, 
-                    mmul_p, vadd_p, conv_p, poison_p,
-                    shared_dtoh_ptr,
-                    10); // 10% chance for a worker to poison the context
+        auto dev_actor = self->spawn(gpu_device_actor, pool, pool_actor, self,
+                                     workers_per_gpu, i,
+                                     max_in_flight_tasks_per_worker,
+                                     mmul_p, vadd_p, conv_p, poison_p,
+                                     shared_dtoh_ptr,
+                                     10); // 10% chance for a worker to poison
+        self->state().device_actors.push_back(dev_actor);
     }
 
     return {
@@ -545,11 +571,11 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_N = 2048;
     const int num_sizes = 60;
 
-    const int workers_per_gpu = 4; // Admission control: only 16 concurrent tasks per GPU
-    const int max_in_flight_tasks_per_worker = 5; // Each worker keeps 2 tasks in flight
+    const int workers_per_gpu = 8; // Admission control: only 16 concurrent tasks per GPU
+    const int max_in_flight_tasks_per_worker = 3; // Each worker keeps 2 tasks in flight
 
     const std::vector<int> actor_counts = {
-	  50000,100000
+	  10000
     };
 
     // Generate deterministic random pool once
