@@ -49,148 +49,6 @@ struct mmul_state {
 std::vector<int> matrixC;
 
 
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self) {
-  return {
-
-    [=](const std::vector<int>& matrixA,
-        const std::vector<int>& matrixB,
-        int N) {
-
-      using clock = std::chrono::steady_clock;
-      using ms = std::chrono::duration<double, std::milli>;
-
-
-      caf::cuda::manager& mgr = caf::cuda::manager::get();
-      int device = 0;
-      int stream = 1;
-
-      auto program =
-        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
-
-      auto t_total_start = clock::now();
-      // -------------------------
-      // create_in_arg A
-      // -------------------------
-      auto t_a_inarg_start = clock::now();
-
-      auto inA = caf::cuda::create_in_arg(std::move(matrixA));
-
-      auto t_a_inarg_end = clock::now();
-
-      // -------------------------
-      // transfer A
-      // -------------------------
-      auto t_a_transfer_start = clock::now();
-
-      auto arg1 = mmul_command.transfer_memory(
-          device,
-          stream,
-          std::move(inA));
-
-      auto t_a_transfer_end = clock::now();
-
-      // -------------------------
-      // create_in_arg B
-      // -------------------------
-      auto t_b_inarg_start = clock::now();
-
-      auto inB = caf::cuda::create_in_arg(std::move(matrixB));
-
-      auto t_b_inarg_end = clock::now();
-
-      // -------------------------
-      // transfer B
-      // -------------------------
-      auto t_b_transfer_start = clock::now();
-
-      auto arg2 = mmul_command.transfer_memory(
-          device,
-          stream,
-          std::move(inB));
-
-      auto t_b_transfer_end = clock::now();
-
-      // -------------------------
-      // spawn actor
-      // -------------------------
-      auto t_spawn_start = clock::now();
-
-      caf::actor mmul_actor =
-        self->spawn(caf::cuda::mmul_actor_fun<int>, program);
-
-      auto t_spawn_end = clock::now();
-
-      // -------------------------
-      // request
-      // -------------------------
-      auto t_request_start = clock::now();
-
-      self->mail(arg1, arg2, N, device, stream)
-        .request(mmul_actor, std::chrono::seconds(30))
-        .then(
-          [=](caf::cuda::mem_ptr<int> dC) {
-
-            auto t_response_received = clock::now();
-
-            //std::vector<int> matrixC(N*N);
-            // -------------------------
-            // copy to host
-            // -------------------------
-            auto t_copy_start = clock::now();
-            
-            mmul_command.copy_to_host_async(dC, matrixC.data(), N * N);
-            dC->synchronize();
-
-            auto t_copy_end = clock::now();
-            auto t_total_end = clock::now();
-
-            // -------------------------
-            // Print timings
-            // -------------------------
-
-            std::cout << "\n===== BENCHMARK RESULTS (N=" << N << ") =====\n";
-
-            std::cout << "create_in_arg A: "
-                      << ms(t_a_inarg_end - t_a_inarg_start).count()
-                      << " ms\n";
-
-            std::cout << "transfer A: "
-                      << ms(t_a_transfer_end - t_a_transfer_start).count()
-                      << " ms\n";
-
-            std::cout << "create_in_arg B: "
-                      << ms(t_b_inarg_end - t_b_inarg_start).count()
-                      << " ms\n";
-
-            std::cout << "transfer B: "
-                      << ms(t_b_transfer_end - t_b_transfer_start).count()
-                      << " ms\n";
-
-            std::cout << "spawn actor: "
-                      << ms(t_spawn_end - t_spawn_start).count()
-                      << " ms\n";
-
-            std::cout << "request → response latency: "
-                      << ms(t_response_received - t_request_start).count()
-                      << " ms\n";
-
-            std::cout << "copy_to_host: "
-                      << ms(t_copy_end - t_copy_start).count()
-                      << " ms\n";
-
-            std::cout << "TOTAL end-to-end: "
-                      << ms(t_total_end - t_total_start).count()
-                      << " ms\n";
-
-            std::cout << "=============================================\n";
-
-            self->quit();
-          }
-        );
-    }
-
-  };
-}
 
 
 caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
@@ -203,6 +61,10 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
       using clock = std::chrono::steady_clock;
       using ms = std::chrono::duration<double, std::milli>;
 
+      size_t bytes_a = matrixA.size() * sizeof(int);
+      size_t bytes_b = matrixB.size() * sizeof(int);
+      size_t bytes_c = matrixC.size() * sizeof(int);
+
 
       caf::cuda::manager& mgr = caf::cuda::manager::get();
       int device = 0;
@@ -230,6 +92,7 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
           device,
           stream,
           std::move(inA));
+
 
       auto t_a_transfer_end = clock::now();
 
@@ -293,6 +156,9 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
             // -------------------------
 
             std::cout << "\n===== BENCHMARK RESULTS (N=" << N << ") =====\n";
+            std::cout << "  Transfer size A: " << bytes_a << " bytes\n";
+            std::cout << "  Transfer size B: " << bytes_b << " bytes\n";
+            std::cout << "  Transfer size C: " << bytes_c << " bytes\n";
 
             std::cout << "create_in_arg A: "
                       << ms(t_a_inarg_end - t_a_inarg_start).count()

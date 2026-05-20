@@ -26,7 +26,9 @@ std::string readFile(const std::string &path) {
     return ss.str();
 }
 
-void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
+std::vector<int> h_c; // Declared globally
+
+void runMatrixMul(CUmodule module, CUfunction kernel, int N, CUstream stream) {
     using clock = std::chrono::steady_clock;
     using ms = std::chrono::duration<double, std::milli>;
 
@@ -35,18 +37,11 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     size_t elements = (size_t)N * (size_t)N;
     size_t bytes = elements * sizeof(int);
 
-    std::vector<int> h_a(elements, 1);
-    std::vector<int> h_b(elements, 1);
-    std::vector<int> h_c(elements);
-    //int h_c[elements];
+    std::vector<int> h_a(elements, 1); // These remain local as they are initialized with N
+    std::vector<int> h_b(elements, 1); // These remain local as they are initialized with N
+    h_c.resize(elements); // Resize the global h_c for the current N
 
     CUdeviceptr d_a, d_b, d_c;
-    CUstream stream;
-
-    // ----------------------------------
-    // Create Stream
-    // ----------------------------------
-    checkCU(cuStreamCreate(&stream, CU_STREAM_DEFAULT), "cuStreamCreate");
 
     auto t_total_start = clock::now();
 
@@ -67,7 +62,7 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     auto t_h2d_a_start = clock::now();
 
     checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), bytes, stream), "cuMemcpyHtoDAsync A");
-    //checkCU(cuStreamSynchronize(stream), "sync A");
+    std::cout << "  (Transfer size: " << bytes << " bytes)\n";
 
     auto t_h2d_a_end = clock::now();
 
@@ -78,6 +73,7 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
 
     checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), bytes, stream), "cuMemcpyHtoDAsync B");
     //checkCU(cuStreamSynchronize(stream), "sync B");
+    std::cout << "  (Transfer size: " << bytes << " bytes)\n";
 
     auto t_h2d_b_end = clock::now();
 
@@ -114,6 +110,7 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     cuMemcpyDtoHAsync(h_c.data(), d_c, bytes, stream);
    // cuMemcpyDtoHAsync(h_c, d_c, bytes, stream);
     cuStreamSynchronize(stream);
+    std::cout << "  (Transfer size: " << bytes << " bytes)\n";
     auto t_d2h_end = clock::now();
 
     auto t_total_end = clock::now();
@@ -131,12 +128,6 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     auto t_free_end = clock::now();
 
 
-
-
-    // ----------------------------------
-    // Destroy stream
-    // ----------------------------------
-    checkCU(cuStreamDestroy(stream), "cuStreamDestroy");
 
 
     // ----------------------------------
@@ -189,33 +180,37 @@ int main(int argc, char** argv) {
     checkCU(cuDeviceGet(&dev, 0), "cuDeviceGet(0)");
 
     CUcontext ctx;
-    checkCU(cuCtxCreate(&ctx, 0, dev), "cuCtxCreate");
+    checkCU(cuCtxCreate(&ctx, CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, dev), "cuCtxCreate");
 
-    const std::string ptxPath = "mmul.ptx";
-    std::string ptx;
+    const std::string cubinPath = "../mmul.cubin";
+    std::string cubin;
 
     try {
-        ptx = readFile(ptxPath);
+        cubin = readFile(cubinPath);
     } catch (const std::exception &e) {
-        std::cerr << "Failed to read PTX file '" << ptxPath << "': " << e.what() << "\n";
+        std::cerr << "Failed to read CUBIN file '" << cubinPath << "': " << e.what() << "\n";
         return EXIT_FAILURE;
     }
 
     CUmodule module;
-    checkCU(cuModuleLoadDataEx(&module, ptx.c_str(), 0, nullptr, nullptr), "cuModuleLoadDataEx");
+    checkCU(cuModuleLoadDataEx(&module, cubin.data(), 0, nullptr, nullptr), "cuModuleLoadDataEx");
 
     CUfunction kernel;
     checkCU(cuModuleGetFunction(&kernel, module, "matrixMul"), "cuModuleGetFunction matrixMul");
 
+    CUstream stream;
+    checkCU(cuStreamCreate(&stream, CU_STREAM_DEFAULT), "cuStreamCreate");
+
     for (int N : sizes) {
         try {
-            runMatrixMul(module, kernel, N);
+            runMatrixMul(module, kernel, N, stream);
         } catch (const std::exception &e) {
             std::cerr << "Exception while running N=" << N << ": " << e.what() << "\n";
         }
         std::cout << "----------------------------------------\n";
     }
 
+    checkCU(cuStreamDestroy(stream), "cuStreamDestroy");
     checkCU(cuModuleUnload(module), "cuModuleUnload");
     checkCU(cuCtxDestroy(ctx), "cuCtxDestroy");
 
