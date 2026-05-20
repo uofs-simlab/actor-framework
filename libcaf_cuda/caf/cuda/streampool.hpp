@@ -7,6 +7,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <cuda.h>
+#include <cublas_v2.h>
 #include <stdexcept>
 
 namespace caf::cuda {
@@ -69,6 +70,46 @@ private:
   size_t in_use_ = 0;                      ///< Number of streams currently checked out
   size_t rr_index_ = 0;                    ///< Round-robin index into all_streams_ for reuse
   mutable std::mutex pool_mutex_;          ///< Protects the pool state
+};
+
+/// Pool of cuBLAS handles. Capped at 32.
+class CAF_CUDA_EXPORT CublasHandlePool {
+public:
+  explicit CublasHandlePool(CUcontext ctx, size_t max_size = 32);
+  ~CublasHandlePool();
+
+  cublasHandle_t acquire();
+  void release(cublasHandle_t h);
+
+  size_t max_size() const { return max_size_; }
+
+private:
+  cublasHandle_t create_handle();
+
+  CUcontext ctx_;
+  std::deque<cublasHandle_t> available_handles_;
+  std::vector<cublasHandle_t> all_handles_;
+  size_t max_size_;
+  mutable std::mutex pool_mutex_;
+};
+
+/// Per-device cuBLAS handle table.
+class CAF_CUDA_EXPORT DeviceCublasHandleTable {
+public:
+  explicit DeviceCublasHandleTable(CUcontext ctx, size_t pool_size = 32);
+
+  /// Get the cuBLAS handle for an actor and bind it to a stream.
+  cublasHandle_t get_handle(int actor_id, CUstream stream);
+
+  /// Release the handle assigned to an actor.
+  void release_handle(int actor_id);
+
+  size_t pool_size() const { return pool_.max_size(); }
+
+private:
+  CublasHandlePool pool_;
+  std::unordered_map<int, cublasHandle_t> table_; ///< actor_id -> handle
+  mutable std::shared_mutex table_mutex_;
 };
 
 /// Per-device stream manager. Assigns streams to actor IDs.

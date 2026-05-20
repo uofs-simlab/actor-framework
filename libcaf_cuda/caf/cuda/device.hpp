@@ -121,6 +121,17 @@ public:
     stream_table_->release_stream(actor_id);
   }
 
+  /// Enable cuBLAS support.
+  void enable_cublas() {
+    if (!cublas_table_)
+      cublas_table_ = std::make_unique<DeviceCublasHandleTable>(context_);
+  }
+
+  /// Returns the cuBLAS handle associated with the actor id.
+  cublasHandle_t get_cublas_handle(int actor_id) {
+    if (!cublas_table_) return nullptr;
+    return cublas_table_->get_handle(actor_id, get_stream_for_actor(actor_id));
+  }
 
   // Overloads for make_arg using actor_id
   template <typename T>
@@ -310,6 +321,7 @@ private:
   int id_;
   const char* name_;
   std::unique_ptr<DeviceStreamTable> stream_table_;
+  std::unique_ptr<DeviceCublasHandleTable> cublas_table_;
   std::mutex stream_mutex_;
 
   // Cached GPU properties (queried once during construction)
