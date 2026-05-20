@@ -8,17 +8,16 @@ namespace caf::cuda {
 
 class manager_config {
 public:
-    manager_config() : scheduler_on(false) {}      // initialize the bool
-    manager_config(bool scheduler) : scheduler_on(scheduler) {}
-    manager_config(bool scheduler, bool memory_manager) : scheduler_on(scheduler), memory_manager_on(memory_manager) {}
+    manager_config() : actorBLAS(false), memory_manager_on(false) {}
+    manager_config(bool blas) : actorBLAS(blas), memory_manager_on(false) {}
+    manager_config(bool blas, bool memory_manager) : actorBLAS(blas), memory_manager_on(memory_manager) {}
     
-    bool getSchedulerOn() const { return scheduler_on; }
+    bool getActorBLAS() const { return actorBLAS; }
     bool getMemoryManagerOn() const { return memory_manager_on; }
 
 private:
-    bool scheduler_on;
+    bool actorBLAS;
     bool memory_manager_on = false;
 };
 
 } // namespace caf::cuda
-

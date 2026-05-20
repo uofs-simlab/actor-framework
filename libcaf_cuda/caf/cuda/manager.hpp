@@ -179,16 +179,6 @@ public:
 
   double available_memory_mb(int id = 0);
 
-  caf::actor get_scheduler_actor();
-
-
-
-  //methods used to send scheduler actors messages
-  void send_scheduler_actor_message(token_ptr token,int device_number = -1);
-  void send_scheduler_actor_message(std::vector<token_ptr> tokens,int device_number = -1);
-  void send_scheduler_actor_message(behavior_token_ptr token,int device_number);
-  void send_scheduler_actor_message(std::string behavior,int device_number);
-
   caf::actor get_memory_actor();
 
   caf::actor spawn_exit_actor(int num_actors);
@@ -205,19 +195,14 @@ private:
   //helper to compile a nvrtc program
   bool compile_nvrtc_program(const char* source, CUdevice device, std::vector<char>& ptx_out);
 
-  void init_scheduler_actors(caf::actor_system&);
-  
   //methods to create and destroy memory_actor
   void init_memory_actor(caf::actor_system&);
   void destroy_memory_actor();
 
   static manager* instance_;
   static std::mutex mutex_;
-  bool scheduler_on = false;
   bool memory_manager_on = false;
-  caf::actor scheduler_actor_handle;
   caf::actor memory_actor_handle;
-  std::vector<caf::actor> scheduler_actors;
 };
 
 } // namespace caf::cuda
