@@ -59,7 +59,19 @@ public:
 
     // Create a new context
     CUcontext new_ctx;
-    CHECK_CUDA(cuCtxCreate(&new_ctx, 0, cu_dev));
+#if CUDA_VERSION >= 13000
+    {
+      CUctxCreateParams ctx_params = {};
+      CHECK_CUDA(cuCtxCreate(&new_ctx, 
+                             &ctx_params, 
+                             CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, 
+                             cu_dev));
+    }
+#else
+    CHECK_CUDA(cuCtxCreate(&new_ctx, 
+                           CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, 
+                           cu_dev));
+#endif
 
     // Update the device object and platform's internal contexts_ vector
     dev_obj->reset_context(new_ctx);
