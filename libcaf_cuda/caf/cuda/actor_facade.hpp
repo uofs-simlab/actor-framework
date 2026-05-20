@@ -54,37 +54,46 @@ public:
 
   caf::behavior make_behavior() override {
     return {
+      [this](return_mem_ptr_atom, int device_num, int stream_id, std::vector<int> output_indices, Ts... args) {
+        enqueue_impl(device_num, stream_id, std::move(output_indices), {}, true, std::forward<Ts>(args)...);
+      },
+      [this](return_mem_ptr_atom, std::vector<int> output_indices, Ts... args) {
+        enqueue_impl(-1, static_cast<int>(actor_id_), std::move(output_indices), {}, true, std::forward<Ts>(args)...);
+      },
+      [this](return_mem_ptr_atom, Ts... args) {
+        enqueue_impl(-1, static_cast<int>(actor_id_), {}, {}, true, std::forward<Ts>(args)...);
+      },
       [this](int device_num, int stream_id, std::vector<int> output_indices, Ts... args) {
-        enqueue_impl(device_num, stream_id, std::move(output_indices), {}, std::forward<Ts>(args)...);
+        enqueue_impl(device_num, stream_id, std::move(output_indices), {}, false, std::forward<Ts>(args)...);
       },
       [this](int device_num, int stream_id, Ts... args) {
-        enqueue_impl(device_num, stream_id, {}, {}, std::forward<Ts>(args)...);
+        enqueue_impl(device_num, stream_id, {}, {}, false, std::forward<Ts>(args)...);
       },
       [this](int device_num, std::vector<int> output_indices, Ts... args) {
-        enqueue_impl(device_num, static_cast<int>(actor_id_), std::move(output_indices), {},
+        enqueue_impl(device_num, static_cast<int>(actor_id_), std::move(output_indices), {}, false,
                      std::forward<Ts>(args)...);
       },
       [this](std::vector<int> output_indices, Ts... args) {
-        enqueue_impl(-1, static_cast<int>(actor_id_), std::move(output_indices), {},
+        enqueue_impl(-1, static_cast<int>(actor_id_), std::move(output_indices), {}, false,
                      std::forward<Ts>(args)...);
       },
       [this](int device_num, Ts... args) {
         // Copy everything back if indices are omitted
-        enqueue_impl(device_num, static_cast<int>(actor_id_), {}, {}, std::forward<Ts>(args)...);
+        enqueue_impl(device_num, static_cast<int>(actor_id_), {}, {}, false, std::forward<Ts>(args)...);
       },
       [this](Ts... args) {
         // Copy everything back if indices are omitted
-        enqueue_impl(-1, static_cast<int>(actor_id_), {}, {}, std::forward<Ts>(args)...);
+        enqueue_impl(-1, static_cast<int>(actor_id_), {}, {}, false, std::forward<Ts>(args)...);
       },
       // Mapping handlers
       [this](int device_num, int stream_id, std::vector<output_mapping> mappings, Ts... args) {
-        enqueue_impl(device_num, stream_id, {}, std::move(mappings), std::forward<Ts>(args)...);
+        enqueue_impl(device_num, stream_id, {}, std::move(mappings), false, std::forward<Ts>(args)...);
       },
       [this](int device_num, std::vector<output_mapping> mappings, Ts... args) {
-        enqueue_impl(device_num, static_cast<int>(actor_id_), {}, std::move(mappings), std::forward<Ts>(args)...);
+        enqueue_impl(device_num, static_cast<int>(actor_id_), {}, std::move(mappings), false, std::forward<Ts>(args)...);
       },
       [this](std::vector<output_mapping> mappings, Ts... args) {
-        enqueue_impl(-1, static_cast<int>(actor_id_), {}, std::move(mappings), std::forward<Ts>(args)...);
+        enqueue_impl(-1, static_cast<int>(actor_id_), {}, std::move(mappings), false, std::forward<Ts>(args)...);
       }
     };
   }
@@ -92,7 +101,7 @@ public:
 private:
   template <class... Us>
   void enqueue_impl(int device_num, int stream_id, std::vector<int> output_indices, 
-                    std::vector<output_mapping> mappings, Us&&... xs) {
+                    std::vector<output_mapping> mappings, bool return_mem_ptrs, Us&&... xs) {
     command_runner<Ts...> runner;
     auto results = runner.run_async(program_, dims_, stream_id, 0, 
                                     device_num, std::forward<Us>(xs)...);
@@ -100,8 +109,32 @@ private:
     auto sender = actor_cast<actor>(this->current_sender());
     auto r_id = reply_id_;
 
+    if (sender) {
+      if (return_mem_ptrs) {
+        send_mem_ptr_handles(sender, r_id, results);
+      } else {
+        process_host_transfers(sender, r_id, results, std::move(output_indices), std::move(mappings));
+      }
+    }
+
+    // Final completion alert (Correlation ID, -1 to signal "all finished")
+    runner.add_callback(stream_id, device_num, [sender, r_id]() mutable {
+      if (sender) {
+        caf::anon_mail(r_id, -1).send(sender);
+      }
+    });
+  }
+
+  void send_mem_ptr_handles(const actor& sender, int r_id, const mem_tuple& results) {
+    std::apply([&](auto&&... args) {
+      caf::anon_mail(r_id, std::forward<decltype(args)>(args)...).send(sender);
+    }, results);
+  }
+
+  void process_host_transfers(const actor& sender, int r_id, const mem_tuple& results,
+                              std::vector<int> output_indices, std::vector<output_mapping> mappings) {
     // Determine which indices to process based on requests and mappings
-    std::vector<int> targets = output_indices;
+    std::vector<int> targets = std::move(output_indices);
     for (const auto& m : mappings) {
       if (std::find(targets.begin(), targets.end(), m.index) == targets.end()) {
         targets.push_back(m.index);
@@ -114,6 +147,7 @@ private:
       }
     }
 
+    command_runner<Ts...> runner;
     for (int idx : targets) {
       if (idx >= 0 && idx < static_cast<int>(sizeof...(Ts))) {
         // Dispatch runtime index to compile-time sequence
@@ -141,7 +175,6 @@ private:
               runner.copy_to_host_async(mem_ptr, static_cast<ValueType*>(custom_dst), dst_count, 
                 [sender, r_id, Index](ValueType*, size_t) {
                   if (sender) {
-                    // Notify requester that this index is ready in their buffer
                     caf::anon_mail(r_id, static_cast<int>(Index)).send(sender);
                   }
                 });
@@ -149,7 +182,6 @@ private:
               // Default: Copy into a new vector and send back
               runner.copy_to_host_async(mem_ptr, [sender, r_id, Index](std::vector<ValueType>&& data) {
                 if (sender) {
-                  // Send: Correlation ID, Argument Index, Data Vector
                   caf::anon_mail(r_id, static_cast<int>(Index), std::move(data)).send(sender);
                 }
               });
@@ -160,13 +192,6 @@ private:
         this->println("Warning: Output index {} is out of bounds", idx);
       }
     }
-
-    // Final completion alert (Correlation ID, -1 to signal "all finished")
-    runner.add_callback(stream_id, device_num, [sender, r_id]() mutable {
-      if (sender) {
-        caf::anon_mail(r_id, -1).send(sender);
-      }
-    });
   }
 
   // Helper to map runtime index to compile-time index for tuple access

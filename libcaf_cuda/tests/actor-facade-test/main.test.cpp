@@ -184,6 +184,59 @@ caf::behavior mmul_mapping_test(caf::stateful_actor<test_actor_state>* self,
     };
 }
 
+// New Separate Actor for testing mem_ptr return
+caf::behavior mmul_mem_ptr_return_test(caf::stateful_actor<test_actor_state>* self, 
+                                       caf::actor facade, int N) {
+    self->state().N = N;
+    self->state().h_a.assign(N * N, 7); // Use different values
+    self->state().h_b.assign(N * N, 8);
+    self->state().h_c.resize(N * N); // This will be filled from mem_ptr copy
+
+    auto arg1 = caf::cuda::create_in_arg(self->state().h_a);
+    auto arg2 = caf::cuda::create_in_arg(self->state().h_b);
+    auto arg3 = caf::cuda::create_out_arg_with_size<int>(N * N);
+    auto arg4 = caf::cuda::create_in_arg(N);
+
+    std::cout << "[INFO] Launching mem_ptr return test..." << std::endl;
+    self->state().start_time = std::chrono::steady_clock::now();
+    
+    // Request mem_ptrs back directly
+    self->mail(return_mem_ptr_atom_v, arg1, arg2, arg3, arg4).send(facade);
+
+    return {
+        [=](int r_id, caf::cuda::mem_ptr<int> a_ptr, caf::cuda::mem_ptr<int> b_ptr, 
+            caf::cuda::mem_ptr<int> c_ptr, caf::cuda::mem_ptr<int> n_ptr) {
+            
+            auto end_time = std::chrono::steady_clock::now();
+            std::chrono::duration<double> elapsed = end_time - self->state().start_time;
+            std::cout << "[MEM_PTR_RETURN] Latency: " << elapsed.count() << "s" << std::endl;
+
+            // Only copy the output mem_ptr (c_ptr) to host, as IN arguments cannot be copied back.
+            std::vector<int> h_c_from_gpu = c_ptr->copy_to_host();
+            
+            // Verify the output matrix C using the original host inputs
+            verify_mmul(self->state().h_a, self->state().h_b, h_c_from_gpu, self->state().N);
+
+            // Optionally, verify mem_ptr metadata for all returned pointers
+            if (a_ptr && b_ptr && c_ptr && n_ptr) {
+                if (a_ptr->size() == self->state().N * self->state().N && a_ptr->access() == IN &&
+                    b_ptr->size() == self->state().N * self->state().N && b_ptr->access() == IN &&
+                    c_ptr->size() == self->state().N * self->state().N && c_ptr->access() == OUT &&
+                    n_ptr->size() == 1 && n_ptr->access() == IN) {
+                    std::cout << "[SUCCESS] All mem_ptrs returned are valid and metadata is correct." << std::endl;
+                } else {
+                    std::cout << "[FAILURE] Mem_ptr metadata mismatch!" << std::endl;
+                }
+            } else {
+                std::cout << "[FAILURE] One or more mem_ptrs returned are null!" << std::endl;
+            }
+
+            self->send_exit(facade, exit_reason::user_shutdown);
+            self->quit();
+        }
+    };
+}
+
 void caf_main(caf::actor_system& sys) {
     // Initialize the CUDA subsystem
     caf::cuda::manager::init(sys);
@@ -211,6 +264,9 @@ void caf_main(caf::actor_system& sys) {
 
     // 3. Run Mapping Test
     sys.spawn(mmul_mapping_test, facade, N);
+
+    // 4. Run mem_ptr return test
+    sys.spawn(mmul_mem_ptr_return_test, facade, N);
 
     sys.await_all_actors_done();
     caf::cuda::manager::shutdown();
