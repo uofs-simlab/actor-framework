@@ -7,6 +7,19 @@
 #include <sstream>
 #include <stdexcept>
 #include <cmath>
+#include <atomic>
+#include <thread>
+
+struct TimingState {
+    std::chrono::steady_clock::time_point end_time;
+    std::atomic<bool> ready{false};
+};
+
+void completion_callback(void* userData) {
+    auto* state = static_cast<TimingState*>(userData);
+    state->end_time = std::chrono::steady_clock::now();
+    state->ready = true;
+}
 
 static void checkCU(CUresult r, const char* where) {
     if (r != CUDA_SUCCESS) {
@@ -106,15 +119,24 @@ void runMatrixMul(CUmodule module, CUfunction kernel, int N, CUstream stream) {
     // D2H copy
     // ----------------------------------
     auto t_d2h_start = clock::now();
+    TimingState t_state;
 
     cuMemcpyDtoHAsync(h_c.data(), d_c, bytes, stream);
-   // cuMemcpyDtoHAsync(h_c, d_c, bytes, stream);
-    cuStreamSynchronize(stream);
-    std::cout << "  (Transfer size: " << bytes << " bytes)\n";
-    auto t_d2h_end = clock::now();
 
-    auto t_total_end = clock::now();
+    // Enqueue the host function to capture timing when the copy finishes
+    checkCU(cuLaunchHostFunc(stream, completion_callback, &t_state), "cuLaunchHostFunc");
+
+    // In a real actor, we would not wait here. 
+    // For this benchmark driver, we wait for the callback to fire.
+    while (!t_state.ready) {
+        std::this_thread::yield();
+    }
+
+    std::cout << "  (Transfer size: " << bytes << " bytes)\n";
     
+    auto t_d2h_end = t_state.end_time;
+    auto t_total_end = t_state.end_time;
+
     
     // ----------------------------------
     // Free device memory
@@ -204,6 +226,10 @@ int main(int argc, char** argv) {
     for (int N : sizes) {
         try {
             runMatrixMul(module, kernel, N, stream);
+            
+            // Ensure stream is completely empty before starting the next size
+            checkCU(cuStreamSynchronize(stream), "cuStreamSynchronize between sizes");
+            
         } catch (const std::exception &e) {
             std::cerr << "Exception while running N=" << N << ": " << e.what() << "\n";
         }
