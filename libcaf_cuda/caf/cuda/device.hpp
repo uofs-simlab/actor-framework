@@ -133,6 +133,34 @@ public:
     return cublas_table_->get_handle(actor_id, get_stream_for_actor(actor_id));
   }
 
+  /// Performs single precision matrix-vector multiplication (y = alpha*A*x + beta*y).
+  /// Assumes A is in row-major order of dimensions m x n.
+  void sgemv(int actor_id, int m, int n, float alpha, mem_ptr<float> A,
+             mem_ptr<float> x, float beta, mem_ptr<float> y) {
+    cublasHandle_t handle = get_cublas_handle(actor_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    
+    // Row-major matrix A (m x n) is stored as m rows of n elements.
+    // Viewed as column-major by cuBLAS, this is a n x m matrix.
+    // To compute y = A * x:
+    // Op(Memory) * x = (n x m)^T * (n x 1) = (m x n) * (n x 1) = (m x 1).
+    // We use CUBLAS_OP_T. LDA is the 'rows' in the column-major view, which is n.
+    cublasStatus_t status = cublasSgemv(handle, CUBLAS_OP_T, 
+                                        n, m, 
+                                        &alpha,
+                                        reinterpret_cast<const float*>(A->mem()), n,
+                                        reinterpret_cast<const float*>(x->mem()), 1,
+                                        &beta,
+                                        reinterpret_cast<float*>(y->mem()), 1);
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasSgemv failed on device " + std::to_string(id_));
+  }
+
   // Overloads for make_arg using actor_id
   template <typename T>
   mem_ptr<T> make_arg(const in<T>& arg, int actor_id) {
