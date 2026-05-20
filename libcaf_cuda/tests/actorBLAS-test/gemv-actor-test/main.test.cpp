@@ -55,7 +55,7 @@ void caf_main(actor_system& sys) {
     std::vector<float> h_y(m, 0.0f);
 
     // Spawn the gemv_actor
-    auto blas_actor = sys.spawn<gemv_actor>();
+    auto blas_actor = sys.spawn(gemv_actor);
 
     // Prepare arguments using wrapper tags
     auto A_arg = create_in_arg(h_A);
