@@ -45,10 +45,8 @@ void caf_main(actor_system& sys) {
         std::cout << "[INFO] Test 1: Testing dot_actor with host-buffer arguments..." << std::endl;
         self->mail(x_arg, y_arg, res_arg, n).send(blas_actor);
         self->receive(
-            [&](int reply_id, int arg_index, std::vector<float> data) {
-                if (arg_index == 2) { // index 2 corresponds to res_arg
-                    verify_dot_correctness(expected, data);
-                }
+            [&](int reply_id, float data) {
+                verify_dot_correctness(expected, {data});
             }
         );
         std::cout << "[INFO] Test 1 complete." << std::endl;
@@ -67,10 +65,8 @@ void caf_main(actor_system& sys) {
         self->mail(x_ptr, y_ptr, res_ptr, n).send(blas_actor);
 
         self->receive(
-            [&](int reply_id, int arg_index, std::vector<float> data) {
-                if (arg_index == 2) {
-                    verify_dot_correctness(expected, data);
-                }
+            [&](int reply_id, float data) {
+                verify_dot_correctness(expected, {data});
             }
         );
         std::cout << "[INFO] Test 2 complete." << std::endl;
@@ -87,10 +83,8 @@ void caf_main(actor_system& sys) {
         self->mail(device_num, stream_id, std::get<0>(results), std::get<1>(results), std::get<2>(results), n).send(blas_actor);
 
         self->receive(
-            [&](int reply_id, int arg_index, std::vector<float> data) {
-                if (arg_index == 2) {
-                    verify_dot_correctness(expected, data);
-                }
+            [&](int reply_id, float data) {
+                verify_dot_correctness(expected, {data});
             }
         );
         std::cout << "[INFO] Test 3 complete." << std::endl;
@@ -99,7 +93,7 @@ void caf_main(actor_system& sys) {
     // Test 4: return_mem_ptr_atom (returning device handles)
     {
         std::cout << "\n[INFO] Test 4: Testing dot_actor with return_mem_ptr_atom..." << std::endl;
-        self->mail(return_mem_ptr_atom{}, x_arg, y_arg, res_arg, n).send(blas_actor);
+        self->mail(return_mem_ptr_atom{}, x_arg, y_arg, res_arg, n).send(blas_actor); // This line will now work
 
         // We expect the data handles (mem_ptrs) back
         self->receive(

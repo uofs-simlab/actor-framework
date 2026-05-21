@@ -48,6 +48,9 @@ public:
       },
       [this](return_mem_ptr_atom, mem_ptr<float> x, mem_ptr<float> y, mem_ptr<float> res, int n) {
         enqueue_sdot(-1, actor_id_, x, y, res, n, true);
+      },
+      [this](return_mem_ptr_atom, in<float> x, in<float> y, out<float> res, int n) {
+        enqueue_sdot(-1, actor_id_, x, y, res, n, true);
       }
     };
   }
@@ -93,4 +96,3 @@ private:
 };
 
 } // namespace caf::cuda
-
