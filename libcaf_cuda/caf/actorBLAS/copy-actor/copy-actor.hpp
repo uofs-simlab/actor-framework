@@ -46,8 +46,17 @@ public:
       [this](int device_num, int stream_id, mem_ptr<float> x, mem_ptr<float> y, int n) {
         enqueue_scopy(device_num, stream_id, x, y, n, false);
       },
+      [this](return_mem_ptr_atom, in<float> x, out<float> y, int n) {
+        enqueue_scopy(-1, actor_id_, x, y, n, true);
+      },
+      [this](return_mem_ptr_atom, int device_num, int stream_id, in<float> x, out<float> y, int n) {
+        enqueue_scopy(device_num, stream_id, x, y, n, true);
+      },
       [this](return_mem_ptr_atom, mem_ptr<float> x, mem_ptr<float> y, int n) {
         enqueue_scopy(-1, actor_id_, x, y, n, true);
+      },
+      [this](return_mem_ptr_atom, int device_num, int stream_id, mem_ptr<float> x, mem_ptr<float> y, int n) {
+        enqueue_scopy(device_num, stream_id, x, y, n, true);
       }
     };
   }
@@ -78,7 +87,8 @@ private:
     if (!sender) return;
     auto r_id = reply_id_;
     if (return_ptrs) {
-      caf::anon_mail(r_id, x_ptr, y_ptr).send(sender);
+      caf::anon_mail(r_id, 0, x_ptr).send(sender);
+      caf::anon_mail(r_id, 1, y_ptr).send(sender);
     } else {
       runner.copy_to_host_async(y_ptr, [sender, r_id](std::vector<float>&& data) {
         if (sender) {
@@ -93,4 +103,3 @@ private:
 };
 
 } // namespace caf::cuda
-
