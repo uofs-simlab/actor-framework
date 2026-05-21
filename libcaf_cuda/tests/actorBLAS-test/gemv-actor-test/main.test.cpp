@@ -73,13 +73,9 @@ void caf_main(actor_system& sys) {
                 if (arg_index == 2) { // index 2 corresponds to y_arg
                     verify_gemv_correctness(m, n, alpha, beta, data);
                 }
-            },
-            [&](int reply_id, int signal) {
-                if (signal == -1) {
-                    std::cout << "[INFO] Test 1 complete." << std::endl;
-                }
             }
         );
+        std::cout << "[INFO] Test 1 complete." << std::endl;
     }
 
     // Test 2: mem_ptr inputs
@@ -99,13 +95,9 @@ void caf_main(actor_system& sys) {
                 if (arg_index == 2) {
                     verify_gemv_correctness(m, n, alpha, beta, data);
                 }
-            },
-            [&](int reply_id, int signal) {
-                if (signal == -1) {
-                    std::cout << "[INFO] Test 2 complete." << std::endl;
-                }
             }
         );
+        std::cout << "[INFO] Test 2 complete." << std::endl;
     }
 
     // Test 3: Routing control (device/stream) + mem_ptr
@@ -123,13 +115,9 @@ void caf_main(actor_system& sys) {
                 if (arg_index == 2) {
                     verify_gemv_correctness(m, n, alpha, beta, data);
                 }
-            },
-            [&](int reply_id, int signal) {
-                if (signal == -1) {
-                    std::cout << "[INFO] Test 3 complete." << std::endl;
-                }
             }
         );
+        std::cout << "[INFO] Test 3 complete." << std::endl;
     }
 
     // Test 4: return_mem_ptr_atom (returning device handles)
@@ -145,15 +133,7 @@ void caf_main(actor_system& sys) {
                 verify_gemv_correctness(m, n, alpha, beta, host_y);
             }
         );
-
-        // Separate receive for the completion signal to ensure both are processed
-        self->receive(
-            [&](int reply_id, int signal) {
-                if (signal == -1) {
-                    std::cout << "[INFO] Test 4 complete." << std::endl;
-                }
-            }
-        );
+        std::cout << "[INFO] Test 4 complete." << std::endl;
     }
 
     self->send_exit(blas_actor, exit_reason::user_shutdown);

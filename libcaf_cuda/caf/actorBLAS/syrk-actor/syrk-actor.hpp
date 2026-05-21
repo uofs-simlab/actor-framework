@@ -50,12 +50,23 @@ public:
       [this](int device_num, int stream_id, in<float> A, in_out<float> C, int n, int k, float alpha, float beta) {
         enqueue_syrk(device_num, stream_id, A, C, n, k, alpha, beta, false);
       },
-      // mem_ptr based calls
+      // mem_ptr based calls (Implicit routing)
       [this](mem_ptr<float> A, mem_ptr<float> C, int n, int k) {
         enqueue_syrk(-1, actor_id_, A, C, n, k, 1.0f, 0.0f, false);
       },
       [this](mem_ptr<float> A, mem_ptr<float> C, int n, int k, float alpha, float beta) {
         enqueue_syrk(-1, actor_id_, A, C, n, k, alpha, beta, false);
+      },
+      // mem_ptr based calls (Explicit routing)
+      [this](int device_num, int stream_id, mem_ptr<float> A, mem_ptr<float> C, int n, int k) {
+        enqueue_syrk(device_num, stream_id, A, C, n, k, 1.0f, 0.0f, false);
+      },
+      [this](int device_num, int stream_id, mem_ptr<float> A, mem_ptr<float> C, int n, int k, float alpha, float beta) {
+        enqueue_syrk(device_num, stream_id, A, C, n, k, alpha, beta, false);
+      },
+      // Return mem_ptr with explicit routing
+      [this](return_mem_ptr_atom, int device_num, int stream_id, mem_ptr<float> A, mem_ptr<float> C, int n, int k, float alpha, float beta) {
+        enqueue_syrk(device_num, stream_id, A, C, n, k, alpha, beta, true);
       },
       // Mem ptr return overloads
       [this](return_mem_ptr_atom, in<float> A, in_out<float> C, int n, int k) {
@@ -66,6 +77,9 @@ public:
       },
       [this](return_mem_ptr_atom, mem_ptr<float> A, mem_ptr<float> C, int n, int k) {
         enqueue_syrk(-1, actor_id_, A, C, n, k, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, mem_ptr<float> A, mem_ptr<float> C, int n, int k, float alpha, float beta) {
+        enqueue_syrk(-1, actor_id_, A, C, n, k, alpha, beta, true);
       }
     };
   }
@@ -125,12 +139,6 @@ private:
         }
       });
     }
-
-    runner.add_callback(stream_id, device_num, [sender, r_id]() {
-      if (sender) {
-        caf::anon_mail(r_id, -1).send(sender);
-      }
-    });
   }
 
   int actor_id_;

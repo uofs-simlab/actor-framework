@@ -146,13 +146,6 @@ private:
         }
       });
     }
-
-    // Stream completion callback
-    runner.add_callback(stream_id, device_num, [sender, r_id]() {
-      if (sender) {
-        caf::anon_mail(r_id, -1).send(sender);
-      }
-    });
   }
 
   int actor_id_;

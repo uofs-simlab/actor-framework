@@ -116,13 +116,6 @@ private:
         process_host_transfers(sender, r_id, results, std::move(output_indices), std::move(mappings));
       }
     }
-
-    // Final completion alert (Correlation ID, -1 to signal "all finished")
-    runner.add_callback(stream_id, device_num, [sender, r_id]() mutable {
-      if (sender) {
-        caf::anon_mail(r_id, -1).send(sender);
-      }
-    });
   }
 
   void send_mem_ptr_handles(const actor& sender, int r_id, const mem_tuple& results) {
