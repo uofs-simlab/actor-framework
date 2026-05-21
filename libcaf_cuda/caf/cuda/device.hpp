@@ -205,6 +205,25 @@ public:
       throw std::runtime_error("cublasSaxpy failed on device " + std::to_string(id_));
   }
 
+  /// Performs single precision Euclidean norm (result = ||x||2).
+  void snrm2(int actor_id, int n, mem_ptr<float> x, mem_ptr<float> result) {
+    cublasHandle_t handle = get_cublas_handle(actor_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+
+    cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_DEVICE);
+    cublasStatus_t status = cublasSnrm2(handle, n, 
+                                        reinterpret_cast<const float*>(x->mem()), 1,
+                                        reinterpret_cast<float*>(result->mem()));
+    cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_HOST);
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasSnrm2 failed on device " + std::to_string(id_));
+  }
+
   // Overloads for make_arg using actor_id
   template <typename T>
   mem_ptr<T> make_arg(const in<T>& arg, int actor_id) {
