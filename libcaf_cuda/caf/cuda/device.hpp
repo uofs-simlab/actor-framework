@@ -171,11 +171,12 @@ public:
 
     CHECK_CUDA(cuCtxPushCurrent(context_));
     
-    // Row-major matrix A (n x k) is viewed as column-major k x n.
+    // Row-major matrix A (n x k) viewed as column-major is k x n.
     // To compute C = alpha * A * A^T + beta * C:
-    // We use CUBLAS_OP_T so that op(A) is (k x n)^T = n x k.
-    // LDA is the number of rows in the column-major view, which is k.
-    cublasStatus_t status = cublasSsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T,
+    // We use CUBLAS_OP_T so that (k x n)^T * (k x n) = (n x k) * (k x n) = n x n.
+    // Note: We use CUBLAS_FILL_MODE_UPPER because the upper triangle in 
+    // column-major maps to the lower triangle in row-major layout.
+    cublasStatus_t status = cublasSsyrk(handle, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_T,
                                         n, k,
                                         &alpha,
                                         reinterpret_cast<const float*>(A->mem()), k,
