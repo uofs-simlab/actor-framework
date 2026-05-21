@@ -51,6 +51,12 @@ public:
       },
       [this](return_mem_ptr_atom, in<float> x, in<float> y, out<float> res, int n) {
         enqueue_sdot(-1, actor_id_, x, y, res, n, true);
+      },
+      [this](return_mem_ptr_atom,int device, int stream, in<float> x, in<float> y, out<float> res, int n) {
+        enqueue_sdot(device,stream, x, y, res, n, true);
+      },
+       [this](return_mem_ptr_atom,int device_num, int stream_id ,mem_ptr<float> x, mem_ptr<float> y, mem_ptr<float> res, int n) {
+        enqueue_sdot(device_num, stream_id, x, y, res, n, true);
       }
     };
   }
