@@ -46,6 +46,9 @@ public:
       [this](int device_num, int stream_id, in<float> A, in<float> x, out<float> y, int m, int n) {
         enqueue_gemv(device_num, stream_id, A, x, y, m, n, 1.0f, 0.0f, false);
       },
+      [this](int device_num, int stream_id, in<float> A, in<float> x, out<float> y, int m, int n, float alpha, float beta) {
+        enqueue_gemv(device_num, stream_id, A, x, y, m, n, alpha, beta, false);
+      },
       // mem_ptr based calls (useful for pipelines)
       [this](mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y, int m, int n) {
         enqueue_gemv(-1, actor_id_, A, x, y, m, n, 1.0f, 0.0f, false);
@@ -56,16 +59,28 @@ public:
       [this](int device_num, int stream_id, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y, int m, int n) {
         enqueue_gemv(device_num, stream_id, A, x, y, m, n, 1.0f, 0.0f, false);
       },
+      [this](int device_num, int stream_id, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y, int m, int n, float alpha, float beta) {
+        enqueue_gemv(device_num, stream_id, A, x, y, m, n, alpha, beta, false);
+      },
       // Mem ptr return overloads
       [this](return_mem_ptr_atom, in<float> A, in<float> x, out<float> y, int m, int n) {
         enqueue_gemv(-1, actor_id_, A, x, y, m, n, 1.0f, 0.0f, true);
       },
+      [this](return_mem_ptr_atom, in<float> A, in<float> x, out<float> y, int m, int n, float alpha, float beta) {
+        enqueue_gemv(-1, actor_id_, A, x, y, m, n, alpha, beta, true);
+      },
       [this](return_mem_ptr_atom, int device_num, int stream_id, in<float> A, in<float> x, out<float> y, int m, int n) {
         enqueue_gemv(device_num, stream_id, A, x, y, m, n, 1.0f, 0.0f, true);
       },
+      [this](return_mem_ptr_atom, int device_num, int stream_id, in<float> A, in<float> x, out<float> y, int m, int n, float alpha, float beta) {
+        enqueue_gemv(device_num, stream_id, A, x, y, m, n, alpha, beta, true);
+      },
       [this](return_mem_ptr_atom, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y, int m, int n) {
         enqueue_gemv(-1, actor_id_, A, x, y, m, n, 1.0f, 0.0f, true);
-      }
+      },
+      [this](return_mem_ptr_atom, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y, int m, int n, float alpha, float beta) {
+        enqueue_gemv(-1, actor_id_, A, x, y, m, n, alpha, beta, true);
+      },
     };
   }
 
@@ -133,7 +148,7 @@ private:
     }
 
     // Stream completion callback
-    runner.add_callback(stream_id, device_num, [sender, r_id]() mutable {
+    runner.add_callback(stream_id, device_num, [sender, r_id]() {
       if (sender) {
         caf::anon_mail(r_id, -1).send(sender);
       }

@@ -55,7 +55,7 @@ void caf_main(actor_system& sys) {
     std::vector<float> h_y(m, 0.0f);
 
     // Spawn the gemv_actor
-    auto blas_actor = sys.spawn(gemv_actor);
+    auto blas_actor = sys.spawn<gemv_actor>(1);
 
     // Prepare arguments using wrapper tags
     auto A_arg = create_in_arg(h_A);
@@ -64,27 +64,99 @@ void caf_main(actor_system& sys) {
 
     scoped_actor self{sys};
 
-    std::cout << "[INFO] Testing gemv_actor with " << m << "x" << n << " matrix..." << std::endl;
-    
-    // Send the GEMV request to the actor
-    self->mail(A_arg, x_arg, y_arg, m, n, alpha, beta).send(blas_actor);
+    // Test 1: Standard host-buffer based call
+    {
+        std::cout << "[INFO] Test 1: Testing gemv_actor with host-buffer arguments..." << std::endl;
+        self->mail(A_arg, x_arg, y_arg, m, n, alpha, beta).send(blas_actor);
+        self->receive(
+            [&](int reply_id, int arg_index, std::vector<float> data) {
+                if (arg_index == 2) { // index 2 corresponds to y_arg
+                    verify_gemv_correctness(m, n, alpha, beta, data);
+                }
+            },
+            [&](int reply_id, int signal) {
+                if (signal == -1) {
+                    std::cout << "[INFO] Test 1 complete." << std::endl;
+                }
+            }
+        );
+    }
 
-    // Receive results: gemv_actor sends data for 'out' buffers followed by a completion signal
-    self->receive(
-        [&](int reply_id, int arg_index, std::vector<float> data) {
-            if (arg_index == 2) { // index 2 corresponds to y_arg
-                verify_gemv_correctness(m, n, alpha, beta, data);
+    // Test 2: mem_ptr inputs
+    {
+        std::cout << "\n[INFO] Test 2: Testing gemv_actor with mem_ptr inputs..." << std::endl;
+        command_runner<in<float>, in<float>, out<float>> setup_runner;
+        // Manually transfer data to the GPU to get mem_ptr handles
+        auto results = setup_runner.transfer_memory(0, 0, create_in_arg(h_A), create_in_arg(h_x), create_out_arg(h_y));
+        auto A_ptr = std::get<0>(results);
+        auto x_ptr = std::get<1>(results);
+        auto y_ptr = std::get<2>(results);
+
+        self->mail(A_ptr, x_ptr, y_ptr, m, n, alpha, beta).send(blas_actor);
+
+        self->receive(
+            [&](int reply_id, int arg_index, std::vector<float> data) {
+                if (arg_index == 2) {
+                    verify_gemv_correctness(m, n, alpha, beta, data);
+                }
+            },
+            [&](int reply_id, int signal) {
+                if (signal == -1) {
+                    std::cout << "[INFO] Test 2 complete." << std::endl;
+                }
             }
-        },
-        [&](int reply_id, int signal) {
-            if (signal == -1) {
-                std::cout << "[INFO] GEMV actor execution and transfer complete." << std::endl;
+        );
+    }
+
+    // Test 3: Routing control (device/stream) + mem_ptr
+    {
+        std::cout << "\n[INFO] Test 3: Testing gemv_actor with specific device/stream and mem_ptr..." << std::endl;
+        int device_num = 0;
+        int stream_id = 42; 
+        command_runner<in<float>, in<float>, out<float>> setup_runner;
+        auto results = setup_runner.transfer_memory(device_num, stream_id, create_in_arg(h_A), create_in_arg(h_x), create_out_arg(h_y));
+        
+        self->mail(device_num, stream_id, std::get<0>(results), std::get<1>(results), std::get<2>(results), m, n, alpha, beta).send(blas_actor);
+
+        self->receive(
+            [&](int reply_id, int arg_index, std::vector<float> data) {
+                if (arg_index == 2) {
+                    verify_gemv_correctness(m, n, alpha, beta, data);
+                }
+            },
+            [&](int reply_id, int signal) {
+                if (signal == -1) {
+                    std::cout << "[INFO] Test 3 complete." << std::endl;
+                }
             }
-        }
-    );
+        );
+    }
+
+    // Test 4: return_mem_ptr_atom (returning device handles)
+    {
+        std::cout << "\n[INFO] Test 4: Testing gemv_actor with return_mem_ptr_atom..." << std::endl;
+        self->mail(return_mem_ptr_atom{}, A_arg, x_arg, y_arg, m, n, alpha, beta).send(blas_actor);
+
+        // We expect two messages back: the data (mem_ptrs) and the signal (-1)
+        self->receive(
+            [&](int reply_id, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y) {
+                command_runner<float> runner;
+                auto host_y = runner.copy_to_host(y);
+                verify_gemv_correctness(m, n, alpha, beta, host_y);
+            }
+        );
+
+        // Separate receive for the completion signal to ensure both are processed
+        self->receive(
+            [&](int reply_id, int signal) {
+                if (signal == -1) {
+                    std::cout << "[INFO] Test 4 complete." << std::endl;
+                }
+            }
+        );
+    }
 
     self->send_exit(blas_actor, exit_reason::user_shutdown);
     manager::shutdown();
 }
-
 CAF_MAIN(id_block::cuda)
