@@ -161,6 +161,32 @@ public:
       throw std::runtime_error("cublasSgemv failed on device " + std::to_string(id_));
   }
 
+  /// Performs symmetric rank-k update (C = alpha*A*A^T + beta*C).
+  /// Assumes A is in row-major order of dimensions n x k, and C is n x n.
+  void ssyrk(int actor_id, int n, int k, float alpha, mem_ptr<float> A,
+             float beta, mem_ptr<float> C) {
+    cublasHandle_t handle = get_cublas_handle(actor_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    
+    // Row-major matrix A (n x k) is viewed as column-major k x n.
+    // To compute C = alpha * A * A^T + beta * C:
+    // We use CUBLAS_OP_T so that op(A) is (k x n)^T = n x k.
+    // LDA is the number of rows in the column-major view, which is k.
+    cublasStatus_t status = cublasSsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T,
+                                        n, k,
+                                        &alpha,
+                                        reinterpret_cast<const float*>(A->mem()), k,
+                                        &beta,
+                                        reinterpret_cast<float*>(C->mem()), n);
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasSsyrk failed on device " + std::to_string(id_));
+  }
+
   // Overloads for make_arg using actor_id
   template <typename T>
   mem_ptr<T> make_arg(const in<T>& arg, int actor_id) {
