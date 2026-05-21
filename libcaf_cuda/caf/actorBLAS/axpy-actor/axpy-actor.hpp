@@ -59,6 +59,8 @@ public:
       },
       [this](return_mem_ptr_atom, mem_ptr<float> x, mem_ptr<float> y, int n, float alpha) {
         enqueue_axpy(-1, actor_id_, x, y, n, alpha, true);
+      }, [this](return_mem_ptr_atom,int device_num, int stream_id,mem_ptr<float> x, mem_ptr<float> y, int n, float alpha) {
+        enqueue_axpy(device_num, stream_id, x, y, n, alpha, true);
       },
     };
   }

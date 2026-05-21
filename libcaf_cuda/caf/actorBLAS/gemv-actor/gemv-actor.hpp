@@ -81,6 +81,12 @@ public:
       [this](return_mem_ptr_atom, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y, int m, int n, float alpha, float beta) {
         enqueue_gemv(-1, actor_id_, A, x, y, m, n, alpha, beta, true);
       },
+      [this](return_mem_ptr_atom,int device_num, int stream_id, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y, int m, int n) {
+        enqueue_gemv(device_num, stream_id, A, x, y, m, n, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, int device_num, int stream_id, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y, int m, int n, float alpha, float beta) {
+        enqueue_gemv(device_num, stream_id, A, x, y, m, n, alpha, beta, true);
+      },
     };
   }
 
