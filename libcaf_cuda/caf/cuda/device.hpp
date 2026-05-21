@@ -188,6 +188,23 @@ public:
       throw std::runtime_error("cublasSsyrk failed on device " + std::to_string(id_));
   }
 
+  /// Performs single precision vector-vector addition (y = alpha*x + y).
+  void saxpy(int actor_id, int n, float alpha, mem_ptr<float> x, mem_ptr<float> y) {
+    cublasHandle_t handle = get_cublas_handle(actor_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+
+    cublasStatus_t status = cublasSaxpy(handle, n, &alpha,
+                                        reinterpret_cast<const float*>(x->mem()), 1,
+                                        reinterpret_cast<float*>(y->mem()), 1);
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasSaxpy failed on device " + std::to_string(id_));
+  }
+
   // Overloads for make_arg using actor_id
   template <typename T>
   mem_ptr<T> make_arg(const in<T>& arg, int actor_id) {
