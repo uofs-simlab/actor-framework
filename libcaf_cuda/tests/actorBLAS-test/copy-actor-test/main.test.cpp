@@ -99,13 +99,15 @@ void caf_main(actor_system& sys) {
     // Test 4: return_mem_ptr_atom (returning device handles)
     {
         std::cout << "\n[INFO] Test 4: Testing copy_actor with return_mem_ptr_atom..." << std::endl;
-        self->mail(return_mem_ptr_atom{}, x_arg, y_arg, n).send(blas_actor);
+        int device_num = 0;
+        int stream_id = 42;
+        self->mail(return_mem_ptr_atom{}, device_num, stream_id, x_arg, y_arg, n).send(blas_actor);
 
         // We expect the data handles (mem_ptrs) back
         self->receive(
             [&](int reply_id, mem_ptr<float> x, mem_ptr<float> y) {
                 command_runner<float> runner;
-                // Since copy is async, we copy y back to host to verify
+                // Since the operation is async, copy the returned device pointer back to host to verify
                 auto host_y = runner.copy_to_host(y);
                 verify_copy_correctness(n, h_x, host_y);
             }
