@@ -39,7 +39,7 @@ void caf_main(actor_system& sys) {
   std::cout << "[INFO] Starting CG Solver..." << std::endl;
   
   // Call the actor to start solving
-  self->mail(atom("start")).send(solver);
+  self->mail(start_atom{}).send(solver);
 
   // Wait for the final solution vector (mem_ptr)
   self->receive(
@@ -54,4 +54,4 @@ void caf_main(actor_system& sys) {
   manager::shutdown();
 }
 
-CAF_MAIN(id_block::cuda)
+CAF_MAIN(id_block::cuda, id_block::cg_solver)
