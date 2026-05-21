@@ -179,6 +179,51 @@ void caf_main(actor_system& sys) {
     after(std::chrono::seconds(20)) >> [] { std::cout << "[ERROR] Test 4 timed out!" << std::endl; }
   );
 
+  // ===========================================================================
+  // TEST 5: Stress Test (Large Dense Matrix for Profiling)
+  // Matrix Size: 16384 x 16384 (268M elements, ~1 GB)
+  // This test is designed to saturate the GPU for a significant duration.
+  // Use this to observe utilization, thermal throttling, and SM occupancy.
+  // ===========================================================================
+  std::cout << "\n[INFO] --- Starting Test 5: Stress Test (16384x16384) ---" << std::endl;
+
+  int n5 = 16384;
+  // 1D Laplacian (Poisson) matrix: 2 on diagonal, -1 on sub-diagonals.
+  // Stored as a dense matrix to maximize GEMV computation.
+  std::cout << "[INFO] Constructing 1GB matrix on host (this may take a moment)..." << std::endl;
+  std::vector<float> h_A5(n5 * n5, 0.0f); 
+  for (int i = 0; i < n5; ++i) {
+    h_A5[i * n5 + i] = 2.0f;
+    if (i > 0) h_A5[i * n5 + (i - 1)] = -1.0f;
+    if (i < n5 - 1) h_A5[i * n5 + (i + 1)] = -1.0f;
+  }
+  std::vector<float> h_b5(n5, 1.0f);
+  std::vector<float> h_x5(n5, 0.0f);
+
+  std::cout << "[INFO] Transferring 1GB matrix to GPU..." << std::endl;
+  command_runner<in<float>, in<float>, in_out<float>> setup_runner5;
+  auto results5 = setup_runner5.transfer_memory(0, 0, create_in_arg(h_A5), create_in_arg(h_b5), create_in_out_arg(h_x5));
+  
+  auto d_A5 = std::get<0>(results5);
+  auto d_b5 = std::get<1>(results5);
+  auto d_x5 = std::get<2>(results5);
+  
+  // Run for 50,000 iterations with a near-zero tolerance to ensure sustained load.
+  auto solver5 = sys.spawn<cg_actor>(d_A5, d_b5, d_x5, n5, 1e-18f, 50000);
+
+  std::cout << "[INFO] Starting CG Solver stress test..." << std::endl;
+  auto start_time = std::chrono::high_resolution_clock::now();
+  self->mail(start_atom{}).send(solver5);
+
+  self->receive(
+    [&](mem_ptr<float> result_x) {
+      auto end_time = std::chrono::high_resolution_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time);
+      std::cout << "[SUCCESS] Stress Test Finished in " << duration.count() << " seconds." << std::endl;
+    },
+    after(std::chrono::minutes(15)) >> [] { std::cout << "[ERROR] Test 5 timed out!" << std::endl; }
+  );
+
   manager::shutdown();
 }
 
