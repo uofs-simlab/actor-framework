@@ -13,6 +13,13 @@ void caf_main(actor_system& sys) {
   manager_config config(true); 
   manager::init(sys, config);
 
+  scoped_actor self{sys};
+
+  // ===========================================================================
+  // TEST 1: Standard SPD Matrix (Should converge normally)
+  // ===========================================================================
+  std::cout << "[INFO] --- Starting Test 1: Standard SPD Matrix ---" << std::endl;
+
   int n = 3;
   // Example: Solve Ax = b
   // A = [4, 1, 0; 1, 3, 0; 0, 0, 2] (Symmetric Positive Definite)
@@ -32,10 +39,8 @@ void caf_main(actor_system& sys) {
   auto d_b = std::get<1>(results);
   auto d_x = std::get<2>(results);
 
-  // Spawn the Conjugate Gradient Actor
   auto solver = sys.spawn<cg_actor>(d_A, d_b, d_x, n, 1e-6f, 100);
 
-  scoped_actor self{sys};
   std::cout << "[INFO] Starting CG Solver..." << std::endl;
   
   // Call the actor to start solving
@@ -47,8 +52,131 @@ void caf_main(actor_system& sys) {
       auto host_x = result_x->copy_to_host();
       std::cout << "[SUCCESS] Solver finished. Result x: ";
       for (float val : host_x) std::cout << val << " ";
-      std::cout << std::endl;
+      std::cout << "\n" << std::endl;
     }
+  );
+
+  // ===========================================================================
+  // TEST 2: Bad Input - Poorly Conditioned / Near-Singular Matrix
+  // This test uses a matrix with a very high condition number.
+  // The error reduction will be extremely slow, likely triggering the 
+  // stagnation detection logic (threshold of 0.1% decrease over 15 iterations)
+  // which will then trigger a Mathematical Restart [RECOVERY].
+  // ===========================================================================
+  std::cout << "[INFO] --- Starting Test 2: Bad Input (Poorly Conditioned) ---" << std::endl;
+
+  int n2 = 2;
+  // A = [1, 0; 0, 1e-7] -> Very high condition number
+  std::vector<float> h_A2 = {1.0f, 0.0f, 
+                             0.0f, 0.0000001f};
+  // b = [1, 1]
+  std::vector<float> h_b2 = {1.0f, 1.0f};
+  std::vector<float> h_x2(n2, 0.0f);
+
+  command_runner<in<float>, in<float>, in_out<float>> setup_runner2;
+  auto results2 = setup_runner2.transfer_memory(0, 0, create_in_arg(h_A2), create_in_arg(h_b2), create_in_out_arg(h_x2));
+  
+  auto d_A2 = std::get<0>(results2);
+  auto d_b2 = std::get<1>(results2);
+  auto d_x2 = std::get<2>(results2);
+
+  // Spawn with a high max_iter to allow time for stagnation detection to trigger
+  auto solver2 = sys.spawn<cg_actor>(d_A2, d_b2, d_x2, n2, 1e-8f, 200);
+
+  std::cout << "[INFO] Starting CG Solver with poor conditioning..." << std::endl;
+  self->mail(start_atom{}).send(solver2);
+
+  self->receive(
+    [&](mem_ptr<float> result_x) {
+      auto host_x = result_x->copy_to_host();
+      std::cout << "[SUCCESS] Solver finished Test 2. Result x: ";
+      for (float val : host_x) std::cout << val << " ";
+      std::cout << "\n[INFO] Test 2 complete. Check logs for [RECOVERY] messages." << std::endl;
+    },
+    // Increase timeout for the poorly conditioned case
+    after(std::chrono::seconds(20)) >> [] { std::cout << "[ERROR] Test 2 timed out!" << std::endl; }
+  );
+
+  // ===========================================================================
+  // TEST 3: Stagnation Recovery (Hilbert Matrix)
+  // Hilbert matrices are famously ill-conditioned. Even for small N, 
+  // the ratio of max/min eigenvalues is huge, causing slow convergence.
+  // This should trigger the stagnation detection logic (count >= 15)
+  // because progress will be extremely slow, leading to a [RECOVERY] message.
+  // ===========================================================================
+  std::cout << "\n[INFO] --- Starting Test 3: Stagnation Recovery (Hilbert) ---" << std::endl;
+
+  int n3 = 20; // Increased matrix size for more pronounced ill-conditioning
+  std::vector<float> h_A3(n3 * n3);
+  for (int i = 0; i < n3; ++i) {
+    for (int j = 0; j < n3; ++j) {
+      // Hilbert matrix element H_ij = 1 / (i + j + 1)
+      h_A3[i * n3 + j] = 1.0f / (float)(i + j + 1);
+    }
+  }
+  std::vector<float> h_b3(n3, 1.0f);
+  std::vector<float> h_x3(n3, 0.0f);
+
+  command_runner<in<float>, in<float>, in_out<float>> setup_runner3;
+  auto results3 = setup_runner3.transfer_memory(0, 0, create_in_arg(h_A3), create_in_arg(h_b3), create_in_out_arg(h_x3));
+  
+  auto d_A3 = std::get<0>(results3);
+  auto d_b3 = std::get<1>(results3);
+  auto d_x3 = std::get<2>(results3);
+
+  // Use a very high max_iter and tight tolerance to ensure we hit the 15-iteration stagnation threshold.
+  auto solver3 = sys.spawn<cg_actor>(d_A3, d_b3, d_x3, n3, 1e-10f, 1000); // Increased max_iter to allow more iterations for stagnation
+
+  std::cout << "[INFO] Starting CG Solver with Hilbert matrix..." << std::endl;
+  self->mail(start_atom{}).send(solver3);
+
+  self->receive(
+    [&](mem_ptr<float> result_x) {
+      auto host_x = result_x->copy_to_host();
+      std::cout << "[SUCCESS] Solver finished Test 3. Result x: ";
+      for (float val : host_x) std::cout << val << " ";
+      std::cout << "\n[INFO] Test 3 complete. Check logs for [RECOVERY] messages." << std::endl;
+    },
+    after(std::chrono::seconds(120)) >> [] { std::cout << "[ERROR] Test 3 timed out!" << std::endl; } // Increased timeout for longer execution
+  );
+
+  // ===========================================================================
+  // TEST 4: The "Narrow Valley" Matrix
+  // A = [1, 1; 1, 1.00001]
+  // This matrix is technically SPD, but the eigenvalues are roughly 2 and 0.000005.
+  // This creates a extremely narrow "canyon" in the error surface.
+  // Rounding errors will quickly make the residual drift from the true A*x - b.
+  // ===========================================================================
+  std::cout << "\n[INFO] --- Starting Test 4: Narrow Valley (Recovery Test) ---" << std::endl;
+
+  int n4 = 2;
+  float eps = 0.00001f;
+  std::vector<float> h_A4 = {1.0f, 1.0f, 
+                             1.0f, 1.0f + eps};
+  std::vector<float> h_b4 = {2.0f, 2.0f + eps}; // Solution is exactly [1, 1]
+  std::vector<float> h_x4(n4, 0.0f);
+
+  command_runner<in<float>, in<float>, in_out<float>> setup_runner4;
+  auto results4 = setup_runner4.transfer_memory(0, 0, create_in_arg(h_A4), create_in_arg(h_b4), create_in_out_arg(h_x4));
+  
+  auto d_A4 = std::get<0>(results4);
+  auto d_b4 = std::get<1>(results4);
+  auto d_x4 = std::get<2>(results4);
+
+  // Tight tolerance to force many iterations
+  auto solver4 = sys.spawn<cg_actor>(d_A4, d_b4, d_x4, n4, 1e-9f, 200);
+
+  std::cout << "[INFO] Starting CG Solver with Narrow Valley matrix..." << std::endl;
+  self->mail(start_atom{}).send(solver4);
+
+  self->receive(
+    [&](mem_ptr<float> result_x) {
+      auto host_x = result_x->copy_to_host();
+      std::cout << "[SUCCESS] Solver finished Test 4. Result x: ";
+      for (float val : host_x) std::cout << val << " ";
+      std::cout << "\n[INFO] Test 4 complete." << std::endl;
+    },
+    after(std::chrono::seconds(20)) >> [] { std::cout << "[ERROR] Test 4 timed out!" << std::endl; }
   );
 
   manager::shutdown();

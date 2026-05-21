@@ -133,7 +133,7 @@ private:
   }
 
   void perform_restart() {
-    this->println("[RECOVERY] Triggering Mathematical Restart at iteration {}.", state().iterations);
+    std::cout << "[RECOVERY] Triggering Mathematical Restart at iteration " << state().iterations << "\n";
     state().stagnation_count = 0;
     state().step = cg_step::restart_gemv_y;
     this->mail(return_mem_ptr_atom_v, state().A, state().x, state().y_tmp, state().n, state().n).send(state().gemv_actor);
@@ -169,15 +169,23 @@ private:
 
   void check_stagnation() {
     auto& s = state();
+    // Debugging prints to observe stagnation behavior
+    // std::cout << "[CG_DEBUG] Iter: " << s.iterations 
+    //           << ", cur_norm: " << s.cur_norm 
+    //           << ", last_norm: " << s.last_norm << ", stagnation_count: " << s.stagnation_count << "\n";
+    
+    bool diverged = s.last_norm > 0 && s.cur_norm > s.last_norm * 1.5f;
+    bool stalled = s.last_norm > 0 && s.cur_norm > s.last_norm * 0.999f;
+
     s.iterations++;
-    if (s.last_norm > 0 && s.cur_norm > s.last_norm * 0.999f) {
+    if (stalled || diverged) {
       s.stagnation_count++;
     } else {
       s.stagnation_count = 0;
     }
     s.last_norm = s.cur_norm;
 
-    if (s.stagnation_count >= 15) {
+    if (s.stagnation_count >= 15 || diverged) {
       perform_restart();
     } else {
       s.beta = s.rho / s.old_rho;
