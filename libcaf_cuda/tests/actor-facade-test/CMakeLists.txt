@@ -46,6 +46,7 @@ target_link_libraries(test
     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
     CUDA::nvrtc
+    CUDA::cublas
 )
 target_link_libraries(throughput_mapping_bench_test
   PRIVATE
@@ -53,6 +54,7 @@ target_link_libraries(throughput_mapping_bench_test
     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
     CUDA::nvrtc
+    CUDA::cublas
 )
 
 
@@ -61,6 +63,7 @@ target_link_libraries(latency_bench_test
     "${CAF_BUILD}/libcaf_core/libcaf_core.so"
     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
+    CUDA::cublas
     CUDA::nvrtc
 )
 target_link_libraries(throughput_bench_test
@@ -69,4 +72,5 @@ target_link_libraries(throughput_bench_test
     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
     CUDA::nvrtc
+    CUDA::cublas
 )

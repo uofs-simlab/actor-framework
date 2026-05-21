@@ -40,17 +40,14 @@ caf::behavior latency_manager(caf::stateful_actor<latency_test_state>* self,
 
     return {
         [=](int r_id, int index, std::vector<int> data) {
-            // We don't need to do anything with the data for timing
-        },
-        [=](int r_id, int index) {
-            if (index == -1) { // Completion signal
+            if (index == 2) { // Completion signal for Matrix C
                 auto end_time = std::chrono::steady_clock::now();
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     end_time - self->state().start_time).count();
-                
+
                 std::cout << "[LATENCY TEST] matrix_size=" << self->state().N 
                           << ", time=" << elapsed << " ms" << std::endl;
-                
+
                 self->send_exit(facade, exit_reason::user_shutdown);
                 self->quit();
             }

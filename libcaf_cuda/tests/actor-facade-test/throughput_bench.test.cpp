@@ -44,10 +44,7 @@ caf::behavior throughput_manager(caf::stateful_actor<throughput_state>* self,
 
     return {
         [=](int r_id, int index, std::vector<int> data) {
-            // Ignore data buffers
-        },
-        [=](int r_id, int index) {
-            if (index == -1) { // Completion signal for one request
+            if (index == 2) { // Matrix C arrived
                 if (++self->state().results_received == self->state().total_expected) {
                     auto end_time = std::chrono::steady_clock::now();
                     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(

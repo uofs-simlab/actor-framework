@@ -69,10 +69,8 @@ caf::behavior mmul_facade_test(caf::stateful_actor<test_actor_state>* self,
 
     return {
         [=](int r_id, int index, std::vector<int> data) {
-            if (index == 2) self->state().h_c = std::move(data);
-        },
-        [=](int r_id, int index) {
-            if (index == -1) {
+            if (index == 2) {
+                self->state().h_c = std::move(data);
                 auto end_time = std::chrono::steady_clock::now();
                 std::chrono::duration<double> elapsed = end_time - self->state().start_time;
                 std::cout << "[BASIC] Latency: " << elapsed.count() << "s" << std::endl;
@@ -80,6 +78,7 @@ caf::behavior mmul_facade_test(caf::stateful_actor<test_actor_state>* self,
                 self->quit();
             }
         }
+        // No longer expecting index == -1 completion signal
     };
 }
 
@@ -111,22 +110,22 @@ caf::behavior mmul_advanced_facade_test(caf::stateful_actor<test_actor_state>* s
 
     return {
         [=](int r_id, int index, std::vector<int> data) {
-            // Verify that we ONLY get index 2, as requested in output_indices
-            bool requested = std::find(output_indices.begin(), output_indices.end(), index) != output_indices.end();
-            if (!requested) {
-                std::cout << "[ERROR] Received unrequested index: " << index << std::endl;
-            }
-            if (index == 2) self->state().h_c = std::move(data);
-        },
-        [=](int r_id, int index) {
-            if (index == -1) {
+            if (index == 2) {
+                self->state().h_c = std::move(data);
+
+                // Verify that we ONLY get index 2, as requested in output_indices
+                bool requested = std::find(output_indices.begin(), output_indices.end(), index) != output_indices.end();
+                if (!requested) {
+                    std::cout << "[ERROR] Received unrequested index: " << index << std::endl;
+                }
+
                 auto end_time = std::chrono::steady_clock::now();
                 std::chrono::duration<double> elapsed = end_time - self->state().start_time;
-                
+
                 std::cout << "===== Advanced Performance Result =====" << std::endl;
                 std::cout << "Round-trip Latency: " << elapsed.count() << " seconds" << std::endl;
                 verify_mmul(self->state().h_a, self->state().h_b, self->state().h_c, self->state().N);
-                
+
                 self->send_exit(facade, exit_reason::user_shutdown);
                 self->quit();
             }
@@ -167,16 +166,15 @@ caf::behavior mmul_mapping_test(caf::stateful_actor<test_actor_state>* self,
         [=](int r_id, int index) {
             if (index == 2) {
                 std::cout << "[MAPPING] Received notification for mapped index 2." << std::endl;
-            } else if (index == -1) {
                 auto end_time = std::chrono::steady_clock::now();
                 std::chrono::duration<double> elapsed = end_time - self->state().start_time;
-                
+
                 std::cout << "===== Mapping Performance Result =====" << std::endl;
                 std::cout << "Round-trip Latency: " << elapsed.count() << " seconds" << std::endl;
-                
+
                 // Verify the data was copied directly into h_c
                 verify_mmul(self->state().h_a, self->state().h_b, self->state().h_c, self->state().N);
-                
+
                 self->send_exit(facade, exit_reason::user_shutdown);
                 self->quit();
             }

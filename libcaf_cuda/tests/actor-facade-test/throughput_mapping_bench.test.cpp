@@ -50,7 +50,7 @@ caf::behavior throughput_mapping_manager(caf::stateful_actor<mapping_throughput_
 
     return {
         [=](int r_id, int index) {
-            if (index == -1) { // Completion signal for the whole message
+            if (index == 2) { // Received notification for index 2 (Matrix C)
                 if (++self->state().results_received == self->state().total_expected) {
                     auto end_time = std::chrono::steady_clock::now();
                     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -64,8 +64,6 @@ caf::behavior throughput_mapping_manager(caf::stateful_actor<mapping_throughput_
                     self->quit();
                 }
             }
-            // Note: index == 2 is also received as a notification, but we only 
-            // care about the final -1 to signal everything (kernel + copy) is done.
         }
     };
 }
