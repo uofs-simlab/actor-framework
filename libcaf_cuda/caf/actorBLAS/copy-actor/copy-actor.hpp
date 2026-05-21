@@ -87,8 +87,7 @@ private:
     if (!sender) return;
     auto r_id = reply_id_;
     if (return_ptrs) {
-      caf::anon_mail(r_id, 0, x_ptr).send(sender);
-      caf::anon_mail(r_id, 1, y_ptr).send(sender);
+      caf::anon_mail(r_id, x_ptr, y_ptr).send(sender);
     } else {
       runner.copy_to_host_async(y_ptr, [sender, r_id](std::vector<float>&& data) {
         if (sender) {
