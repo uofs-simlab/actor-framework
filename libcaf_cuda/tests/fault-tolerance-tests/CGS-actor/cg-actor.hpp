@@ -103,19 +103,23 @@ public:
       },
       // Dot product result (Host scalar)
       [this](int rid, float val) {
-        handle_dot_result(val);
+        if (rid == id_dot) {
+          handle_dot_result(val);
+        }
       },
       // Matrix-Vector result (Memory handles)
       [this](int rid, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y) { // Assuming GEMV returns A, x, and y
-        handle_gemv_result();
+        if (rid == id_gemv) {
+          handle_gemv_result();
+        }
       },
-      // Copy result (Memory handles)
+      // Copy or AXPY result (Memory handles share the same signature)
       [this](int rid, mem_ptr<float> x, mem_ptr<float> y) {
-        handle_copy_result();
-      },
-      // AXPY result (Memory handles)
-      [this](int rid, mem_ptr<float> x, mem_ptr<float> y) { // Assuming AXPY returns x and y
-        handle_axpy_result();
+        if (rid == id_copy) {
+          handle_copy_result();
+        } else if (rid == id_axpy) {
+          handle_axpy_result();
+        }
       }
     };
   }
