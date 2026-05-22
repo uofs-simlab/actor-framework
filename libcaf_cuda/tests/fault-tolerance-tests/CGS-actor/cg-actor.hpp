@@ -47,6 +47,8 @@ struct cg_state {
   int n;
   float tol;
   int max_iter;
+  int device_num;
+  int stream_id;
 
   // Workspace vectors
   mem_ptr<float> r, p, w, y_tmp;
@@ -73,17 +75,18 @@ struct cg_state {
 class cg_actor : public stateful_actor<cg_state> {
 public:
   cg_actor(actor_config& cfg, mem_ptr<float> A, mem_ptr<float> b, mem_ptr<float> x, 
-           int n, float tol, int max_iter)
+           int n, float tol, int max_iter, int device_num, int stream_id)
     : stateful_actor<cg_state>(cfg) {
     state().A = A; state().b = b; state().x = x;
     state().n = n; state().tol = tol; state().max_iter = max_iter;
+    state().device_num = device_num; state().stream_id = stream_id;
     
     // Initialize workspace (assuming command_runner is used for allocation)
     command_runner<out<float>> runner;
-    state().r = runner.transfer_memory(0, 0, out<float>(n));
-    state().p = runner.transfer_memory(0, 0, out<float>(n));
-    state().w = runner.transfer_memory(0, 0, out<float>(n));
-    state().y_tmp = runner.transfer_memory(0, 0, out<float>(n));
+    state().r = runner.transfer_memory(device_num, stream_id, out<float>(n));
+    state().p = runner.transfer_memory(device_num, stream_id, out<float>(n));
+    state().w = runner.transfer_memory(device_num, stream_id, out<float>(n));
+    state().y_tmp = runner.transfer_memory(device_num, stream_id, out<float>(n));
 
     // Spawn helpers with specific RIDs to distinguish messages
     state().dot_actor = this->system().spawn<caf::cuda::dot_actor>(id_dot);
@@ -100,43 +103,47 @@ public:
       },
       // Dot product result (Host scalar)
       [this](int rid, float val) {
-        if (rid != id_dot) return;
         handle_dot_result(val);
       },
       // Matrix-Vector result (Memory handles)
-      [this](int rid, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y) {
-        if (rid != id_gemv) return;
+      [this](int rid, mem_ptr<float> A, mem_ptr<float> x, mem_ptr<float> y) { // Assuming GEMV returns A, x, and y
         handle_gemv_result();
       },
-      // AXPY/Copy result (Memory handles)
+      // Copy result (Memory handles)
       [this](int rid, mem_ptr<float> x, mem_ptr<float> y) {
-        if (rid == id_axpy) handle_axpy_result();
-        else if (rid == id_copy) handle_copy_result();
+        handle_copy_result();
+      },
+      // AXPY result (Memory handles)
+      [this](int rid, mem_ptr<float> x, mem_ptr<float> y) { // Assuming AXPY returns x and y
+        handle_axpy_result();
       }
     };
   }
 
 private:
   void start_setup() {
+    auto& s = state();
     state().step = cg_step::init_r;
-    this->mail(return_mem_ptr_atom_v, state().b, state().r, state().n).send(state().copy_actor);
+    this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.b, s.r, s.n).send(s.copy_actor);
   }
 
   void iterate() {
+    auto& s = state();
     if (state().iterations >= state().max_iter || state().cur_norm < state().tol) {
       if (state().requester) this->mail(state().x).send(state().requester);
       state().step = cg_step::idle;
       return;
     }
     state().step = cg_step::main_gemv_w;
-    this->mail(return_mem_ptr_atom_v, state().A, state().p, state().w, state().n, state().n).send(state().gemv_actor);
+    this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.A, s.p, s.w, s.n, s.n).send(s.gemv_actor);
   }
 
   void perform_restart() {
+    auto& s = state();
     std::cout << "[RECOVERY] Triggering Mathematical Restart at iteration " << state().iterations << "\n";
     state().stagnation_count = 0;
     state().step = cg_step::restart_gemv_y;
-    this->mail(return_mem_ptr_atom_v, state().A, state().x, state().y_tmp, state().n, state().n).send(state().gemv_actor);
+    this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.A, s.x, s.y_tmp, s.n, s.n).send(s.gemv_actor);
   }
 
   void handle_dot_result(float val) {
@@ -150,7 +157,7 @@ private:
       case cg_step::main_dot_pw:
         s.alpha = s.rho / val;
         s.step = cg_step::main_axpy_x;
-        this->mail(return_mem_ptr_atom_v, s.p, s.x, s.n, s.alpha).send(s.axpy_actor);
+        this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.p, s.x, s.n, s.alpha).send(s.axpy_actor);
         break;
       case cg_step::main_dot_rr:
         s.old_rho = s.rho;
@@ -190,7 +197,7 @@ private:
     } else {
       s.beta = s.rho / s.old_rho;
       s.step = cg_step::update_p_copy_r;
-      this->mail(return_mem_ptr_atom_v, s.r, s.w, s.n).send(s.copy_actor);
+      this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.r, s.w, s.n).send(s.copy_actor);
     }
   }
 
@@ -198,10 +205,10 @@ private:
     auto& s = state();
     if (s.step == cg_step::main_gemv_w) {
       s.step = cg_step::main_dot_pw;
-      this->mail(s.p, s.w, s.y_tmp, s.n).send(s.dot_actor);
+      this->mail(s.device_num, s.stream_id, s.p, s.w, s.y_tmp, s.n).send(s.dot_actor);
     } else if (s.step == cg_step::restart_gemv_y) {
       s.step = cg_step::restart_copy_b;
-      this->mail(return_mem_ptr_atom_v, s.b, s.r, s.n).send(s.copy_actor);
+      this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.b, s.r, s.n).send(s.copy_actor);
     }
   }
 
@@ -209,16 +216,16 @@ private:
     auto& s = state();
     if (s.step == cg_step::main_axpy_x) {
       s.step = cg_step::main_axpy_r;
-      this->mail(return_mem_ptr_atom_v, s.w, s.r, s.n, -s.alpha).send(s.axpy_actor);
+      this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.w, s.r, s.n, -s.alpha).send(s.axpy_actor);
     } else if (s.step == cg_step::main_axpy_r) {
       s.step = cg_step::main_dot_rr;
-      this->mail(s.r, s.r, s.y_tmp, s.n).send(s.dot_actor);
+      this->mail(s.device_num, s.stream_id, s.r, s.r, s.y_tmp, s.n).send(s.dot_actor);
     } else if (s.step == cg_step::update_p_axpy_p) {
       s.step = cg_step::update_p_final_copy;
-      this->mail(return_mem_ptr_atom_v, s.w, s.p, s.n).send(s.copy_actor);
+      this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.w, s.p, s.n).send(s.copy_actor);
     } else if (s.step == cg_step::restart_axpy_r) {
       s.step = cg_step::restart_copy_p;
-      this->mail(return_mem_ptr_atom_v, s.r, s.p, s.n).send(s.copy_actor);
+      this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.r, s.p, s.n).send(s.copy_actor);
     }
   }
 
@@ -227,26 +234,26 @@ private:
     switch (s.step) {
       case cg_step::init_r:
         s.step = cg_step::init_p;
-        this->mail(return_mem_ptr_atom_v, s.r, s.p, s.n).send(s.copy_actor);
+        this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.r, s.p, s.n).send(s.copy_actor);
         break;
       case cg_step::init_p:
         s.step = cg_step::init_rho;
-        this->mail(s.r, s.r, s.y_tmp, s.n).send(s.dot_actor);
+        this->mail(s.device_num, s.stream_id, s.r, s.r, s.y_tmp, s.n).send(s.dot_actor);
         break;
       case cg_step::update_p_copy_r:
         s.step = cg_step::update_p_axpy_p;
-        this->mail(return_mem_ptr_atom_v, s.p, s.w, s.n, s.beta).send(s.axpy_actor);
+        this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.p, s.w, s.n, s.beta).send(s.axpy_actor);
         break;
       case cg_step::update_p_final_copy:
         iterate();
         break;
       case cg_step::restart_copy_b:
         s.step = cg_step::restart_axpy_r;
-        this->mail(return_mem_ptr_atom_v, s.y_tmp, s.r, s.n, -1.0f).send(s.axpy_actor);
+        this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.y_tmp, s.r, s.n, -1.0f).send(s.axpy_actor);
         break;
       case cg_step::restart_copy_p:
         s.step = cg_step::restart_dot_rho;
-        this->mail(s.r, s.r, s.y_tmp, s.n).send(s.dot_actor);
+        this->mail(s.device_num, s.stream_id, s.r, s.r, s.y_tmp, s.n).send(s.dot_actor);
         break;
       default: break;
     }
