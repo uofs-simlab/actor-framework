@@ -39,7 +39,7 @@ void caf_main(actor_system& sys) {
   auto d_b = std::get<1>(results);
   auto d_x = std::get<2>(results);
 
-  auto solver = sys.spawn<cg_actor>(d_A, d_b, d_x, n, 1e-6f, 100);
+  auto solver = sys.spawn<cg_actor>(d_A, d_b, d_x, n, 1e-6f, 100, 0, 0);
 
   std::cout << "[INFO] Starting CG Solver..." << std::endl;
   
@@ -81,7 +81,7 @@ void caf_main(actor_system& sys) {
   auto d_x2 = std::get<2>(results2);
 
   // Spawn with a high max_iter to allow time for stagnation detection to trigger
-  auto solver2 = sys.spawn<cg_actor>(d_A2, d_b2, d_x2, n2, 1e-8f, 200);
+  auto solver2 = sys.spawn<cg_actor>(d_A2, d_b2, d_x2, n2, 1e-8f, 200, 0, 0);
 
   std::cout << "[INFO] Starting CG Solver with poor conditioning..." << std::endl;
   self->mail(start_atom{}).send(solver2);
@@ -125,7 +125,7 @@ void caf_main(actor_system& sys) {
   auto d_x3 = std::get<2>(results3);
 
   // Use a very high max_iter and tight tolerance to ensure we hit the 15-iteration stagnation threshold.
-  auto solver3 = sys.spawn<cg_actor>(d_A3, d_b3, d_x3, n3, 1e-10f, 1000); // Increased max_iter to allow more iterations for stagnation
+  auto solver3 = sys.spawn<cg_actor>(d_A3, d_b3, d_x3, n3, 1e-10f, 1000, 0, 0); // Increased max_iter to allow more iterations for stagnation
 
   std::cout << "[INFO] Starting CG Solver with Hilbert matrix..." << std::endl;
   self->mail(start_atom{}).send(solver3);
@@ -164,7 +164,7 @@ void caf_main(actor_system& sys) {
   auto d_x4 = std::get<2>(results4);
 
   // Tight tolerance to force many iterations
-  auto solver4 = sys.spawn<cg_actor>(d_A4, d_b4, d_x4, n4, 1e-9f, 200);
+  auto solver4 = sys.spawn<cg_actor>(d_A4, d_b4, d_x4, n4, 1e-9f, 200, 0, 0);
 
   std::cout << "[INFO] Starting CG Solver with Narrow Valley matrix..." << std::endl;
   self->mail(start_atom{}).send(solver4);
@@ -209,7 +209,7 @@ void caf_main(actor_system& sys) {
   auto d_x5 = std::get<2>(results5);
   
   // Run for 50,000 iterations with a near-zero tolerance to ensure sustained load.
-  auto solver5 = sys.spawn<cg_actor>(d_A5, d_b5, d_x5, n5, 1e-18f, 50000);
+  auto solver5 = sys.spawn<cg_actor>(d_A5, d_b5, d_x5, n5, 1e-18f, 50000, 0, 0);
 
   std::cout << "[INFO] Starting CG Solver stress test..." << std::endl;
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -223,6 +223,45 @@ void caf_main(actor_system& sys) {
     },
     after(std::chrono::minutes(15)) >> [] { std::cout << "[ERROR] Test 5 timed out!" << std::endl; }
   );
+
+  // ===========================================================================
+  // TEST 6: Concurrent Stress Test (2 Actors, Same Device, Different Streams)
+  // Both actors run the same 16384x16384 problem simultaneously.
+  // This tests the framework's ability to handle high-load concurrency.
+  // ===========================================================================
+  std::cout << "\n[INFO] --- Starting Test 6: Concurrent Stress Test (2 Actors, Same Device, Diff Streams) ---" << std::endl;
+
+  // Setup independent device vectors for Solver A (Stream 0) reusing host data from Test 5
+  command_runner<in<float>, in_out<float>> vec_runner;
+  auto res6a = vec_runner.transfer_memory(0, 0, create_in_arg(h_b5), create_in_out_arg(h_x5));
+  auto d_b6a = std::get<0>(res6a);
+  auto d_x6a = std::get<1>(res6a);
+
+  // Setup independent device vectors for Solver B (Stream 1) reusing host data from Test 5
+  auto res6b = vec_runner.transfer_memory(0, 1, create_in_arg(h_b5), create_in_out_arg(h_x5));
+  auto d_b6b = std::get<0>(res6b);
+  auto d_x6b = std::get<1>(res6b);
+
+  auto solver6a = sys.spawn<cg_actor>(d_A5, d_b6a, d_x6a, n5, 1e-18f, 50000, 0, 0);
+  auto solver6b = sys.spawn<cg_actor>(d_A5, d_b6b, d_x6b, n5, 1e-18f, 50000, 0, 1);
+
+  std::cout << "[INFO] Launching both solvers concurrently..." << std::endl;
+  auto start6 = std::chrono::high_resolution_clock::now();
+  self->mail(start_atom{}).send(solver6a);
+  self->mail(start_atom{}).send(solver6b);
+
+  // Wait for both solvers to complete
+  for (int i = 0; i < 2; ++i) {
+    self->receive(
+      [&](mem_ptr<float>) {
+        std::cout << "[INFO] A solver in Test 6 has completed." << std::endl;
+      },
+      after(std::chrono::minutes(20)) >> [] { std::cout << "[ERROR] A solver in Test 6 timed out!" << std::endl; }
+    );
+  }
+  auto end6 = std::chrono::high_resolution_clock::now();
+  auto total_dur = std::chrono::duration_cast<std::chrono::seconds>(end6 - start6);
+  std::cout << "[SUCCESS] Concurrent Stress Test Finished. Total wall-clock time: " << total_dur.count() << " seconds." << std::endl;
 
   manager::shutdown();
 }
