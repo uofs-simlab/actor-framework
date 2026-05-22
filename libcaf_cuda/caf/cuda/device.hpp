@@ -128,16 +128,16 @@ public:
   }
 
   /// Returns the cuBLAS handle associated with the actor id.
-  cublasHandle_t get_cublas_handle(int actor_id) {
+  cublasHandle_t get_cublas_handle(int stream_id) {
     if (!cublas_table_) return nullptr;
-    return cublas_table_->get_handle(actor_id, get_stream_for_actor(actor_id));
+    return cublas_table_->get_handle(stream_id, get_stream_for_actor(stream_id));
   }
 
   /// Performs single precision matrix-vector multiplication (y = alpha*A*x + beta*y).
   /// Assumes A is in row-major order of dimensions m x n.
-  void sgemv(int actor_id, int m, int n, float alpha, mem_ptr<float> A,
+  void sgemv(int stream_id, int m, int n, float alpha, mem_ptr<float> A,
              mem_ptr<float> x, float beta, mem_ptr<float> y) {
-    cublasHandle_t handle = get_cublas_handle(actor_id);
+    cublasHandle_t handle = get_cublas_handle(stream_id);
     if (!handle)
       throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
 
@@ -163,9 +163,9 @@ public:
 
   /// Performs symmetric rank-k update (C = alpha*A*A^T + beta*C).
   /// Assumes A is in row-major order of dimensions n x k, and C is n x n.
-  void ssyrk(int actor_id, int n, int k, float alpha, mem_ptr<float> A,
+  void ssyrk(int stream_id, int n, int k, float alpha, mem_ptr<float> A,
              float beta, mem_ptr<float> C) {
-    cublasHandle_t handle = get_cublas_handle(actor_id);
+    cublasHandle_t handle = get_cublas_handle(stream_id);
     if (!handle)
       throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
 
@@ -189,8 +189,8 @@ public:
   }
 
   /// Performs single precision vector-vector addition (y = alpha*x + y).
-  void saxpy(int actor_id, int n, float alpha, mem_ptr<float> x, mem_ptr<float> y) {
-    cublasHandle_t handle = get_cublas_handle(actor_id);
+  void saxpy(int stream_id, int n, float alpha, mem_ptr<float> x, mem_ptr<float> y) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
     if (!handle)
       throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
 
@@ -206,8 +206,8 @@ public:
   }
 
   /// Performs single precision Euclidean norm (result = ||x||2).
-  void snrm2(int actor_id, int n, mem_ptr<float> x, mem_ptr<float> result) {
-    cublasHandle_t handle = get_cublas_handle(actor_id);
+  void snrm2(int stream_id, int n, mem_ptr<float> x, mem_ptr<float> result) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
     if (!handle)
       throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
 
@@ -225,8 +225,8 @@ public:
   }
 
   /// Performs single precision dot product (result = x^T * y).
-  void sdot(int actor_id, int n, mem_ptr<float> x, mem_ptr<float> y, mem_ptr<float> result) {
-    cublasHandle_t handle = get_cublas_handle(actor_id);
+  void sdot(int stream_id, int n, mem_ptr<float> x, mem_ptr<float> y, mem_ptr<float> result) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
     if (!handle)
       throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
 
@@ -245,8 +245,8 @@ public:
   }
 
   /// Copies vector x to vector y (y = x).
-  void scopy(int actor_id, int n, mem_ptr<float> x, mem_ptr<float> y) {
-    cublasHandle_t handle = get_cublas_handle(actor_id);
+  void scopy(int stream_id, int n, mem_ptr<float> x, mem_ptr<float> y) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
     if (!handle)
       throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
 
@@ -259,6 +259,66 @@ public:
     CHECK_CUDA(cuCtxPopCurrent(nullptr));
     if (status != CUBLAS_STATUS_SUCCESS)
       throw std::runtime_error("cublasScopy failed on device " + std::to_string(id_));
+  }
+
+  /// Performs single precision matrix-matrix multiplication (C = alpha*A*B + beta*C).
+  /// Assumes A is m x k, B is k x n, and C is m x n, all in row-major order.
+  void sgemm(int stream_id, int m, int n, int k, float alpha, mem_ptr<float> A,
+             mem_ptr<float> B, float beta, mem_ptr<float> C) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+
+    // For row-major matrices A(m,k), B(k,n), C(m,n) to compute C = alpha*A*B + beta*C
+    // cuBLAS expects column-major. The equivalent column-major operation is:
+    // C_col = alpha * B_col * A_col + beta * C_col
+    // where X_col = X_row^T.
+    // So, we call cublasSgemm with:
+    // A_cublas = B (transposed), B_cublas = A (transposed)
+    // Dimensions: m_cublas = n, n_cublas = m, k_cublas = k
+    cublasStatus_t status = cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_T,
+                                        n, m, k,
+                                        &alpha,
+                                        reinterpret_cast<const float*>(B->mem()), n, // B is k x n row-major, lda = n
+                                        reinterpret_cast<const float*>(A->mem()), k, // A is m x k row-major, ldb = k
+                                        &beta,
+                                        reinterpret_cast<float*>(C->mem()), n); // C is m x n row-major, ldc = n
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasSgemm failed on device " + std::to_string(id_));
+  }
+
+  /// Performs double precision matrix-matrix multiplication (C = alpha*A*B + beta*C).
+  /// Assumes A is m x k, B is k x n, and C is m x n, all in row-major order.
+  void dgemm(int stream_id, int m, int n, int k, double alpha, mem_ptr<double> A,
+             mem_ptr<double> B, double beta, mem_ptr<double> C) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+
+    // For row-major matrices A(m,k), B(k,n), C(m,n) to compute C = alpha*A*B + beta*C
+    // cuBLAS expects column-major. The equivalent column-major operation is:
+    // C_col = alpha * B_col * A_col + beta * C_col
+    // where X_col = X_row^T.
+    // So, we call cublasDgemm with:
+    // A_cublas = B (transposed), B_cublas = A (transposed)
+    // Dimensions: m_cublas = n, n_cublas = m, k_cublas = k
+    cublasStatus_t status = cublasDgemm(handle, CUBLAS_OP_T, CUBLAS_OP_T,
+                                        n, m, k,
+                                        &alpha,
+                                        reinterpret_cast<const double*>(B->mem()), n, // B is k x n row-major, lda = n
+                                        reinterpret_cast<const double*>(A->mem()), k, // A is m x k row-major, ldb = k
+                                        &beta,
+                                        reinterpret_cast<double*>(C->mem()), n); // C is m x n row-major, ldc = n
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasDgemm failed on device " + std::to_string(id_));
   }
 
   // Overloads for make_arg using actor_id
