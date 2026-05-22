@@ -173,6 +173,98 @@ public:
       throw std::runtime_error("cublasSgemv failed on device " + std::to_string(id_));
   }
 
+  /// Performs sparse matrix-vector multiplication (y = alpha*A*x + beta*y) using CSR format.
+  void spmv_csr(int stream_id, int m, int n, int nnz, float alpha, 
+                mem_ptr<int> row_ptr, mem_ptr<int> col_ind, mem_ptr<float> values,
+                mem_ptr<float> x, float beta, mem_ptr<float> y) {
+    cusparseHandle_t handle = get_cusparse_handle(stream_id);
+    if (!handle)
+      throw std::runtime_error("cuSparse not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    
+    cusparseMatDescr_t descr;
+    cusparseCreateMatDescr(&descr);
+    cusparseSetMatType(descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+    cusparseSetMatIndexBase(descr, CUSPARSE_INDEX_BASE_ZERO);
+
+    cusparseStatus_t status = cusparseScsrmv(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                             m, n, nnz, &alpha, descr,
+                                             reinterpret_cast<const float*>(values->mem()),
+                                             reinterpret_cast<const int*>(row_ptr->mem()),
+                                             reinterpret_cast<const int*>(col_ind->mem()),
+                                             reinterpret_cast<const float*>(x->mem()),
+                                             &beta,
+                                             reinterpret_cast<float*>(y->mem()));
+
+    cusparseDestroyMatDescr(descr);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUSPARSE_STATUS_SUCCESS)
+      throw std::runtime_error("cusparseScsrmv failed on device " + std::to_string(id_));
+  }
+
+  /// Performs sparse matrix-vector multiplication (y = alpha*A*x + beta*y) using COO format.
+  void spmv_coo(int stream_id, int m, int n, int nnz, float alpha, 
+                mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> values,
+                mem_ptr<float> x, float beta, mem_ptr<float> y) {
+    cusparseHandle_t handle = get_cusparse_handle(stream_id);
+    if (!handle)
+      throw std::runtime_error("cuSparse not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    
+    cusparseMatDescr_t descr;
+    cusparseCreateMatDescr(&descr);
+    cusparseSetMatType(descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+    cusparseSetMatIndexBase(descr, CUSPARSE_INDEX_BASE_ZERO);
+
+    cusparseStatus_t status = cusparseScoomv(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                             m, n, nnz, &alpha, descr,
+                                             reinterpret_cast<const float*>(values->mem()),
+                                             reinterpret_cast<const int*>(row_ind->mem()),
+                                             reinterpret_cast<const int*>(col_ind->mem()),
+                                             reinterpret_cast<const float*>(x->mem()),
+                                             &beta,
+                                             reinterpret_cast<float*>(y->mem()));
+
+    cusparseDestroyMatDescr(descr);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUSPARSE_STATUS_SUCCESS)
+      throw std::runtime_error("cusparseScoomv failed on device " + std::to_string(id_));
+  }
+
+  /// Performs sparse matrix-vector multiplication (y = alpha*A*x + beta*y) using CSC format.
+  void spmv_csc(int stream_id, int m, int n, int nnz, float alpha, 
+                mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> values,
+                mem_ptr<float> x, float beta, mem_ptr<float> y) {
+    cusparseHandle_t handle = get_cusparse_handle(stream_id);
+    if (!handle)
+      throw std::runtime_error("cuSparse not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    
+    cusparseMatDescr_t descr;
+    cusparseCreateMatDescr(&descr);
+    cusparseSetMatType(descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+    cusparseSetMatIndexBase(descr, CUSPARSE_INDEX_BASE_ZERO);
+
+    // CSC is essentially CSR of the transpose. 
+    // Passing CUSPARSE_OPERATION_TRANSPOSE and swapping m/n dimensions correctly maps CSC data.
+    cusparseStatus_t status = cusparseScsrmv(handle, CUSPARSE_OPERATION_TRANSPOSE,
+                                             n, m, nnz, &alpha, descr,
+                                             reinterpret_cast<const float*>(values->mem()),
+                                             reinterpret_cast<const int*>(col_ptr->mem()),
+                                             reinterpret_cast<const int*>(row_ind->mem()),
+                                             reinterpret_cast<const float*>(x->mem()),
+                                             &beta,
+                                             reinterpret_cast<float*>(y->mem()));
+
+    cusparseDestroyMatDescr(descr);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUSPARSE_STATUS_SUCCESS)
+      throw std::runtime_error("cusparseScsrmv (CSC) failed on device " + std::to_string(id_));
+  }
+
   /// Performs symmetric rank-k update (C = alpha*A*A^T + beta*C).
   /// Assumes A is in row-major order of dimensions n x k, and C is n x n.
   void ssyrk(int stream_id, int n, int k, float alpha, mem_ptr<float> A,

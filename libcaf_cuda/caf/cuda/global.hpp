@@ -214,6 +214,9 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   CAF_ADD_ATOM(cuda, dtoh_done_atom)
   CAF_ADD_ATOM(cuda, gpu_done_atom)
   CAF_ADD_ATOM(cuda, return_mem_ptr_atom)
+  CAF_ADD_ATOM(cuda, csr_atom)
+  CAF_ADD_ATOM(cuda, csc_atom)
+  CAF_ADD_ATOM(cuda, coo_atom)
 
 CAF_END_TYPE_ID_BLOCK(cuda)
 
