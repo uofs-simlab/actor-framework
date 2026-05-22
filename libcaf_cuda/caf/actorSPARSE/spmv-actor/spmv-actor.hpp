@@ -69,9 +69,22 @@ public:
       [this](csc_atom, in<int> col_ptr, in<int> row_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz, float alpha, float beta) {
         enqueue_spmv_csc(-1, actor_id_, col_ptr, row_ind, val, x, y, m, n, nnz, alpha, beta, false);
       },
+      // CSC Routing overloads
+      [this](csc_atom, int device_num, int stream_id, in<int> col_ptr, in<int> row_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz) {
+        enqueue_spmv_csc(device_num, stream_id, col_ptr, row_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, false);
+      },
+      [this](csc_atom, int device_num, int stream_id, in<int> col_ptr, in<int> row_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz, float alpha, float beta) {
+        enqueue_spmv_csc(device_num, stream_id, col_ptr, row_ind, val, x, y, m, n, nnz, alpha, beta, false);
+      },
       // CSC mem_ptr overloads
       [this](csc_atom, mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz) {
         enqueue_spmv_csc(-1, actor_id_, col_ptr, row_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, false);
+      },
+      [this](csc_atom, mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz, float alpha, float beta) {
+        enqueue_spmv_csc(-1, actor_id_, col_ptr, row_ind, val, x, y, m, n, nnz, alpha, beta, false);
+      },
+      [this](csc_atom, int device_num, int stream_id, mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz) {
+        enqueue_spmv_csc(device_num, stream_id, col_ptr, row_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, false);
       },
       [this](csc_atom, int device_num, int stream_id, mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz, float alpha, float beta) {
         enqueue_spmv_csc(device_num, stream_id, col_ptr, row_ind, val, x, y, m, n, nnz, alpha, beta, false);
@@ -83,9 +96,22 @@ public:
       [this](coo_atom, in<int> row_ind, in<int> col_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz, float alpha, float beta) {
         enqueue_spmv_coo(-1, actor_id_, row_ind, col_ind, val, x, y, m, n, nnz, alpha, beta, false);
       },
+      // COO Routing overloads
+      [this](coo_atom, int device_num, int stream_id, in<int> row_ind, in<int> col_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz) {
+        enqueue_spmv_coo(device_num, stream_id, row_ind, col_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, false);
+      },
+      [this](coo_atom, int device_num, int stream_id, in<int> row_ind, in<int> col_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz, float alpha, float beta) {
+        enqueue_spmv_coo(device_num, stream_id, row_ind, col_ind, val, x, y, m, n, nnz, alpha, beta, false);
+      },
       // COO mem_ptr overloads
       [this](coo_atom, mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz) {
         enqueue_spmv_coo(-1, actor_id_, row_ind, col_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, false);
+      },
+      [this](coo_atom, mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz, float alpha, float beta) {
+        enqueue_spmv_coo(-1, actor_id_, row_ind, col_ind, val, x, y, m, n, nnz, alpha, beta, false);
+      },
+      [this](coo_atom, int device_num, int stream_id, mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz) {
+        enqueue_spmv_coo(device_num, stream_id, row_ind, col_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, false);
       },
       [this](coo_atom, int device_num, int stream_id, mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz, float alpha, float beta) {
         enqueue_spmv_coo(device_num, stream_id, row_ind, col_ind, val, x, y, m, n, nnz, alpha, beta, false);
@@ -119,8 +145,23 @@ public:
       [this](return_mem_ptr_atom, csc_atom, in<int> col_ptr, in<int> row_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz) {
         enqueue_spmv_csc(-1, actor_id_, col_ptr, row_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, true);
       },
+      [this](return_mem_ptr_atom, csc_atom, in<int> col_ptr, in<int> row_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz, float alpha, float beta) {
+        enqueue_spmv_csc(-1, actor_id_, col_ptr, row_ind, val, x, y, m, n, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, csc_atom, int device_num, int stream_id, in<int> col_ptr, in<int> row_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz) {
+        enqueue_spmv_csc(device_num, stream_id, col_ptr, row_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, csc_atom, int device_num, int stream_id, in<int> col_ptr, in<int> row_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz, float alpha, float beta) {
+        enqueue_spmv_csc(device_num, stream_id, col_ptr, row_ind, val, x, y, m, n, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, csc_atom, mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz) {
+        enqueue_spmv_csc(-1, actor_id_, col_ptr, row_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, true);
+      },
       [this](return_mem_ptr_atom, csc_atom, mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz, float alpha, float beta) {
         enqueue_spmv_csc(-1, actor_id_, col_ptr, row_ind, val, x, y, m, n, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, csc_atom, int device_num, int stream_id, mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz) {
+        enqueue_spmv_csc(device_num, stream_id, col_ptr, row_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, true);
       },
       [this](return_mem_ptr_atom, csc_atom, int device_num, int stream_id, mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz, float alpha, float beta) {
         enqueue_spmv_csc(device_num, stream_id, col_ptr, row_ind, val, x, y, m, n, nnz, alpha, beta, true);
@@ -129,8 +170,23 @@ public:
       [this](return_mem_ptr_atom, coo_atom, in<int> row_ind, in<int> col_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz) {
         enqueue_spmv_coo(-1, actor_id_, row_ind, col_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, true);
       },
+      [this](return_mem_ptr_atom, coo_atom, in<int> row_ind, in<int> col_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz, float alpha, float beta) {
+        enqueue_spmv_coo(-1, actor_id_, row_ind, col_ind, val, x, y, m, n, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, int device_num, int stream_id, in<int> row_ind, in<int> col_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz) {
+        enqueue_spmv_coo(device_num, stream_id, row_ind, col_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, int device_num, int stream_id, in<int> row_ind, in<int> col_ind, in<float> val, in<float> x, out<float> y, int m, int n, int nnz, float alpha, float beta) {
+        enqueue_spmv_coo(device_num, stream_id, row_ind, col_ind, val, x, y, m, n, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz) {
+        enqueue_spmv_coo(-1, actor_id_, row_ind, col_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, true);
+      },
       [this](return_mem_ptr_atom, coo_atom, mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz, float alpha, float beta) {
         enqueue_spmv_coo(-1, actor_id_, row_ind, col_ind, val, x, y, m, n, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, int device_num, int stream_id, mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz) {
+        enqueue_spmv_coo(device_num, stream_id, row_ind, col_ind, val, x, y, m, n, nnz, 1.0f, 0.0f, true);
       },
       [this](return_mem_ptr_atom, coo_atom, int device_num, int stream_id, mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> val, mem_ptr<float> x, mem_ptr<float> y, int m, int n, int nnz, float alpha, float beta) {
         enqueue_spmv_coo(device_num, stream_id, row_ind, col_ind, val, x, y, m, n, nnz, alpha, beta, true);
