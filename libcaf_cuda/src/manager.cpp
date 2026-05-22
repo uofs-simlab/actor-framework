@@ -55,15 +55,14 @@ void manager::init(caf::actor_system& sys, manager_config config) {
     caf::init_global_meta_objects<caf::id_block::cuda>();
     caf::init_global_meta_objects<caf::id_block::cuda_control>();
 
-    instance_->memory_manager_on = config.getMemoryManagerOn();
-
     if (config.getActorBLAS()) {
         for (auto& dev : instance_->platform_->devices())
             dev->enable_cublas();
     }
 
-    if (instance_->memory_manager_on) {
-	    instance_->init_memory_actor(sys);
+    if (config.getActorSparse()) {
+        for (auto& dev : instance_->platform_->devices())
+            dev->enable_cusparse();
     }
 }
 
@@ -92,10 +91,6 @@ void manager::shutdown() {
 
     if (!instance_)
         return;
-
-    if (instance_->memory_manager_on) {
-	    instance_->destroy_memory_actor();
-    }
 
     delete instance_;
     instance_ = nullptr;
@@ -236,36 +231,6 @@ program_ptr manager::create_program_from_fatbin(const std::string& filename,
 bool manager::compile_nvrtc_program(const char* source, CUdevice device, std::vector<char>& ptx_out) {
 
 	return caf::cuda::compile_nvrtc_program(source,device,ptx_out);
-}
-
-void manager::init_memory_actor(caf::actor_system& sys) {
-    if (memory_actor_handle)
-        return; // already initialized
-
-    int num_devices = platform_->get_num_devices();
-
-    memory_actor_handle =
-        sys.spawn(memory_actor, num_devices);
-}
-
-void manager::destroy_memory_actor() {
-    if (!memory_actor_handle)
-        return;
-
-    anon_send_exit(
-        memory_actor_handle,
-        caf::exit_reason::user_shutdown
-    );
-
-    memory_actor_handle = caf::actor{};
-}
-
-caf::actor manager::get_memory_actor() {
-    if (!instance_ || !instance_->memory_actor_handle) {
-        throw std::runtime_error("Memory actor not initialized");
-    }
-
-    return instance_->memory_actor_handle;
 }
 
 caf::actor manager::spawn_exit_actor(int num_actors) {

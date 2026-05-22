@@ -127,6 +127,18 @@ public:
       cublas_table_ = std::make_unique<DeviceCublasHandleTable>(context_);
   }
 
+  /// Enable cuSparse support.
+  void enable_cusparse() {
+    if (!cusparse_table_)
+      cusparse_table_ = std::make_unique<DeviceCusparseHandleTable>(context_);
+  }
+
+  /// Returns the cuSparse handle associated with the actor id.
+  cusparseHandle_t get_cusparse_handle(int stream_id) {
+    if (!cusparse_table_) return nullptr;
+    return cusparse_table_->get_handle(stream_id, get_stream_for_actor(stream_id));
+  }
+
   /// Returns the cuBLAS handle associated with the actor id.
   cublasHandle_t get_cublas_handle(int stream_id) {
     if (!cublas_table_) return nullptr;
@@ -557,6 +569,7 @@ private:
   const char* name_;
   std::unique_ptr<DeviceStreamTable> stream_table_;
   std::unique_ptr<DeviceCublasHandleTable> cublas_table_;
+  std::unique_ptr<DeviceCusparseHandleTable> cusparse_table_;
   std::mutex stream_mutex_;
 
   // Cached GPU properties (queried once during construction)

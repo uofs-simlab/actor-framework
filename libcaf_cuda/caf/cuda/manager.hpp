@@ -179,8 +179,6 @@ public:
 
   double available_memory_mb(int id = 0);
 
-  caf::actor get_memory_actor();
-
   caf::actor spawn_exit_actor(int num_actors);
 
 private:
@@ -195,14 +193,8 @@ private:
   //helper to compile a nvrtc program
   bool compile_nvrtc_program(const char* source, CUdevice device, std::vector<char>& ptx_out);
 
-  //methods to create and destroy memory_actor
-  void init_memory_actor(caf::actor_system&);
-  void destroy_memory_actor();
-
   static manager* instance_;
   static std::mutex mutex_;
-  bool memory_manager_on = false;
-  caf::actor memory_actor_handle;
 };
 
 } // namespace caf::cuda

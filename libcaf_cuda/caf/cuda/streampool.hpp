@@ -8,6 +8,7 @@
 #include <shared_mutex>
 #include <cuda.h>
 #include <cublas_v2.h>
+#include <cusparse.h>
 #include <stdexcept>
 
 namespace caf::cuda {
@@ -109,6 +110,46 @@ public:
 private:
   CublasHandlePool pool_;
   std::unordered_map<int, cublasHandle_t> table_; ///< actor_id -> handle
+  mutable std::shared_mutex table_mutex_;
+};
+
+/// Pool of cuSparse handles. Capped at 32.
+class CAF_CUDA_EXPORT CusparseHandlePool {
+public:
+  explicit CusparseHandlePool(CUcontext ctx, size_t max_size = 32);
+  ~CusparseHandlePool();
+
+  cusparseHandle_t acquire();
+  void release(cusparseHandle_t h);
+
+  size_t max_size() const { return max_size_; }
+
+private:
+  cusparseHandle_t create_handle();
+
+  CUcontext ctx_;
+  std::deque<cusparseHandle_t> available_handles_;
+  std::vector<cusparseHandle_t> all_handles_;
+  size_t max_size_;
+  mutable std::mutex pool_mutex_;
+};
+
+/// Per-device cuSparse handle table.
+class CAF_CUDA_EXPORT DeviceCusparseHandleTable {
+public:
+  explicit DeviceCusparseHandleTable(CUcontext ctx, size_t pool_size = 32);
+
+  /// Get the cuSparse handle for an actor and bind it to a stream.
+  cusparseHandle_t get_handle(int actor_id, CUstream stream);
+
+  /// Release the handle assigned to an actor.
+  void release_handle(int actor_id);
+
+  size_t pool_size() const { return pool_.max_size(); }
+
+private:
+  CusparseHandlePool pool_;
+  std::unordered_map<int, cusparseHandle_t> table_; ///< actor_id -> handle
   mutable std::shared_mutex table_mutex_;
 };
 
