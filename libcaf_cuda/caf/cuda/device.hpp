@@ -321,6 +321,53 @@ public:
       throw std::runtime_error("cublasDgemm failed on device " + std::to_string(id_));
   }
 
+  /// Performs single precision strided batched matrix-matrix multiplication.
+  void sgemm_strided_batched(int stream_id, int m, int n, int k, float alpha, mem_ptr<float> A, long long int strideA,
+                             mem_ptr<float> B, long long int strideB, float beta, mem_ptr<float> C, long long int strideC, int batchCount) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    
+    // Row-major A(m,k), B(k,n), C(m,n) -> cuBLAS (col-major): C = B * A
+    cublasStatus_t status = cublasSgemmStridedBatched(handle, CUBLAS_OP_T, CUBLAS_OP_T,
+                                                      n, m, k,
+                                                      &alpha,
+                                                      reinterpret_cast<const float*>(B->mem()), n, strideB,
+                                                      reinterpret_cast<const float*>(A->mem()), k, strideA,
+                                                      &beta,
+                                                      reinterpret_cast<float*>(C->mem()), n, strideC,
+                                                      batchCount);
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasSgemmStridedBatched failed on device " + std::to_string(id_));
+  }
+
+  /// Performs double precision strided batched matrix-matrix multiplication.
+  void dgemm_strided_batched(int stream_id, int m, int n, int k, double alpha, mem_ptr<double> A, long long int strideA,
+                             mem_ptr<double> B, long long int strideB, double beta, mem_ptr<double> C, long long int strideC, int batchCount) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    
+    cublasStatus_t status = cublasDgemmStridedBatched(handle, CUBLAS_OP_T, CUBLAS_OP_T,
+                                                      n, m, k,
+                                                      &alpha,
+                                                      reinterpret_cast<const double*>(B->mem()), n, strideB,
+                                                      reinterpret_cast<const double*>(A->mem()), k, strideA,
+                                                      &beta,
+                                                      reinterpret_cast<double*>(C->mem()), n, strideC,
+                                                      batchCount);
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasDgemm failed on device " + std::to_string(id_));
+  }
+
   // Overloads for make_arg using actor_id
   template <typename T>
   mem_ptr<T> make_arg(const in<T>& arg, int actor_id) {
