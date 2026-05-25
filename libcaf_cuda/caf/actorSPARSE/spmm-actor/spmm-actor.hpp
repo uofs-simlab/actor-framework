@@ -29,8 +29,8 @@ public:
   }
 
   ~spmm_actor() override {
-    // command_runner<> runner;
-    // runner.release_stream_for_actor(actor_id_);
+    command_runner<> runner;
+    runner.release_stream_for_actor(actor_id_);
   }
 
   caf::behavior make_behavior() override {
@@ -54,6 +54,12 @@ public:
       [this](csr_atom, mem_ptr<int> rp, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
         enqueue_spmm_csr(-1, actor_id_, rp, ci, v, b, c, m, n, k, nnz, alpha, beta, false);
       },
+      [this](csr_atom, int dev, int sid, mem_ptr<int> rp, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csr(dev, sid, rp, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, false);
+      },
+      [this](csr_atom, int dev, int sid, mem_ptr<int> rp, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csr(dev, sid, rp, ci, v, b, c, m, n, k, nnz, alpha, beta, false);
+      },
 
       // CSC Overloads
       [this](csc_atom, in<int> cp, in<int> ri, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz) {
@@ -61,6 +67,24 @@ public:
       },
       [this](csc_atom, in<int> cp, in<int> ri, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
         enqueue_spmm_csc(-1, actor_id_, cp, ri, v, b, c, m, n, k, nnz, alpha, beta, false);
+      },
+      [this](csc_atom, int dev, int sid, in<int> cp, in<int> ri, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csc(dev, sid, cp, ri, v, b, c, m, n, k, nnz, 1.0f, 0.0f, false);
+      },
+      [this](csc_atom, int dev, int sid, in<int> cp, in<int> ri, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csc(dev, sid, cp, ri, v, b, c, m, n, k, nnz, alpha, beta, false);
+      },
+      [this](csc_atom, mem_ptr<int> cp, mem_ptr<int> ri, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csc(-1, actor_id_, cp, ri, v, b, c, m, n, k, nnz, 1.0f, 0.0f, false);
+      },
+      [this](csc_atom, mem_ptr<int> cp, mem_ptr<int> ri, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csc(-1, actor_id_, cp, ri, v, b, c, m, n, k, nnz, alpha, beta, false);
+      },
+      [this](csc_atom, int dev, int sid, mem_ptr<int> cp, mem_ptr<int> ri, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csc(dev, sid, cp, ri, v, b, c, m, n, k, nnz, 1.0f, 0.0f, false);
+      },
+      [this](csc_atom, int dev, int sid, mem_ptr<int> cp, mem_ptr<int> ri, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csc(dev, sid, cp, ri, v, b, c, m, n, k, nnz, alpha, beta, false);
       },
 
       // COO Overloads
@@ -70,6 +94,24 @@ public:
       [this](coo_atom, in<int> ri, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
         enqueue_spmm_coo(-1, actor_id_, ri, ci, v, b, c, m, n, k, nnz, alpha, beta, false);
       },
+      [this](coo_atom, int dev, int sid, in<int> ri, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_coo(dev, sid, ri, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, false);
+      },
+      [this](coo_atom, int dev, int sid, in<int> ri, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_coo(dev, sid, ri, ci, v, b, c, m, n, k, nnz, alpha, beta, false);
+      },
+      [this](coo_atom, mem_ptr<int> ri, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_coo(-1, actor_id_, ri, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, false);
+      },
+      [this](coo_atom, mem_ptr<int> ri, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_coo(-1, actor_id_, ri, ci, v, b, c, m, n, k, nnz, alpha, beta, false);
+      },
+      [this](coo_atom, int dev, int sid, mem_ptr<int> ri, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_coo(dev, sid, ri, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, false);
+      },
+      [this](coo_atom, int dev, int sid, mem_ptr<int> ri, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_coo(dev, sid, ri, ci, v, b, c, m, n, k, nnz, alpha, beta, false);
+      },
 
       // return_mem_ptr_atom variants (CSR example)
       [this](return_mem_ptr_atom, csr_atom, in<int> rp, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz) {
@@ -78,11 +120,69 @@ public:
       [this](return_mem_ptr_atom, csr_atom, in<int> rp, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
         enqueue_spmm_csr(-1, actor_id_, rp, ci, v, b, c, m, n, k, nnz, alpha, beta, true);
       },
+      [this](return_mem_ptr_atom, csr_atom, int dev, int sid, in<int> rp, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csr(dev, sid, rp, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, csr_atom, int dev, int sid, in<int> rp, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csr(dev, sid, rp, ci, v, b, c, m, n, k, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, csr_atom, mem_ptr<int> rp, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csr(-1, actor_id_, rp, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, csr_atom, mem_ptr<int> rp, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csr(-1, actor_id_, rp, ci, v, b, c, m, n, k, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, csr_atom, int dev, int sid, mem_ptr<int> rp, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csr(dev, sid, rp, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, csr_atom, int dev, int sid, mem_ptr<int> rp, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csr(dev, sid, rp, ci, v, b, c, m, n, k, nnz, alpha, beta, true);
+      },
+      // return_mem_ptr_atom variants (CSC)
       [this](return_mem_ptr_atom, csc_atom, in<int> cp, in<int> ri, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz) {
         enqueue_spmm_csc(-1, actor_id_, cp, ri, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
       },
+      [this](return_mem_ptr_atom, csc_atom, int dev, int sid, in<int> cp, in<int> ri, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csc(dev, sid, cp, ri, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, csc_atom, int dev, int sid, in<int> cp, in<int> ri, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csc(dev, sid, cp, ri, v, b, c, m, n, k, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, csc_atom, mem_ptr<int> cp, mem_ptr<int> ri, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csc(-1, actor_id_, cp, ri, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, csc_atom, mem_ptr<int> cp, mem_ptr<int> ri, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csc(-1, actor_id_, cp, ri, v, b, c, m, n, k, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, csc_atom, int dev, int sid, mem_ptr<int> cp, mem_ptr<int> ri, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_csc(dev, sid, cp, ri, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, csc_atom, int dev, int sid, mem_ptr<int> cp, mem_ptr<int> ri, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_csc(dev, sid, cp, ri, v, b, c, m, n, k, nnz, alpha, beta, true);
+      },
       [this](return_mem_ptr_atom, coo_atom, in<int> ri, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz) {
         enqueue_spmm_coo(-1, actor_id_, ri, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, in<int> ri, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_coo(-1, actor_id_, ri, ci, v, b, c, m, n, k, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, int dev, int sid, in<int> ri, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_coo(dev, sid, ri, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, int dev, int sid, in<int> ri, in<int> ci, in<float> v, in<float> b, out<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_coo(dev, sid, ri, ci, v, b, c, m, n, k, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, mem_ptr<int> ri, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_coo(-1, actor_id_, ri, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, mem_ptr<int> ri, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_coo(-1, actor_id_, ri, ci, v, b, c, m, n, k, nnz, alpha, beta, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, int dev, int sid, mem_ptr<int> ri, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz) {
+        enqueue_spmm_coo(dev, sid, ri, ci, v, b, c, m, n, k, nnz, 1.0f, 0.0f, true);
+      },
+      [this](return_mem_ptr_atom, coo_atom, int dev, int sid, mem_ptr<int> ri, mem_ptr<int> ci, mem_ptr<float> v, mem_ptr<float> b, mem_ptr<float> c, int m, int n, int k, int nnz, float alpha, float beta) {
+        enqueue_spmm_coo(dev, sid, ri, ci, v, b, c, m, n, k, nnz, alpha, beta, true);
       },
     };
   }
@@ -159,7 +259,7 @@ private:
                              int m, int n, int k, int nnz, float alpha, float beta, bool ret_ptr) {
     auto plat = platform::create();
     device_ptr dev = (dev_n == -1) ? plat->schedule(sid) : plat->schedule(sid, dev_n);
-    dev->spmm_coo(sid, m, n, k, nnz, alpha, ri, col_ptr, v, b, beta, c);
+    dev->spmm_coo(sid, m, n, k, nnz, alpha, ri, ci, v, b, beta, c);
     handle_reply(ri, ci, v, b, c, ret_ptr);
   }
 

@@ -447,8 +447,8 @@ public:
       CHECK_CUDA(cuMemFreeAsync(dBuffer, stream));
 
     cusparseDestroySpMat(matA);
-    cusparseDestroyDnVec(vecX);
-    cusparseDestroyDnVec(vecY);
+    cusparseDestroyDnMat(matB);
+    cusparseDestroyDnMat(matC);
 
     CHECK_CUDA(cuCtxPopCurrent(nullptr));
     if (status != CUSPARSE_STATUS_SUCCESS)
