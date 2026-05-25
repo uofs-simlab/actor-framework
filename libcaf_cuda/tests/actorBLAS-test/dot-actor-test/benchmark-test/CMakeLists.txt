@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS      OFF)
 
 # 2) Set CAF source and build directories
-set(CAF_SRC "${CMAKE_CURRENT_SOURCE_DIR}/./../../../../../actor-framework")
+set(CAF_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../actor-framework")
 set(CAF_BUILD "${CAF_SRC}/build")
 
 
@@ -41,5 +41,6 @@ target_link_libraries(test
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
     CUDA::nvrtc
     CUDA::cublas
+    CUDA::cusparse
 )
 
