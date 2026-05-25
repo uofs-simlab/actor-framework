@@ -29,12 +29,7 @@ enum class sparse_cg_step {
   main_dot_rr,
   update_p_copy_r,
   update_p_axpy_p,
-  update_p_final_copy,
-  restart_spmv_y,
-  restart_copy_b,
-  restart_axpy_r,
-  restart_copy_p,
-  restart_dot_rho
+  update_p_final_copy
 };
 
 // Reply IDs used to distinguish which actor type is replying
@@ -66,15 +61,10 @@ struct sparse_cg_state {
   // Scalars
   float rho = 0.0f;
   float old_rho = 0.0f;
-  float cur_norm = 0.0f;
   float alpha = 0.0f;
   float beta = 0.0f;
   int iterations = 0;
   sparse_cg_step step = sparse_cg_step::idle;
-
-  // Fault Tolerance: Stagnation Detection
-  float last_norm = -1.0f;
-  int stagnation_count = 0;
 
   // BLAS/SPARSE Actors
   caf::actor dot_actor, spmv_actor, axpy_actor, copy_actor;
@@ -160,7 +150,7 @@ private:
 
   void iterate() {
     auto& s = state();
-    if (s.iterations >= s.max_iter || s.cur_norm < s.tol) {
+    if (s.iterations >= s.max_iter || s.rho < (s.tol * s.tol)) {
       if (s.supervisor) {
         command_runner<float> cr;
         cr.copy_to_host_async(s.x, [this, target = s.supervisor](std::vector<float>&& data) {
@@ -172,13 +162,6 @@ private:
     }
     s.step = sparse_cg_step::main_spmv_w;
     send_spmv(s.p, s.w);
-  }
-
-  void perform_restart() {
-    auto& s = state();
-    s.stagnation_count = 0;
-    s.step = sparse_cg_step::restart_spmv_y;
-    send_spmv(s.x, s.y_tmp);
   }
 
   void send_spmv(mem_ptr<float> input_v, mem_ptr<float> output_v) {
@@ -201,7 +184,7 @@ private:
     auto& s = state();
     switch (s.step) {
       case sparse_cg_step::init_rho:
-        s.rho = val; s.cur_norm = std::sqrt(val);
+        s.rho = val;
         iterate();
         break;
       case sparse_cg_step::main_dot_pw:
@@ -210,32 +193,14 @@ private:
         this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.p, s.x, s.n, s.alpha).send(s.axpy_actor);
         break;
       case sparse_cg_step::main_dot_rr:
-        s.old_rho = s.rho; s.rho = val; s.cur_norm = std::sqrt(val);
-        check_stagnation();
-        break;
-      case sparse_cg_step::restart_dot_rho:
-        s.rho = val; s.cur_norm = std::sqrt(val);
-        iterate();
+        s.old_rho = s.rho;
+        s.rho = val;
+        s.iterations++;
+        s.beta = s.rho / s.old_rho;
+        s.step = sparse_cg_step::update_p_copy_r;
+        this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.r, s.w, s.n).send(s.copy_actor);
         break;
       default: break;
-    }
-  }
-
-  void check_stagnation() {
-    auto& s = state();
-    bool diverged = s.last_norm > 0 && s.cur_norm > s.last_norm * 1.5f;
-    bool stalled = s.last_norm > 0 && s.cur_norm > s.last_norm * 0.999f;
-    s.iterations++;
-    if (stalled || diverged) s.stagnation_count++;
-    else s.stagnation_count = 0;
-    s.last_norm = s.cur_norm;
-
-    if (s.stagnation_count >= 15 || diverged) {
-      perform_restart();
-    } else {
-      s.beta = s.rho / s.old_rho;
-      s.step = sparse_cg_step::update_p_copy_r;
-      this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.r, s.w, s.n).send(s.copy_actor);
     }
   }
 
@@ -244,9 +209,6 @@ private:
     if (s.step == sparse_cg_step::main_spmv_w) {
       s.step = sparse_cg_step::main_dot_pw;
       this->mail(s.device_num, s.stream_id, s.p, s.w, s.y_tmp, s.n).send(s.dot_actor);
-    } else if (s.step == sparse_cg_step::restart_spmv_y) {
-      s.step = sparse_cg_step::restart_copy_b;
-      this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.b, s.r, s.n).send(s.copy_actor);
     }
   }
 
@@ -261,10 +223,8 @@ private:
     } else if (s.step == sparse_cg_step::update_p_axpy_p) {
       s.step = sparse_cg_step::update_p_final_copy;
       this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.w, s.p, s.n).send(s.copy_actor);
-    } else if (s.step == sparse_cg_step::restart_axpy_r) {
-      s.step = sparse_cg_step::restart_copy_p;
-      this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.r, s.p, s.n).send(s.copy_actor);
     }
+    else if (s.step == sparse_cg_step::idle) return;
   }
 
   void handle_copy_result() {
@@ -284,14 +244,6 @@ private:
         break;
       case sparse_cg_step::update_p_final_copy:
         iterate();
-        break;
-      case sparse_cg_step::restart_copy_b:
-        s.step = sparse_cg_step::restart_axpy_r;
-        this->mail(return_mem_ptr_atom_v, s.device_num, s.stream_id, s.y_tmp, s.r, s.n, -1.0f).send(s.axpy_actor);
-        break;
-      case sparse_cg_step::restart_copy_p:
-        s.step = sparse_cg_step::restart_dot_rho;
-        this->mail(s.device_num, s.stream_id, s.r, s.r, s.y_tmp, s.n).send(s.dot_actor);
         break;
       default: break;
     }
