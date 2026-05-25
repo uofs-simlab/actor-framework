@@ -104,7 +104,7 @@ void caf_main(actor_system& sys) {
         );
     }
 
-    // Test 3: COO - mem_ptr - return_mem_ptr_atom
+    // Test 3: COO - mem_ptr - return_mem_ptr_atom - Default Routing
     {
         std::cout << "\n[INFO] Test 3: SpMM COO format, return_mem_ptr_atom, mem_ptr inputs..." << std::endl;
         std::vector<int> row_ind = {0, 1, 2, 2};
@@ -132,9 +132,35 @@ void caf_main(actor_system& sys) {
         );
     }
 
-    // Test 4: CSR - Host Wrappers - Default Routing (Lottery Scheduler)
+    // Test 4: CSR - mem_ptr - Explicit Routing
     {
-        std::cout << "\n[INFO] Test 4: SpMM CSR format, host wrappers, default routing..." << std::endl;
+        std::cout << "\n[INFO] Test 4: SpMM CSR format, mem_ptr inputs, explicit routing..." << std::endl;
+        std::vector<int> row_ptr = {0, 1, 2, 4};
+        std::vector<int> col_ind = {0, 1, 0, 1};
+        std::vector<float> values = {1, 2, 3, 4};
+
+        command_runner<in<int>, in<int>, in<float>, in<float>, out<float>> runner;
+        auto results = runner.transfer_memory(device_num, stream_id, 
+                                             create_in_arg(row_ptr), create_in_arg(col_ind), 
+                                             create_in_arg(values), create_in_arg(h_B), 
+                                             create_out_arg(h_C_init));
+
+        self->mail(csr_atom{}, device_num, stream_id, 
+                   std::get<0>(results), std::get<1>(results), std::get<2>(results), 
+                   std::get<3>(results), std::get<4>(results), 
+                   m, n, k, nnz).send(spmm);
+
+        self->receive(
+            [&](int reply_id, int arg_index, std::vector<float> data) {
+                verify_spmm("CSR mem_ptr Routing", data, expected);
+            }
+        );
+    }
+
+
+    // Test 5: CSR - Host Wrappers - Default Routing (Lottery Scheduler)
+    {
+        std::cout << "\n[INFO] Test 5: SpMM CSR format, host wrappers, default routing..." << std::endl;
         std::vector<int> row_ptr = {0, 1, 2, 4};
         std::vector<int> col_ind = {0, 1, 0, 1};
         std::vector<float> values = {1, 2, 3, 4};
@@ -150,6 +176,114 @@ void caf_main(actor_system& sys) {
         );
     }
 
+    // Test 4: CSR - Host Wrappers - Default Routing (Lottery Scheduler)
+    {
+        std::cout << "\n[INFO] Test 6: SpMM COO format, mem_ptr inputs, explicit routing..." << std::endl;
+        std::vector<int> row_ind = {0, 1, 2, 2};
+        std::vector<int> col_ind = {0, 1, 0, 1};
+        std::vector<float> values = {1, 2, 3, 4};
+
+        command_runner<in<int>, in<int>, in<float>, in<float>, out<float>> runner;
+        auto results = runner.transfer_memory(device_num, stream_id, 
+                                             create_in_arg(row_ind), create_in_arg(col_ind), 
+                                             create_in_arg(values), create_in_arg(h_B), 
+                                             create_out_arg(h_C_init));
+
+        self->mail(coo_atom{}, device_num, stream_id, 
+                   std::get<0>(results), std::get<1>(results), std::get<2>(results), 
+                   std::get<3>(results), std::get<4>(results), 
+                   m, n, k, nnz).send(spmm);
+
+        self->receive(
+            [&](int reply_id, int arg_index, std::vector<float> data) {
+                verify_spmm("COO mem_ptr Routing", data, expected);
+            }
+        );
+    }
+
+    // Test 7: CSC - mem_ptr - return_mem_ptr_atom - Explicit Routing
+    {
+        std::cout << "\n[INFO] Test 7: SpMM CSC format, return_mem_ptr_atom, mem_ptr inputs, explicit routing..." << std::endl;
+        std::vector<int> col_ptr = {0, 2, 4};
+        std::vector<int> row_ind = {0, 2, 1, 2};
+        std::vector<float> values = {1, 3, 2, 4};
+
+        command_runner<in<int>, in<int>, in<float>, in<float>, out<float>> runner;
+        auto results = runner.transfer_memory(device_num, stream_id, 
+                                             create_in_arg(col_ptr), create_in_arg(row_ind), 
+                                             create_in_arg(values), create_in_arg(h_B), 
+                                             create_out_arg(h_C_init));
+
+        self->mail(return_mem_ptr_atom{}, csc_atom{}, device_num, stream_id, 
+                   std::get<0>(results), std::get<1>(results), std::get<2>(results), 
+                   std::get<3>(results), std::get<4>(results), 
+                   m, n, k, nnz).send(spmm);
+
+        self->receive(
+            [&](int reply_id, mem_ptr<int>, mem_ptr<int>, mem_ptr<float>, 
+                mem_ptr<float>, mem_ptr<float> C_ptr) {
+                command_runner<float> cr;
+                auto host_C = cr.copy_to_host(C_ptr);
+                verify_spmm("CSC return_mem_ptr Routing", host_C, expected);
+            }
+        );
+    }
+
+    // Test 8: COO - mem_ptr - return_mem_ptr_atom - Explicit Routing
+    {
+        std::cout << "\n[INFO] Test 8: SpMM COO format, return_mem_ptr_atom, mem_ptr inputs, explicit routing..." << std::endl;
+        std::vector<int> row_ind = {0, 1, 2, 2};
+        std::vector<int> col_ind = {0, 1, 0, 1};
+        std::vector<float> values = {1, 2, 3, 4};
+
+        command_runner<in<int>, in<int>, in<float>, in<float>, out<float>> runner;
+        auto results = runner.transfer_memory(device_num, stream_id, 
+                                             create_in_arg(row_ind), create_in_arg(col_ind), 
+                                             create_in_arg(values), create_in_arg(h_B), 
+                                             create_out_arg(h_C_init));
+
+        self->mail(return_mem_ptr_atom{}, coo_atom{}, device_num, stream_id, 
+                   std::get<0>(results), std::get<1>(results), std::get<2>(results), 
+                   std::get<3>(results), std::get<4>(results), 
+                   m, n, k, nnz).send(spmm);
+
+        self->receive(
+            [&](int reply_id, mem_ptr<int>, mem_ptr<int>, mem_ptr<float>, 
+                mem_ptr<float>, mem_ptr<float> C_ptr) {
+                command_runner<float> cr;
+                auto host_C = cr.copy_to_host(C_ptr);
+                verify_spmm("COO return_mem_ptr Routing", host_C, expected);
+            }
+        );
+    }
+
+    // Test 9: CSR - mem_ptr - return_mem_ptr_atom - Explicit Routing
+    {
+        std::cout << "\n[INFO] Test 9: SpMM CSR format, return_mem_ptr_atom, mem_ptr inputs, explicit routing..." << std::endl;
+        std::vector<int> row_ptr = {0, 1, 2, 4};
+        std::vector<int> col_ind = {0, 1, 0, 1};
+        std::vector<float> values = {1, 2, 3, 4};
+
+        command_runner<in<int>, in<int>, in<float>, in<float>, out<float>> runner;
+        auto results = runner.transfer_memory(device_num, stream_id, 
+                                             create_in_arg(row_ptr), create_in_arg(col_ind), 
+                                             create_in_arg(values), create_in_arg(h_B), 
+                                             create_out_arg(h_C_init));
+
+        self->mail(return_mem_ptr_atom{}, csr_atom{}, device_num, stream_id, 
+                   std::get<0>(results), std::get<1>(results), std::get<2>(results), 
+                   std::get<3>(results), std::get<4>(results), 
+                   m, n, k, nnz).send(spmm);
+
+        self->receive(
+            [&](int reply_id, mem_ptr<int>, mem_ptr<int>, mem_ptr<float>, 
+                mem_ptr<float>, mem_ptr<float> C_ptr) {
+                command_runner<float> cr;
+                auto host_C = cr.copy_to_host(C_ptr);
+                verify_spmm("CSR return_mem_ptr Routing", host_C, expected);
+            }
+        );
+    }
     self->send_exit(spmm, exit_reason::user_shutdown);
     manager::shutdown();
 }
