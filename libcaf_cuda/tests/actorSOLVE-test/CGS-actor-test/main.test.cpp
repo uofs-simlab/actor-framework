@@ -1,10 +1,9 @@
 /**
- * This test file evaluates the correctness of spmv_actor for sparse matrix-vector multiplication.
+ * This test file evaluates the correctness of sparse_cg_actor for solving Ax = b.
  * It covers:
  * - CSR, CSC, and COO formats.
- * - Input types: host wrappers (in/out) and device handles (mem_ptr).
- * - Reply modes: data result and device handle return (return_mem_ptr_atom).
- * - Explicit routing with device_num and stream_id.
+ * - Convergence verification with simple matrices.
+ * - Stress testing with a large 1D Laplacian matrix.
  */
 #include <caf/all.hpp>
 #include <caf/cuda/all.hpp>
@@ -15,14 +14,15 @@
 #include <thread>
 #include <algorithm>
 #include <numeric>
+#include <cmath>
 #include "caf/actor_registry.hpp"
-#include "caf/actorSPARSE/spmv-actor/spmv-actor.hpp"
+#include "caf/actorSOLVE/sparse-matrix-solvers/sparse-CGS-actor/sparse-CGS-actor.hpp"
 
 using namespace caf;
 using namespace caf::cuda;
 
-void verify_spmv(const std::string& test_name, const std::vector<float>& actual, 
-                 const std::vector<float>& expected) {
+void verify_solution(const std::string& test_name, const std::vector<float>& actual, 
+                     const std::vector<float>& expected, float tol = 1e-3) {
     if (actual.size() != expected.size()) {
         std::cout << "[ERROR] " << test_name << " failed: Size mismatch (got " 
                   << actual.size() << ", expected " << expected.size() << ")" << std::endl;
@@ -30,7 +30,7 @@ void verify_spmv(const std::string& test_name, const std::vector<float>& actual,
     }
     bool all_correct = true;
     for (size_t i = 0; i < actual.size(); ++i) {
-        if (std::abs(actual[i] - expected[i]) > 1e-4) {
+        if (std::abs(actual[i] - expected[i]) > tol) {
             all_correct = false;
             std::cout << "[ERROR] " << test_name << " mismatch at index " << i 
                       << ": Expected " << expected[i] 
@@ -39,118 +39,104 @@ void verify_spmv(const std::string& test_name, const std::vector<float>& actual,
         }
     }
     if (all_correct) {
-        std::cout << "[SUCCESS] " << test_name << " passed." << std::endl;
+        std::cout << "[SUCCESS] " << test_name << " converged to correct solution." << std::endl;
     }
 }
 
 void caf_main(actor_system& sys) {
-    manager::init(sys, manager_config(true, true)); // Enable cuBLAS and cuSPARSE
+    // Enable cuBLAS and cuSPARSE for the CG solver
+    manager::init(sys, manager_config(true, true)); 
 
-    // Matrix A (3x3): [ 1 0 2; 0 0 3; 4 5 6 ]
-    // Vector x: [1, 2, 3]
-    // Expected y: [7, 9, 32]
-    int m = 3, n = 3, nnz = 6;
-    std::vector<float> h_x = {1.0f, 2.0f, 3.0f};
-    std::vector<float> h_y_init = {0.0f, 0.0f, 0.0f};
-    std::vector<float> expected = {7.0f, 9.0f, 32.0f};
+    // Simple Diagonal Matrix A (3x3): diag(4, 3, 2)
+    // b = [8, 9, 2] -> Expected x = [2, 3, 1]
+    int n = 3, nnz = 3;
+    std::vector<float> h_b = {8.0f, 9.0f, 2.0f};
+    std::vector<float> expected = {2.0f, 3.0f, 1.0f};
+    float tolerance = 1e-5f;
+    int max_iter = 100;
 
-    int device_num = 0;
-    int stream_id = 10;
-
-    auto spmv = sys.spawn<spmv_actor>(1);
     scoped_actor self{sys};
 
-    // Test 1: CSR - Host Wrappers - Explicit Routing
+    // Test 1: CSR Format
     {
-        std::cout << "[INFO] Test 1: CSR format, host wrappers, explicit routing (dev=" << device_num << ", stream=" << stream_id << ")..." << std::endl;
-        std::vector<int> row_ptr = {0, 2, 3, 6};
-        std::vector<int> col_ind = {0, 2, 2, 0, 1, 2};
-        std::vector<float> values = {1, 2, 3, 4, 5, 6};
+        std::cout << "[INFO] Test 1: CSR format simple matrix..." << std::endl;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
 
-        self->mail(csr_atom{}, device_num, stream_id, 
-                   create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values), 
-                   create_in_arg(h_x), create_out_arg(h_y_init), 
-                   m, n, nnz).send(spmv);
+        auto solver = sys.spawn<sparse_cg_actor>(
+            create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+            create_in_arg(h_b), create_in_out_arg(h_x),
+            matrix_format::csr, n, nnz, tolerance, max_iter, 0, 0, actor_cast<actor>(self));
 
+        self->mail(start_atom_v).send(solver);
         self->receive(
-            [&](int reply_id, int arg_index, std::vector<float> data) {
-                verify_spmv("CSR Host Wrapper Routing", data, expected);
+            [&](std::vector<float> result_x) {
+                verify_solution("CSR Simple", result_x, expected);
             }
         );
     }
 
-    // Test 2: CSC - mem_ptr - Explicit Routing
+    // Test 2: CSC Format
     {
-        std::cout << "\n[INFO] Test 2: CSC format, mem_ptr inputs, explicit routing..." << std::endl;
-        std::vector<int> col_ptr = {0, 2, 3, 6};
-        std::vector<int> row_ind = {0, 2, 2, 0, 1, 2};
-        std::vector<float> values = {1, 4, 5, 2, 3, 6};
+        std::cout << "\n[INFO] Test 2: CSC format simple matrix..." << std::endl;
+        std::vector<int> col_ptr = {0, 1, 2, 3};
+        std::vector<int> row_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
 
-        command_runner<in<int>, in<int>, in<float>, in<float>, out<float>> runner;
-        auto results = runner.transfer_memory(device_num, stream_id, 
-                                             create_in_arg(col_ptr), create_in_arg(row_ind), 
-                                             create_in_arg(values), create_in_arg(h_x), 
-                                             create_out_arg(h_y_init));
+        auto solver = sys.spawn<sparse_cg_actor>(
+            create_in_arg(col_ptr), create_in_arg(row_ind), create_in_arg(values),
+            create_in_arg(h_b), create_in_out_arg(h_x),
+            matrix_format::csc, n, nnz, tolerance, max_iter, 0, 1, actor_cast<actor>(self));
 
-        self->mail(csc_atom{}, device_num, stream_id, 
-                   std::get<0>(results), std::get<1>(results), std::get<2>(results), 
-                   std::get<3>(results), std::get<4>(results), 
-                   m, n, nnz).send(spmv);
-
+        self->mail(start_atom_v).send(solver);
         self->receive(
-            [&](int reply_id, int arg_index, std::vector<float> data) {
-                verify_spmv("CSC mem_ptr Routing", data, expected);
+            [&](std::vector<float> result_x) {
+                verify_solution("CSC Simple", result_x, expected);
             }
         );
     }
 
-    // Test 3: COO - mem_ptr - return_mem_ptr_atom - Explicit Routing
+    // Test 3: Stress Test - 1D Laplacian (N=10000)
     {
-        std::cout << "\n[INFO] Test 3: COO format, return_mem_ptr_atom, mem_ptr inputs, explicit routing..." << std::endl;
-        std::vector<int> row_ind = {0, 0, 1, 2, 2, 2};
-        std::vector<int> col_ind = {0, 2, 2, 0, 1, 2};
-        std::vector<float> values = {1, 2, 3, 4, 5, 6};
+        int N_large = 10000;
+        std::cout << "\n[INFO] Test 3: Stress Test - 1D Laplacian (N=" << N_large << ")..." << std::endl;
+        
+        std::vector<int> row_ptr;
+        std::vector<int> col_ind;
+        std::vector<float> values;
+        row_ptr.push_back(0);
+        for(int i=0; i<N_large; ++i) {
+            if(i > 0) { col_ind.push_back(i-1); values.push_back(-1.0f); }
+            col_ind.push_back(i); values.push_back(2.0f);
+            if(i < N_large-1) { col_ind.push_back(i+1); values.push_back(-1.0f); }
+            row_ptr.push_back(col_ind.size());
+        }
 
-        command_runner<in<int>, in<int>, in<float>, in<float>, out<float>> runner;
-        auto results = runner.transfer_memory(device_num, stream_id, 
-                                             create_in_arg(row_ind), create_in_arg(col_ind), 
-                                             create_in_arg(values), create_in_arg(h_x), 
-                                             create_out_arg(h_y_init));
+        std::vector<float> b_large(N_large, 1.0f);
+        std::vector<float> x_large(N_large, 0.0f);
+        
+        auto start = std::chrono::high_resolution_clock::now();
+        auto stress_solver = sys.spawn<sparse_cg_actor>(
+            create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+            create_in_arg(b_large), create_in_out_arg(x_large),
+            matrix_format::csr, N_large, (int)values.size(), 1e-4f, 20000, 0, 2, actor_cast<actor>(self));
 
-        self->mail(return_mem_ptr_atom{}, coo_atom{}, device_num, stream_id, 
-                   std::get<0>(results), std::get<1>(results), std::get<2>(results), 
-                   std::get<3>(results), std::get<4>(results), 
-                   m, n, nnz, 1.0f, 0.0f).send(spmv);
-
+        self->mail(start_atom_v).send(stress_solver);
         self->receive(
-            [&](int reply_id, mem_ptr<int>, mem_ptr<int>, mem_ptr<float>, 
-                mem_ptr<float>, mem_ptr<float> y_ptr) {
-                command_runner<float> cr;
-                auto host_y = cr.copy_to_host(y_ptr);
-                verify_spmv("COO return_mem_ptr Routing", host_y, expected);
+            [&](std::vector<float> result) {
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> elapsed = end - start;
+                std::cout << "[SUCCESS] Stress Test completed in " << elapsed.count() << " seconds." << std::endl;
+                std::cout << "[INFO] First 5 elements of solution: ";
+                for(int i=0; i<5; ++i) std::cout << result[i] << " ";
+                std::cout << "..." << std::endl;
             }
         );
     }
 
-    // Test 4: CSR - Host Wrappers - Default Routing (Lottery Scheduler)
-    {
-        std::cout << "\n[INFO] Test 4: CSR format, host wrappers, default routing..." << std::endl;
-        std::vector<int> row_ptr = {0, 2, 3, 6};
-        std::vector<int> col_ind = {0, 2, 2, 0, 1, 2};
-        std::vector<float> values = {1, 2, 3, 4, 5, 6};
-
-        self->mail(csr_atom{}, create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values), 
-                   create_in_arg(h_x), create_out_arg(h_y_init), 
-                   m, n, nnz).send(spmv);
-
-        self->receive(
-            [&](int reply_id, int arg_index, std::vector<float> data) {
-                verify_spmv("CSR Host Wrapper Default", data, expected);
-            }
-        );
-    }
-
-    self->send_exit(spmv, exit_reason::user_shutdown);
     manager::shutdown();
 }
 CAF_MAIN(id_block::cuda)
