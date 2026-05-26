@@ -102,16 +102,16 @@ void caf_main(actor_system& sys) {
     // Test 3: Stress Test - 1D Laplacian (N=10000)
     {
         int N_large = 10000;
-        std::cout << "\n[INFO] Test 3: Stress Test - 1D Laplacian (N=" << N_large << ")..." << std::endl;
+        std::cout << "\n[INFO] Test 3: Stress Test - Non-Symmetric Matrix (N=" << N_large << ")..." << std::endl;
         
         std::vector<int> row_ptr;
         std::vector<int> col_ind;
         std::vector<float> values;
         row_ptr.push_back(0);
         for(int i=0; i<N_large; ++i) {
-            if(i > 0) { col_ind.push_back(i-1); values.push_back(-1.0f); }
-            col_ind.push_back(i); values.push_back(2.0f);
-            if(i < N_large-1) { col_ind.push_back(i+1); values.push_back(-1.0f); }
+            if(i > 0) { col_ind.push_back(i-1); values.push_back(-1.5f); } // Lower
+            col_ind.push_back(i); values.push_back(4.0f);                 // Diag
+            if(i < N_large-1) { col_ind.push_back(i+1); values.push_back(-0.5f); } // Upper
             row_ptr.push_back(col_ind.size());
         }
 

@@ -24,9 +24,9 @@ void genLaplacian1D(int *I, int *J, float *val, int N, int nz) {
     int current_nz = 0;
     I[0] = 0;
     for (int i = 0; i < N; i++) {
-        if (i > 0) { J[current_nz] = i - 1; val[current_nz] = -1.0f; current_nz++; }
-        J[current_nz] = i; val[current_nz] = 2.0f; current_nz++;
-        if (i < N - 1) { J[current_nz] = i + 1; val[current_nz] = -1.0f; current_nz++; }
+        if (i > 0) { J[current_nz] = i - 1; val[current_nz] = -1.5f; current_nz++; }
+        J[current_nz] = i; val[current_nz] = 4.0f; current_nz++;
+        if (i < N - 1) { J[current_nz] = i + 1; val[current_nz] = -0.5f; current_nz++; }
         I[i + 1] = current_nz;
     }
 }
