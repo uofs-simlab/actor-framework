@@ -5,6 +5,7 @@
 #include <vector>
 #include <deque>
 #include <string>
+#include <chrono>
 #include <numeric>
 #include <cmath>
 #include <algorithm>
@@ -72,9 +73,18 @@ behavior global_task_pool(stateful_actor<pool_state>* self, std::vector<MatrixTa
 }
 
 // ---------------------------- DEVICE/GPU ACTOR ----------------------------
+struct MatrixData {
+    std::vector<int> row_ptr;
+    std::vector<int> col_indices;
+    std::vector<float> values;
+    std::vector<float> b;
+    std::vector<float> x_guess;
+};
+
 struct device_actor_state {
     caf::actor global_pool;
     std::deque<MatrixTask> local_tasks;
+    std::unordered_map<std::string, MatrixData> cache;
     int active_workers = 0;
     int device_id = -1;
     bool fetching = false;
@@ -109,24 +119,71 @@ behavior gpu_device_actor(stateful_actor<device_actor_state>* self,
     refill();
 
     return {
-        [=](get_work_atom) -> result<SolverType, std::vector<int>, std::vector<int>, std::vector<float>, std::vector<float>, std::vector<float>, int, int> {
+        [=](get_work_atom) -> result<SolverType, std::string, in<int>, in<int>, in<float>, in<float>, in_out<float>, int, int> {
             auto& st = self->state();
-            if (st.local_tasks.empty())
-                return sec::end_of_stream;
 
-            MatrixTask t = std::move(st.local_tasks.front());
-            st.local_tasks.pop_front();
-            refill();
+            // If local tasks are available, process immediately
+            if (!st.local_tasks.empty()) {
+                MatrixTask t = std::move(st.local_tasks.front());
+                st.local_tasks.pop_front();
+                refill(); // Try to refill if below low water mark
 
-            // Synchronous load and format conversion inside the device actor to prepare solver buffers
-            auto coo = load_binary_coo(t.path);
-            auto A = convert_coo_to_csr(coo);
-            std::vector<float> x_true(A.cols, 1.0f);
-            std::vector<float> b = compute_rhs_spmv(A, x_true);
-            std::vector<float> x_guess(A.cols, 0.0f);
+                auto& data = st.cache[t.path];
+                if (data.row_ptr.empty()) {
+                    auto coo = load_binary_coo(t.path);
+                    auto A = convert_coo_to_csr(coo);
+                    data.b = compute_rhs_spmv(A, std::vector<float>(A.cols, 1.0f));
+                    data.row_ptr = std::move(A.row_ptr);
+                    data.col_indices = std::move(A.col_indices);
+                    data.values = std::move(A.values);
+                    data.x_guess.assign(A.cols, 0.0f);
+                }
 
-            return {t.type, std::move(A.row_ptr), std::move(A.col_indices), std::move(A.values), 
-                    std::move(b), std::move(x_guess), A.rows, A.nnz};
+                return {t.type, t.path, create_in_arg(data.row_ptr), create_in_arg(data.col_indices), 
+                        create_in_arg(data.values), create_in_arg(data.b), create_in_out_arg(data.x_guess), 
+                        (int)data.row_ptr.size() - 1, (int)data.values.size()};
+            }
+
+            auto promise = self->make_response_promise<SolverType, std::string, in<int>, in<int>, in<float>, in<float>, in_out<float>, int, int>();
+            self->mail(get_work_atom_v, st.batch_size).request(st.global_pool, infinite).then(
+                [=](std::vector<MatrixTask>& batch) mutable {
+                    auto& st_inner = self->state();
+                    if (batch.empty()) { // Global pool returned empty batch, meaning no more work
+                        promise.deliver(make_error(sec::end_of_stream));
+                        return;
+                    }
+
+                    // Add remaining tasks to local queue
+                    for (size_t i = 1; i < batch.size(); ++i) {
+                        st_inner.local_tasks.push_back(std::move(batch[i]));
+                    }
+
+                    MatrixTask t = std::move(batch.front()); // Process the first task from the batch
+                    refill(); // Try to refill if below low water mark (after adding tasks)
+
+                    auto& data = st_inner.cache[t.path];
+                    if (data.row_ptr.empty()) {
+                        auto coo = load_binary_coo(t.path);
+                        auto A = convert_coo_to_csr(coo);
+                        data.b = compute_rhs_spmv(A, std::vector<float>(A.cols, 1.0f));
+                        data.row_ptr = std::move(A.row_ptr);
+                        data.col_indices = std::move(A.col_indices);
+                        data.values = std::move(A.values);
+                        data.x_guess.assign(A.cols, 0.0f);
+                    }
+
+                    promise.deliver(t.type, t.path, create_in_arg(data.row_ptr), create_in_arg(data.col_indices), 
+                                    create_in_arg(data.values), create_in_arg(data.b), create_in_out_arg(data.x_guess), 
+                                    (int)data.row_ptr.size() - 1, (int)data.values.size());
+                },
+                [=](error& err) mutable {
+                    promise.deliver(err); // Propagate error from global pool
+                }
+            );
+            return promise;
+        },
+        [=](release_memory_atom, std::string path) {
+            self->state().cache.erase(path);
         },
         [=](worker_done_atom) {
             if (--self->state().active_workers <= 0)
@@ -141,6 +198,7 @@ struct worker_state {
     caf::actor supervisor;
     int device_id;
     int stream_id;
+    std::string current_matrix_path;
 };
 
 behavior sparse_worker_fun(stateful_actor<worker_state>* self,
@@ -155,19 +213,19 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
     return {
         [=](request_work_atom) {
             self->mail(get_work_atom_v).request(self->state().device_actor, infinite).then(
-                [=](SolverType type, std::vector<int>& rp, std::vector<int>& ci, std::vector<float>& val,
-                    std::vector<float>& b, std::vector<float>& x, int rows, int nnz) {
-                    
+                [=](SolverType type, std::string path, in<int> rp, in<int> ci, in<float> val,
+                    in<float> b, in_out<float> x, int rows, int nnz) {
+                    self->state().current_matrix_path = path;
                     actor solver;
                     if (type == CGS_SOLVER) {
                         solver = self->spawn<sparse_cg_actor>(
-                            create_in_arg(rp), create_in_arg(ci), create_in_arg(val),
-                            create_in_arg(b), create_in_out_arg(x),
+                            std::move(rp), std::move(ci), std::move(val),
+                            std::move(b), std::move(x),
                             matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id, actor_cast<actor>(self));
                     } else {
                         solver = self->spawn<sparse_bicgstab_actor>(
-                            create_in_arg(rp), create_in_arg(ci), create_in_arg(val),
-                            create_in_arg(b), create_in_out_arg(x),
+                            std::move(rp), std::move(ci), std::move(val),
+                            std::move(b), std::move(x),
                             matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id, actor_cast<actor>(self));
                     }
                     self->mail(start_atom_v).send(solver);
@@ -182,6 +240,7 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
         },
         [=](std::vector<float>& solution) {
             self->mail(1).send(self->state().supervisor);
+            self->mail(release_memory_atom_v, self->state().current_matrix_path).send(self->state().device_actor);
             self->mail(request_work_atom_v).send(self);
         }
     };
@@ -240,9 +299,22 @@ void caf_main(actor_system& sys) {
         return;
     }
 
-    std::cout << "[INFO] Found " << tasks.size() << " matrices. Spawning workload...\n";
-    sys.spawn(supervisor_actor_fun, static_cast<int>(tasks.size()), std::move(tasks));
+    auto task_count = tasks.size();
+    std::cout << "[INFO] Found " << task_count << " matrices. Spawning workload...\n";
+
+    auto start = std::chrono::steady_clock::now();
+
+    sys.spawn(supervisor_actor_fun, static_cast<int>(task_count), std::move(tasks));
     sys.await_all_actors_done();
+
+    auto end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+
+    std::cout << "\n===== BENCHMARK COMPLETE =====\n";
+    std::cout << "Tasks Processed: " << task_count << "\n";
+    std::cout << "Total Runtime:   " << elapsed.count() << " s\n";
+    std::cout << "==============================\n";
+
     manager::shutdown();
 }
 CAF_MAIN(id_block::cuda, id_block::cg_actor, id_block::bicgstab_actor, id_block::workload_test)
