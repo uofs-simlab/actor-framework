@@ -11,7 +11,7 @@
 #include "caf/actorSOLVE/sparse-matrix-solvers/sparse-CGS-actor/sparse-CGS-actor.hpp"
 
 // Define a new block for BiCGSTAB specific atoms starting where the cuda block ended
-CAF_BEGIN_TYPE_ID_BLOCK(bicgstab_actor, caf::id_block::cuda::end)
+CAF_BEGIN_TYPE_ID_BLOCK(bicgstab_actor, caf::id_block::cg_actor::end)
   CAF_ADD_ATOM(bicgstab_actor, bicgstab_next_step_atom)
 CAF_END_TYPE_ID_BLOCK(bicgstab_actor)
 
@@ -43,10 +43,12 @@ struct sparse_bicgstab_state {
   int max_iter;
   int device_num;
   int stream_id;
+  device_ptr d_ptr;
   caf::actor supervisor;
 
   // Workspace vectors
   mem_ptr<float> r, r_hat, p, v, s_vec, t_vec, y_tmp;
+  mem_ptr<char> spmv_workspace;
   
   // Scalars needed across asynchronous steps
   float rho_val = 1.0f; // Renamed from rho to avoid conflict with step-specific rho_new
@@ -137,6 +139,8 @@ private:
     s.b         = std::get<3>(res);
     s.x         = std::get<4>(res);
 
+    s.d_ptr = platform::create()->schedule(s.stream_id, s.device_num);
+
     // Allocate workspace
     command_runner<out<float>> work_runner;
     s.r     = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
@@ -145,21 +149,34 @@ private:
     s.v     = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
     s.s_vec = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
     s.t_vec = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
-    s.y_tmp = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
+    // Bottleneck Fix: Allocate only 1 float for scalar results
+    s.y_tmp = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(1));
 
-    auto dev = platform::create()->schedule(s.stream_id, s.device_num);
+    // Allocate SPMV workspace to avoid reallocations in the loop
+    size_t ws_size = 0;
+    if (s.format == matrix_format::csr)
+      ws_size = s.d_ptr->spmv_csr_buffer_size(s.stream_id, s.n, s.n, s.nnz, s.A_row_ptr, s.A_col_ind, s.A_values, s.x, s.v);
+    else if (s.format == matrix_format::csc)
+      ws_size = s.d_ptr->spmv_csc_buffer_size(s.stream_id, s.n, s.n, s.nnz, s.A_row_ptr, s.A_col_ind, s.A_values, s.x, s.v);
+    else if (s.format == matrix_format::coo)
+      ws_size = s.d_ptr->spmv_coo_buffer_size(s.stream_id, s.n, s.n, s.nnz, s.A_row_ptr, s.A_col_ind, s.A_values, s.x, s.v);
+
+    if (ws_size > 0) {
+      command_runner<out<char>> ws_runner;
+      s.spmv_workspace = ws_runner.transfer_memory(s.device_num, s.stream_id, out<char>(static_cast<int>(ws_size)));
+    }
 
     // 1. Initial Residual: r = b - Ax
     execute_spmv(s.x, s.v); 
-    dev->scopy(s.stream_id, s.n, s.b, s.r);
-    dev->saxpy(s.stream_id, s.n, -1.0f, s.v, s.r);
+    s.d_ptr->scopy(s.stream_id, s.n, s.b, s.r);
+    s.d_ptr->saxpy(s.stream_id, s.n, -1.0f, s.v, s.r);
     
     // 2. Choose r_hat = r
-    dev->scopy(s.stream_id, s.n, s.r, s.r_hat);
+    s.d_ptr->scopy(s.stream_id, s.n, s.r, s.r_hat);
 
     s.iterations = 0;
     // Initial calculation of residual_norm_sq
-    dev->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
+    s.d_ptr->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
     s.step = sparse_bicgstab_step::init_residual_norm_sq;
     auto self = actor_cast<actor>(this);
     runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
@@ -169,7 +186,6 @@ private:
 
   void perform_bicgstab_step() {
     auto& s = state();
-    auto dev = platform::create()->schedule(s.stream_id, s.device_num);
     command_runner<> runner;
     auto self = actor_cast<actor>(this);
 
@@ -185,7 +201,7 @@ private:
         }
 
         // rho_i = <r_hat, r>
-        dev->sdot(s.stream_id, s.n, s.r_hat, s.r, s.y_tmp);
+        s.d_ptr->sdot(s.stream_id, s.n, s.r_hat, s.r, s.y_tmp);
         s.step = sparse_bicgstab_step::calc_rho_new;
         runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
           anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
@@ -196,14 +212,14 @@ private:
       case sparse_bicgstab_step::calc_rho_new: {
         // Update p based on rho_new_val
         if (s.iterations == 1) { // This is the first iteration
-          dev->scopy(s.stream_id, s.n, s.r, s.p);
+          s.d_ptr->scopy(s.stream_id, s.n, s.r, s.p);
         } else { // Subsequent iterations
           s.beta_val = (s.rho_new_val / s.rho_val) * (s.alpha_val / s.omega_val);
           // p = r + beta * (p - omega * v)
-          dev->saxpy(s.stream_id, s.n, -s.omega_val, s.v, s.p); // p = p - omega*v
-          dev->scopy(s.stream_id, s.n, s.r, s.s_vec);      // use s_vec as temporary
-          dev->saxpy(s.stream_id, s.n, s.beta_val, s.p, s.s_vec); // s_vec = r + beta*p
-          dev->scopy(s.stream_id, s.n, s.s_vec, s.p);
+          s.d_ptr->saxpy(s.stream_id, s.n, -s.omega_val, s.v, s.p); // p = p - omega*v
+          s.d_ptr->scopy(s.stream_id, s.n, s.r, s.s_vec);      // use s_vec as temporary
+          s.d_ptr->saxpy(s.stream_id, s.n, s.beta_val, s.p, s.s_vec); // s_vec = r + beta*p
+          s.d_ptr->scopy(s.stream_id, s.n, s.s_vec, s.p);
         }
         s.rho_val = s.rho_new_val; // Update old rho
 
@@ -211,7 +227,7 @@ private:
         execute_spmv(s.p, s.v);
 
         // alpha = rho / <r_hat, v> -> calculate denominator
-        dev->sdot(s.stream_id, s.n, s.r_hat, s.v, s.y_tmp);
+        s.d_ptr->sdot(s.stream_id, s.n, s.r_hat, s.v, s.y_tmp);
         s.step = sparse_bicgstab_step::calc_alpha_denom;
         runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
           anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
@@ -223,14 +239,14 @@ private:
         s.alpha_val = s.rho_val / s.alpha_denom_val;
 
         // s = r - alpha * v
-        dev->scopy(s.stream_id, s.n, s.r, s.s_vec);
-        dev->saxpy(s.stream_id, s.n, -s.alpha_val, s.v, s.s_vec);
+        s.d_ptr->scopy(s.stream_id, s.n, s.r, s.s_vec);
+        s.d_ptr->saxpy(s.stream_id, s.n, -s.alpha_val, s.v, s.s_vec);
 
         // t = As
         execute_spmv(s.s_vec, s.t_vec);
 
         // omega = <t, s> / <t, t> -> calculate numerator <t, s>
-        dev->sdot(s.stream_id, s.n, s.t_vec, s.s_vec, s.y_tmp);
+        s.d_ptr->sdot(s.stream_id, s.n, s.t_vec, s.s_vec, s.y_tmp);
         s.step = sparse_bicgstab_step::calc_omega_num;
         runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
           anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
@@ -240,7 +256,7 @@ private:
 
       case sparse_bicgstab_step::calc_omega_num: {
         // omega = <t, s> / <t, t> -> calculate denominator <t, t>
-        dev->sdot(s.stream_id, s.n, s.t_vec, s.t_vec, s.y_tmp);
+        s.d_ptr->sdot(s.stream_id, s.n, s.t_vec, s.t_vec, s.y_tmp);
         s.step = sparse_bicgstab_step::calc_omega_denom;
         runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
           anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
@@ -252,15 +268,15 @@ private:
         s.omega_val = s.omega_num_val / s.omega_denom_val;
 
         // x = x + alpha*p + omega*s
-        dev->saxpy(s.stream_id, s.n, s.alpha_val, s.p, s.x);
-        dev->saxpy(s.stream_id, s.n, s.omega_val, s.s_vec, s.x);
+        s.d_ptr->saxpy(s.stream_id, s.n, s.alpha_val, s.p, s.x);
+        s.d_ptr->saxpy(s.stream_id, s.n, s.omega_val, s.s_vec, s.x);
 
         // r = s - omega*t
-        dev->scopy(s.stream_id, s.n, s.s_vec, s.r);
-        dev->saxpy(s.stream_id, s.n, -s.omega_val, s.t_vec, s.r);
+        s.d_ptr->scopy(s.stream_id, s.n, s.s_vec, s.r);
+        s.d_ptr->saxpy(s.stream_id, s.n, -s.omega_val, s.t_vec, s.r);
 
         // Calculate new residual_norm_sq for next iteration's convergence check
-        dev->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
+        s.d_ptr->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
         s.step = sparse_bicgstab_step::check_convergence;
         runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
           anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
@@ -288,11 +304,10 @@ private:
 
   void execute_spmv(mem_ptr<float> input_v, mem_ptr<float> output_v) {
     auto& s = state();
-    auto dev = platform::create()->schedule(s.stream_id, s.device_num);
     switch (s.format) {
-      case matrix_format::csr: dev->spmv_csr(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v); break;
-      case matrix_format::csc: dev->spmv_csc(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v); break;
-      case matrix_format::coo: dev->spmv_coo(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v); break;
+      case matrix_format::csr: s.d_ptr->spmv_csr(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v, s.spmv_workspace); break;
+      case matrix_format::csc: s.d_ptr->spmv_csc(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v, s.spmv_workspace); break;
+      case matrix_format::coo: s.d_ptr->spmv_coo(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v, s.spmv_workspace); break;
       default: break;
     }
   }

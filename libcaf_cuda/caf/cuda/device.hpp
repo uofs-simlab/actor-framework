@@ -173,10 +173,85 @@ public:
       throw std::runtime_error("cublasSgemv failed on device " + std::to_string(id_));
   }
 
+  /// Returns the required buffer size for SpMV CSR.
+  size_t spmv_csr_buffer_size(int stream_id, int m, int n, int nnz, 
+                             mem_ptr<int> row_ptr, mem_ptr<int> col_ind, mem_ptr<float> values,
+                             mem_ptr<float> x, mem_ptr<float> y) {
+    cusparseHandle_t handle = get_cusparse_handle(stream_id);
+    if (!handle) throw std::runtime_error("cuSparse not enabled");
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    float alpha = 1.0f; float beta = 0.0f;
+    cusparseSpMatDescr_t matA;
+    cusparseCreateCsr(&matA, m, n, nnz, reinterpret_cast<void*>(row_ptr->mem()),
+                      reinterpret_cast<void*>(col_ind->mem()), reinterpret_cast<void*>(values->mem()),
+                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
+    cusparseDnVecDescr_t vecX, vecY;
+    cusparseCreateDnVec(&vecX, n, reinterpret_cast<void*>(x->mem()), CUDA_R_32F);
+    cusparseCreateDnVec(&vecY, m, reinterpret_cast<void*>(y->mem()), CUDA_R_32F);
+    size_t bufferSize = 0;
+    cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecX, &beta, vecY,
+                            CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
+    cusparseDestroySpMat(matA);
+    cusparseDestroyDnVec(vecX);
+    cusparseDestroyDnVec(vecY);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    return bufferSize;
+  }
+
+  /// Returns the required buffer size for SpMV COO.
+  size_t spmv_coo_buffer_size(int stream_id, int m, int n, int nnz, 
+                             mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> values,
+                             mem_ptr<float> x, mem_ptr<float> y) {
+    cusparseHandle_t handle = get_cusparse_handle(stream_id);
+    if (!handle) throw std::runtime_error("cuSparse not enabled");
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    float alpha = 1.0f; float beta = 0.0f;
+    cusparseSpMatDescr_t matA;
+    cusparseCreateCoo(&matA, m, n, nnz, reinterpret_cast<void*>(row_ind->mem()),
+                      reinterpret_cast<void*>(col_ind->mem()), reinterpret_cast<void*>(values->mem()),
+                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
+    cusparseDnVecDescr_t vecX, vecY;
+    cusparseCreateDnVec(&vecX, n, reinterpret_cast<void*>(x->mem()), CUDA_R_32F);
+    cusparseCreateDnVec(&vecY, m, reinterpret_cast<void*>(y->mem()), CUDA_R_32F);
+    size_t bufferSize = 0;
+    cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecX, &beta, vecY,
+                            CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
+    cusparseDestroySpMat(matA);
+    cusparseDestroyDnVec(vecX);
+    cusparseDestroyDnVec(vecY);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    return bufferSize;
+  }
+
+  /// Returns the required buffer size for SpMV CSC.
+  size_t spmv_csc_buffer_size(int stream_id, int m, int n, int nnz, 
+                             mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> values,
+                             mem_ptr<float> x, mem_ptr<float> y) {
+    cusparseHandle_t handle = get_cusparse_handle(stream_id);
+    if (!handle) throw std::runtime_error("cuSparse not enabled");
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    float alpha = 1.0f; float beta = 0.0f;
+    cusparseSpMatDescr_t matA;
+    cusparseCreateCsc(&matA, m, n, nnz, reinterpret_cast<void*>(col_ptr->mem()),
+                      reinterpret_cast<void*>(row_ind->mem()), reinterpret_cast<void*>(values->mem()),
+                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
+    cusparseDnVecDescr_t vecX, vecY;
+    cusparseCreateDnVec(&vecX, n, reinterpret_cast<void*>(x->mem()), CUDA_R_32F);
+    cusparseCreateDnVec(&vecY, m, reinterpret_cast<void*>(y->mem()), CUDA_R_32F);
+    size_t bufferSize = 0;
+    cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecX, &beta, vecY,
+                            CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
+    cusparseDestroySpMat(matA);
+    cusparseDestroyDnVec(vecX);
+    cusparseDestroyDnVec(vecY);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    return bufferSize;
+  }
+
   /// Performs sparse matrix-vector multiplication (y = alpha*A*x + beta*y) using CSR format.
   void spmv_csr(int stream_id, int m, int n, int nnz, float alpha, 
                 mem_ptr<int> row_ptr, mem_ptr<int> col_ind, mem_ptr<float> values,
-                mem_ptr<float> x, float beta, mem_ptr<float> y) {
+                mem_ptr<float> x, float beta, mem_ptr<float> y, mem_ptr<char> workspace = nullptr) {
     cusparseHandle_t handle = get_cusparse_handle(stream_id);
     if (!handle)
       throw std::runtime_error("cuSparse not enabled on device " + std::to_string(id_));
@@ -196,19 +271,24 @@ public:
     cusparseCreateDnVec(&vecX, n, reinterpret_cast<void*>(x->mem()), CUDA_R_32F);
     cusparseCreateDnVec(&vecY, m, reinterpret_cast<void*>(y->mem()), CUDA_R_32F);
 
-    size_t bufferSize = 0;
-    cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                            &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-                            CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
-
+    void* d_workspace = nullptr;
     CUdeviceptr dBuffer = 0;
-    if (bufferSize > 0)
-      CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+    if (workspace) {
+      d_workspace = reinterpret_cast<void*>(workspace->mem());
+    } else {
+      size_t bufferSize = 0;
+      cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                              &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
+                              CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
+      if (bufferSize > 0) {
+        CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+        d_workspace = reinterpret_cast<void*>(dBuffer);
+      }
+    }
 
     cusparseStatus_t status = cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                            &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-                                           CUSPARSE_SPMV_ALG_DEFAULT,
-                                           reinterpret_cast<void*>(dBuffer));
+                                           CUSPARSE_SPMV_ALG_DEFAULT, d_workspace);
 
     if (dBuffer)
       CHECK_CUDA(cuMemFreeAsync(dBuffer, stream));
@@ -225,7 +305,7 @@ public:
   /// Performs sparse matrix-vector multiplication (y = alpha*A*x + beta*y) using COO format.
   void spmv_coo(int stream_id, int m, int n, int nnz, float alpha, 
                 mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> values,
-                mem_ptr<float> x, float beta, mem_ptr<float> y) {
+                mem_ptr<float> x, float beta, mem_ptr<float> y, mem_ptr<char> workspace = nullptr) {
     cusparseHandle_t handle = get_cusparse_handle(stream_id);
     if (!handle)
       throw std::runtime_error("cuSparse not enabled on device " + std::to_string(id_));
@@ -244,19 +324,24 @@ public:
     cusparseCreateDnVec(&vecX, n, reinterpret_cast<void*>(x->mem()), CUDA_R_32F);
     cusparseCreateDnVec(&vecY, m, reinterpret_cast<void*>(y->mem()), CUDA_R_32F);
 
-    size_t bufferSize = 0;
-    cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                            &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-                            CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
-
+    void* d_workspace = nullptr;
     CUdeviceptr dBuffer = 0;
-    if (bufferSize > 0)
-      CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+    if (workspace) {
+      d_workspace = reinterpret_cast<void*>(workspace->mem());
+    } else {
+      size_t bufferSize = 0;
+      cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                              &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
+                              CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
+      if (bufferSize > 0) {
+        CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+        d_workspace = reinterpret_cast<void*>(dBuffer);
+      }
+    }
 
     cusparseStatus_t status = cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                            &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-                                           CUSPARSE_SPMV_ALG_DEFAULT,
-                                           reinterpret_cast<void*>(dBuffer));
+                                           CUSPARSE_SPMV_ALG_DEFAULT, d_workspace);
 
     if (dBuffer)
       CHECK_CUDA(cuMemFreeAsync(dBuffer, stream));
@@ -273,7 +358,7 @@ public:
   /// Performs sparse matrix-vector multiplication (y = alpha*A*x + beta*y) using CSC format.
   void spmv_csc(int stream_id, int m, int n, int nnz, float alpha, 
                 mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> values,
-                mem_ptr<float> x, float beta, mem_ptr<float> y) {
+                mem_ptr<float> x, float beta, mem_ptr<float> y, mem_ptr<char> workspace = nullptr) {
     cusparseHandle_t handle = get_cusparse_handle(stream_id);
     if (!handle)
       throw std::runtime_error("cuSparse not enabled on device " + std::to_string(id_));
@@ -293,19 +378,24 @@ public:
     cusparseCreateDnVec(&vecX, n, reinterpret_cast<void*>(x->mem()), CUDA_R_32F);
     cusparseCreateDnVec(&vecY, m, reinterpret_cast<void*>(y->mem()), CUDA_R_32F);
 
-    size_t bufferSize = 0;
-    cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                            &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-                            CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
-
+    void* d_workspace = nullptr;
     CUdeviceptr dBuffer = 0;
-    if (bufferSize > 0)
-      CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+    if (workspace) {
+      d_workspace = reinterpret_cast<void*>(workspace->mem());
+    } else {
+      size_t bufferSize = 0;
+      cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                              &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
+                              CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
+      if (bufferSize > 0) {
+        CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+        d_workspace = reinterpret_cast<void*>(dBuffer);
+      }
+    }
 
     cusparseStatus_t status = cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                            &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-                                           CUSPARSE_SPMV_ALG_DEFAULT,
-                                           reinterpret_cast<void*>(dBuffer));
+                                           CUSPARSE_SPMV_ALG_DEFAULT, d_workspace);
 
     if (dBuffer)
       CHECK_CUDA(cuMemFreeAsync(dBuffer, stream));
@@ -319,11 +409,86 @@ public:
       throw std::runtime_error("cusparseSpMV (CSC) failed on device " + std::to_string(id_));
   }
 
+  /// Returns the required buffer size for SpMM CSR.
+  size_t spmm_csr_buffer_size(int stream_id, int m, int n, int k, int nnz, 
+                             mem_ptr<int> row_ptr, mem_ptr<int> col_ind, mem_ptr<float> values,
+                             mem_ptr<float> B, mem_ptr<float> C) {
+    cusparseHandle_t handle = get_cusparse_handle(stream_id);
+    if (!handle) throw std::runtime_error("cuSparse not enabled");
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    float alpha = 1.0f; float beta = 0.0f;
+    cusparseSpMatDescr_t matA;
+    cusparseCreateCsr(&matA, m, k, nnz, reinterpret_cast<void*>(row_ptr->mem()),
+                      reinterpret_cast<void*>(col_ind->mem()), reinterpret_cast<void*>(values->mem()),
+                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
+    cusparseDnMatDescr_t matB, matC;
+    cusparseCreateDnMat(&matB, k, n, n, reinterpret_cast<void*>(B->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
+    cusparseCreateDnMat(&matC, m, n, n, reinterpret_cast<void*>(C->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
+    size_t bufferSize = 0;
+    cusparseSpMM_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                            &alpha, matA, matB, &beta, matC, CUDA_R_32F, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
+    cusparseDestroySpMat(matA);
+    cusparseDestroyDnMat(matB);
+    cusparseDestroyDnMat(matC);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    return bufferSize;
+  }
+
+  /// Returns the required buffer size for SpMM COO.
+  size_t spmm_coo_buffer_size(int stream_id, int m, int n, int k, int nnz, 
+                             mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> values,
+                             mem_ptr<float> B, mem_ptr<float> C) {
+    cusparseHandle_t handle = get_cusparse_handle(stream_id);
+    if (!handle) throw std::runtime_error("cuSparse not enabled");
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    float alpha = 1.0f; float beta = 0.0f;
+    cusparseSpMatDescr_t matA;
+    cusparseCreateCoo(&matA, m, k, nnz, reinterpret_cast<void*>(row_ind->mem()),
+                      reinterpret_cast<void*>(col_ind->mem()), reinterpret_cast<void*>(values->mem()),
+                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
+    cusparseDnMatDescr_t matB, matC;
+    cusparseCreateDnMat(&matB, k, n, n, reinterpret_cast<void*>(B->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
+    cusparseCreateDnMat(&matC, m, n, n, reinterpret_cast<void*>(C->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
+    size_t bufferSize = 0;
+    cusparseSpMM_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                            &alpha, matA, matB, &beta, matC, CUDA_R_32F, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
+    cusparseDestroySpMat(matA);
+    cusparseDestroyDnMat(matB);
+    cusparseDestroyDnMat(matC);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    return bufferSize;
+  }
+
+  /// Returns the required buffer size for SpMM CSC.
+  size_t spmm_csc_buffer_size(int stream_id, int m, int n, int k, int nnz, 
+                             mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> values,
+                             mem_ptr<float> B, mem_ptr<float> C) {
+    cusparseHandle_t handle = get_cusparse_handle(stream_id);
+    if (!handle) throw std::runtime_error("cuSparse not enabled");
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    float alpha = 1.0f; float beta = 0.0f;
+    cusparseSpMatDescr_t matA;
+    cusparseCreateCsc(&matA, m, k, nnz, reinterpret_cast<void*>(col_ptr->mem()),
+                      reinterpret_cast<void*>(row_ind->mem()), reinterpret_cast<void*>(values->mem()),
+                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
+    cusparseDnMatDescr_t matB, matC;
+    cusparseCreateDnMat(&matB, k, n, n, reinterpret_cast<void*>(B->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
+    cusparseCreateDnMat(&matC, m, n, n, reinterpret_cast<void*>(C->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
+    size_t bufferSize = 0;
+    cusparseSpMM_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                            &alpha, matA, matB, &beta, matC, CUDA_R_32F, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
+    cusparseDestroySpMat(matA);
+    cusparseDestroyDnMat(matB);
+    cusparseDestroyDnMat(matC);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    return bufferSize;
+  }
+
   /// Performs sparse matrix-matrix multiplication (C = alpha*A*B + beta*C) using CSR format.
   /// A is sparse (m x k), B is dense (k x n), C is dense (m x n).
   void spmm_csr(int stream_id, int m, int n, int k, int nnz, float alpha, 
                 mem_ptr<int> row_ptr, mem_ptr<int> col_ind, mem_ptr<float> values,
-                mem_ptr<float> B, float beta, mem_ptr<float> C) {
+                mem_ptr<float> B, float beta, mem_ptr<float> C, mem_ptr<char> workspace = nullptr) {
     cusparseHandle_t handle = get_cusparse_handle(stream_id);
     if (!handle) throw std::runtime_error("cuSparse not enabled on device " + std::to_string(id_));
 
@@ -342,17 +507,24 @@ public:
     cusparseCreateDnMat(&matB, k, n, n, reinterpret_cast<void*>(B->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
     cusparseCreateDnMat(&matC, m, n, n, reinterpret_cast<void*>(C->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
 
-    size_t bufferSize = 0;
-    cusparseSpMM_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                            &alpha, matA, matB, &beta, matC, CUDA_R_32F,
-                            CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
-
+    void* d_workspace = nullptr;
     CUdeviceptr dBuffer = 0;
-    if (bufferSize > 0) CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+    if (workspace) {
+      d_workspace = reinterpret_cast<void*>(workspace->mem());
+    } else {
+      size_t bufferSize = 0;
+      cusparseSpMM_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                              &alpha, matA, matB, &beta, matC, CUDA_R_32F,
+                              CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
+      if (bufferSize > 0) {
+        CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+        d_workspace = reinterpret_cast<void*>(dBuffer);
+      }
+    }
 
     cusparseStatus_t status = cusparseSpMM(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                            &alpha, matA, matB, &beta, matC, CUDA_R_32F,
-                                           CUSPARSE_SPMM_ALG_DEFAULT, reinterpret_cast<void*>(dBuffer));
+                                           CUSPARSE_SPMM_ALG_DEFAULT, d_workspace);
 
     if (dBuffer) CHECK_CUDA(cuMemFreeAsync(dBuffer, stream));
 
@@ -368,7 +540,7 @@ public:
   /// Performs sparse matrix-matrix multiplication (C = alpha*A*B + beta*C) using COO format.
   void spmm_coo(int stream_id, int m, int n, int k, int nnz, float alpha, 
                 mem_ptr<int> row_ind, mem_ptr<int> col_ind, mem_ptr<float> values,
-                mem_ptr<float> B, float beta, mem_ptr<float> C) {
+                mem_ptr<float> B, float beta, mem_ptr<float> C, mem_ptr<char> workspace = nullptr) {
     cusparseHandle_t handle = get_cusparse_handle(stream_id);
     if (!handle) throw std::runtime_error("cuSparse not enabled on device " + std::to_string(id_));
 
@@ -386,17 +558,24 @@ public:
     cusparseCreateDnMat(&matB, k, n, n, reinterpret_cast<void*>(B->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
     cusparseCreateDnMat(&matC, m, n, n, reinterpret_cast<void*>(C->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
 
-    size_t bufferSize = 0;
-    cusparseSpMM_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                            &alpha, matA, matB, &beta, matC, CUDA_R_32F,
-                            CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
-
+    void* d_workspace = nullptr;
     CUdeviceptr dBuffer = 0;
-    if (bufferSize > 0) CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+    if (workspace) {
+      d_workspace = reinterpret_cast<void*>(workspace->mem());
+    } else {
+      size_t bufferSize = 0;
+      cusparseSpMM_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                              &alpha, matA, matB, &beta, matC, CUDA_R_32F,
+                              CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
+      if (bufferSize > 0) {
+        CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+        d_workspace = reinterpret_cast<void*>(dBuffer);
+      }
+    }
 
     cusparseStatus_t status = cusparseSpMM(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                            &alpha, matA, matB, &beta, matC, CUDA_R_32F,
-                                           CUSPARSE_SPMM_ALG_DEFAULT, reinterpret_cast<void*>(dBuffer));
+                                           CUSPARSE_SPMM_ALG_DEFAULT, d_workspace);
 
     if (dBuffer) CHECK_CUDA(cuMemFreeAsync(dBuffer, stream));
 
@@ -412,7 +591,7 @@ public:
   /// Performs sparse matrix-matrix multiplication (C = alpha*A*B + beta*C) using CSC format.
   void spmm_csc(int stream_id, int m, int n, int k, int nnz, float alpha, 
                 mem_ptr<int> col_ptr, mem_ptr<int> row_ind, mem_ptr<float> values,
-                mem_ptr<float> B, float beta, mem_ptr<float> C) {
+                mem_ptr<float> B, float beta, mem_ptr<float> C, mem_ptr<char> workspace = nullptr) {
     cusparseHandle_t handle = get_cusparse_handle(stream_id);
     if (!handle) throw std::runtime_error("cuSparse not enabled on device " + std::to_string(id_));
 
@@ -431,17 +610,24 @@ public:
     cusparseCreateDnMat(&matB, k, n, n, reinterpret_cast<void*>(B->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
     cusparseCreateDnMat(&matC, m, n, n, reinterpret_cast<void*>(C->mem()), CUDA_R_32F, CUSPARSE_ORDER_ROW);
 
-    size_t bufferSize = 0;
-    cusparseSpMM_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                            &alpha, matA, matB, &beta, matC, CUDA_R_32F,
-                            CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
-
+    void* d_workspace = nullptr;
     CUdeviceptr dBuffer = 0;
-    if (bufferSize > 0) CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+    if (workspace) {
+      d_workspace = reinterpret_cast<void*>(workspace->mem());
+    } else {
+      size_t bufferSize = 0;
+      cusparseSpMM_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                              &alpha, matA, matB, &beta, matC, CUDA_R_32F,
+                              CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
+      if (bufferSize > 0) {
+        CHECK_CUDA(cuMemAllocAsync(&dBuffer, bufferSize, stream));
+        d_workspace = reinterpret_cast<void*>(dBuffer);
+      }
+    }
 
     cusparseStatus_t status = cusparseSpMM(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                            &alpha, matA, matB, &beta, matC, CUDA_R_32F,
-                                           CUSPARSE_SPMM_ALG_DEFAULT, reinterpret_cast<void*>(dBuffer));
+                                           CUSPARSE_SPMM_ALG_DEFAULT, d_workspace);
 
     if (dBuffer)
       CHECK_CUDA(cuMemFreeAsync(dBuffer, stream));
@@ -452,7 +638,7 @@ public:
 
     CHECK_CUDA(cuCtxPopCurrent(nullptr));
     if (status != CUSPARSE_STATUS_SUCCESS)
-      throw std::runtime_error("cusparseSpMV (CSC) failed on device " + std::to_string(id_));
+      throw std::runtime_error("cusparseSpMM (CSC) failed on device " + std::to_string(id_));
   }
 
   /// Performs symmetric rank-k update (C = alpha*A*A^T + beta*C).

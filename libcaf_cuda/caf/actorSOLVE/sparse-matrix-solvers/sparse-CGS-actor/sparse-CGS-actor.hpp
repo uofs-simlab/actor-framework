@@ -10,27 +10,25 @@
 #include "caf/actorBLAS/copy-actor/copy-actor.hpp"
 #include "caf/cuda/platform.hpp"
 
+// Define a new block for CG specific atoms starting where the cuda block ended
+CAF_BEGIN_TYPE_ID_BLOCK(cg_actor, caf::id_block::cuda::end)
+  CAF_ADD_ATOM(cg_actor, cg_next_step_atom)
+CAF_END_TYPE_ID_BLOCK(cg_actor)
+
 namespace caf::cuda {
 
-enum class matrix_format {
- csr,
- csc,
- coo
-};
+// // enum class matrix_format {
+//  csr,
+//  csc,
+//  coo
+// };
 
 enum class sparse_cg_step {
  idle,
- init_r,
- init_p,
  init_rho,
- main_spmv_w,
- main_dot_pw,
- main_axpy_x,
- main_axpy_r,
- main_dot_rr,
- update_p_copy_r,
- update_p_axpy_p,
- update_p_final_copy
+ calc_dot_pw,
+ check_convergence,
+ finished
 };
 
 // Reply IDs used to distinguish which actor type is replying
@@ -54,16 +52,19 @@ struct sparse_cg_state {
  int max_iter;
  int device_num;
  int stream_id;
+ device_ptr d_ptr;
  caf::actor supervisor;
 
  // Workspace vectors
  mem_ptr<float> r, p, w, y_tmp;
+ mem_ptr<char> spmv_workspace;
  
- // Scalars
- float rho = 0.0f;
- float old_rho = 0.0f;
- float alpha = 0.0f;
- float beta = 0.0f;
+ // Scalars needed across asynchronous steps
+ float rho_val = 0.0f;
+ float old_rho_val = 0.0f;
+ float alpha_val = 0.0f;
+ float beta_val = 0.0f;
+ float dot_pw_val = 0.0f;
  int iterations = 0;
  sparse_cg_step step = sparse_cg_step::idle;
 };
@@ -93,13 +94,33 @@ public:
        auto& s = state();
        if (!s.supervisor)
          s.supervisor = actor_cast<caf::actor>(this->current_sender());
-       start_setup();
+       start_solve();
      },
+     [this](cg_next_step_atom, float val) {
+       auto& s = state();
+       // Thread-safely update scalars based on the stage that just finished
+       switch (s.step) {
+         case sparse_cg_step::init_rho:
+         case sparse_cg_step::check_convergence:
+           s.rho_val = val;
+           break;
+         case sparse_cg_step::calc_dot_pw:
+           s.dot_pw_val = val;
+           break;
+         default: break;
+       }
+       perform_cg_step();
+     },
+     [this](gpu_done_atom, std::vector<float>& solution) {
+       if (state().supervisor)
+         this->mail(std::move(solution)).send(state().supervisor);
+       this->quit();
+     }
    };
  }
 
 private:
- void start_setup() {
+ void start_solve() {
    auto& s = state();
    command_runner<> runner;
 
@@ -117,70 +138,116 @@ private:
    s.b         = std::get<3>(res);
    s.x         = std::get<4>(res);
 
+   s.d_ptr = platform::create()->schedule(s.stream_id, s.device_num);
+
    // Allocate workspace
    command_runner<out<float>> work_runner;
    s.r = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
    s.p = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
    s.w = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
-   s.y_tmp = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
+   s.y_tmp = work_runner.transfer_memory(s.device_num, s.stream_id, create_out_arg_with_size<float>(1));
 
-   auto dev = platform::create()->schedule(s.stream_id, s.device_num);
-   float alpha_const = 1.0f;
-   float beta_const = 0.0f;
-   float alpham1 = -1.0f;
+   // Allocate SPMV workspace to avoid reallocations in the loop
+   size_t ws_size = 0;
+   if (s.format == matrix_format::csr)
+     ws_size = s.d_ptr->spmv_csr_buffer_size(s.stream_id, s.n, s.n, s.nnz, s.A_row_ptr, s.A_col_ind, s.A_values, s.x, s.w);
+   else if (s.format == matrix_format::csc)
+     ws_size = s.d_ptr->spmv_csc_buffer_size(s.stream_id, s.n, s.n, s.nnz, s.A_row_ptr, s.A_col_ind, s.A_values, s.x, s.w);
+   else if (s.format == matrix_format::coo)
+     ws_size = s.d_ptr->spmv_coo_buffer_size(s.stream_id, s.n, s.n, s.nnz, s.A_row_ptr, s.A_col_ind, s.A_values, s.x, s.w);
+
+   if (ws_size > 0) {
+     command_runner<out<char>> ws_runner;
+     s.spmv_workspace = ws_runner.transfer_memory(s.device_num, s.stream_id, out<char>(static_cast<int>(ws_size)));
+   }
 
    // 1. Initial SpMV: w = A * x
    execute_spmv(s.x, s.w);
 
    // 2. Initial r = b - w
-   dev->scopy(s.stream_id, s.n, s.b, s.r);
-   dev->saxpy(s.stream_id, s.n, alpham1, s.w, s.r);
+   s.d_ptr->scopy(s.stream_id, s.n, s.b, s.r);
+   s.d_ptr->saxpy(s.stream_id, s.n, -1.0f, s.w, s.r);
 
    // 3. Initial rho = r * r
-   dev->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
-   s.rho = s.y_tmp->copy_to_host()[0];
+   s.d_ptr->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
+   
+   s.step = sparse_cg_step::init_rho;
+   auto self = actor_cast<actor>(this);
+   runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {    
+    anon_mail(cg_next_step_atom_v, host_data[0]).send(self);
+   });
+ }
 
-   s.iterations = 1;
-   while (s.rho > (s.tol * s.tol) && s.iterations <= s.max_iter) {
-     if (s.iterations > 1) {
-       s.beta = s.rho / s.old_rho;
-       dev->scopy(s.stream_id, s.n, s.r, s.w);
-       dev->saxpy(s.stream_id, s.n, s.beta, s.p, s.w);
-       dev->scopy(s.stream_id, s.n, s.w, s.p);
-     } else {
-       dev->scopy(s.stream_id, s.n, s.r, s.p);
+ void perform_cg_step() {
+   auto& s = state();
+   command_runner<> runner;
+   auto self = actor_cast<actor>(this);
+
+   switch (s.step) {
+     case sparse_cg_step::init_rho:
+     case sparse_cg_step::check_convergence: {
+       s.iterations++; // Increment for the current iteration
+
+       // Check convergence
+       if (s.rho_val <= (s.tol * s.tol) || s.iterations > s.max_iter) {
+         finish_solve();
+         return;
+       }
+
+       if (s.iterations > 1) {
+         s.beta_val = s.rho_val / s.old_rho_val;
+         s.d_ptr->scopy(s.stream_id, s.n, s.r, s.w);
+         s.d_ptr->saxpy(s.stream_id, s.n, s.beta_val, s.p, s.w);
+         s.d_ptr->scopy(s.stream_id, s.n, s.w, s.p);
+       } else {
+         s.d_ptr->scopy(s.stream_id, s.n, s.r, s.p);
+       }
+
+       execute_spmv(s.p, s.w);
+
+       s.d_ptr->sdot(s.stream_id, s.n, s.p, s.w, s.y_tmp);
+       s.step = sparse_cg_step::calc_dot_pw;
+       runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
+         anon_mail(cg_next_step_atom_v, host_data[0]).send(self);
+       });
+       break;
      }
 
-     execute_spmv(s.p, s.w);
+     case sparse_cg_step::calc_dot_pw: {
+       s.alpha_val = s.rho_val / s.dot_pw_val;
 
-     dev->sdot(s.stream_id, s.n, s.p, s.w, s.y_tmp);
-     float dot_pw = s.y_tmp->copy_to_host()[0];
+       s.d_ptr->saxpy(s.stream_id, s.n, s.alpha_val, s.p, s.x);
+       s.d_ptr->saxpy(s.stream_id, s.n, -s.alpha_val, s.w, s.r);
 
-     s.alpha = s.rho / dot_pw;
+       s.old_rho_val = s.rho_val;
+       s.d_ptr->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
+       s.step = sparse_cg_step::check_convergence;
+       runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
+         anon_mail(cg_next_step_atom_v, host_data[0]).send(self);
+       });
+       break;
+     }
 
-     dev->saxpy(s.stream_id, s.n, s.alpha, s.p, s.x);
-     dev->saxpy(s.stream_id, s.n, -s.alpha, s.w, s.r);
-
-     s.old_rho = s.rho;
-     dev->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
-     s.rho = s.y_tmp->copy_to_host()[0];
-
-     s.iterations++;
+     default: break;
    }
+ }
 
-   auto solution = s.x->copy_to_host();
-  
-   if (s.supervisor)
-     this->mail(std::move(solution)).send(s.supervisor);
+ void finish_solve() {
+   auto& s = state();
+   s.step = sparse_cg_step::finished;
+   auto self = actor_cast<actor>(this);
+   command_runner<> runner;
+   runner.copy_to_host_async(s.x, [self](std::vector<float> solution) {
+     anon_mail(gpu_done_atom_v, std::move(solution)).send(self);
+   });
  }
 
  void execute_spmv(mem_ptr<float> input_v, mem_ptr<float> output_v) {
    auto& s = state();
-   auto dev = platform::create()->schedule(s.stream_id, s.device_num);
    switch (s.format) {
-     case matrix_format::csr: dev->spmv_csr(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v); break;
-     case matrix_format::csc: dev->spmv_csc(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v); break;
-     case matrix_format::coo: dev->spmv_coo(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v); break;
+     case matrix_format::csr: s.d_ptr->spmv_csr(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v, s.spmv_workspace); break;
+     case matrix_format::csc: s.d_ptr->spmv_csc(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v, s.spmv_workspace); break;
+     case matrix_format::coo: s.d_ptr->spmv_coo(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v, s.spmv_workspace); break;
      default: break;
    }
  }
