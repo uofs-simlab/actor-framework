@@ -88,15 +88,19 @@ struct device_actor_state {
     int active_workers = 0;
     int device_id = -1;
     bool fetching = false;
-    size_t low_water_mark = 2;
-    size_t batch_size = 4;
+    size_t low_water_mark;
+    size_t batch_size;
 };
 
 behavior gpu_device_actor(stateful_actor<device_actor_state>* self,
-                          caf::actor global_pool, int num_workers, int dev_id) {
+                          caf::actor global_pool, int num_workers, int dev_id, int max_in_flight) {
     self->state().global_pool = global_pool;
     self->state().device_id = dev_id;
     self->state().active_workers = num_workers;
+
+    // Dynamically calculate prefetch markers based on the total pipeline capacity
+    self->state().low_water_mark = static_cast<size_t>(num_workers * max_in_flight);
+    self->state().batch_size = self->state().low_water_mark * 2;
 
     auto refill = [=]() {
         auto& st = self->state();
@@ -258,10 +262,11 @@ behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, int total,
     
     manager& mgr = manager::get();
     int num_gpus = mgr.get_num_devices();
-    int workers_per_gpu = 2; // Adjustable worker count per physical GPU
+    int workers_per_gpu = 8; // Adjustable worker count per physical GPU
+    int max_in_flight_tasks_per_worker = 2; // How many tasks each worker can have in flight
 
     for (int i = 0; i < num_gpus; ++i) {
-        auto broker = self->spawn(gpu_device_actor, pool, workers_per_gpu, i);
+        auto broker = self->spawn(gpu_device_actor, pool, workers_per_gpu, i, max_in_flight_tasks_per_worker);
         for (int j = 0; j < workers_per_gpu; ++j) {
             self->spawn(sparse_worker_fun, self, broker, i, (i * 100) + j);
         }
