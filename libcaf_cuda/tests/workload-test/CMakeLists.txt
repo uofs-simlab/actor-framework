@@ -41,5 +41,6 @@ target_link_libraries(test
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
     CUDA::nvrtc
     CUDA::cublas
+    CUDA::cusparse
 )
 

@@ -112,16 +112,9 @@ std::vector<float> compute_rhs_spmv(const SparseMatrixCSR& A, const std::vector<
 }
 
 void caf_main(actor_system& sys) {
-    auto& args = sys.config().args_remainder;
-    if (args.empty()) {
-        std::cout << "Usage: workload-test <path_to_matrix_bin>\n";
-        std::cout << "Example: workload-test /scratch/nqr159/matrix-collection/matrices/spd/bcsstk08.bin\n";
-        return;
-    }
-
     // Initialize GPU Manager with cuBLAS and cuSPARSE enabled
     manager::init(sys, manager_config(true, true));
-    std::string filepath = args[0];
+    std::string filepath = "/scratch/nqr159/matrix-collection/matrices/spd/bcsstk08.bin";
 
     try {
         std::cout << "Loading binary file: " << filepath << " ...\n";
