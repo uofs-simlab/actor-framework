@@ -53,6 +53,12 @@ class command;
 template <bool PassConfig, class... Ts>
 class actor_facade;
 
+enum class matrix_format {
+  csr,
+  csc,
+  coo
+};
+
 } // namespace caf::cuda
 
 // Structure for mapping kernel output indices to specific host memory buffers
