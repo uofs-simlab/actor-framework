@@ -30,7 +30,7 @@ include_directories(
 
 
 # 5) Declare your executable
-add_executable(test main.test.cpp)
+add_executable(test main.test.cpp sparse_utils.cpp)
 
 target_compile_definitions(test PRIVATE CAF_ENABLE_LOGGING)
 
@@ -43,4 +43,3 @@ target_link_libraries(test
     CUDA::cublas
     CUDA::cusparse
 )
-

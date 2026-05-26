@@ -8,108 +8,10 @@
 #include <cmath>
 #include <algorithm>
 #include "caf/actorSOLVE/sparse-matrix-solvers/sparse-CGS-actor/sparse-CGS-actor.hpp"
+#include "sparse_utils.hpp"
 
 using namespace caf;
 using namespace caf::cuda;
-
-// Structure to hold raw data from the binary file
-struct SparseMatrixCOO {
-    int32_t rows;
-    int32_t cols;
-    int32_t nnz;
-    std::vector<int32_t> row_indices;
-    std::vector<int32_t> col_indices;
-    std::vector<float> values;
-};
-
-// Structure optimized for high-performance solvers
-struct SparseMatrixCSR {
-    int32_t rows;
-    int32_t cols;
-    int32_t nnz;
-    std::vector<int32_t> row_ptr;    // Size: rows + 1
-    std::vector<int32_t> col_indices;// Size: nnz
-    std::vector<float> values;       // Size: nnz
-};
-
-// Function to slurp the binary data into memory
-SparseMatrixCOO load_binary_coo(const std::string& filepath) {
-    std::ifstream file(filepath, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Failed to open matrix file: " + filepath);
-    }
-
-    SparseMatrixCOO coo;
-    
-    // 1. Read the 12-byte header
-    file.read(reinterpret_cast<char*>(&coo.rows), sizeof(int32_t));
-    file.read(reinterpret_cast<char*>(&coo.cols), sizeof(int32_t));
-    file.read(reinterpret_cast<char*>(&coo.nnz), sizeof(int32_t));
-
-    // Allocate memory vectors
-    coo.row_indices.resize(coo.nnz);
-    coo.col_indices.resize(coo.nnz);
-    coo.values.resize(coo.nnz);
-
-    // 2. Stream the blocks continuously
-    file.read(reinterpret_cast<char*>(coo.row_indices.data()), coo.nnz * sizeof(int32_t));
-    file.read(reinterpret_cast<char*>(coo.col_indices.data()), coo.nnz * sizeof(int32_t));
-    file.read(reinterpret_cast<char*>(coo.values.data()), coo.nnz * sizeof(float));
-
-    return coo;
-}
-
-// Converts COO to CSR format for solver compatibility
-SparseMatrixCSR convert_coo_to_csr(const SparseMatrixCOO& coo) {
-    SparseMatrixCSR csr;
-    csr.rows = coo.rows;
-    csr.cols = coo.cols;
-    csr.nnz = coo.nnz;
-    
-    csr.row_ptr.assign(csr.rows + 1, 0);
-    csr.col_indices.resize(csr.nnz);
-    csr.values.resize(csr.nnz);
-
-    // Step 1: Count elements per row
-    for (int32_t i = 0; i < coo.nnz; ++i) {
-        csr.row_ptr[coo.row_indices[i] + 1]++;
-    }
-
-    // Step 2: Cumulative sum to build row pointers
-    for (int32_t i = 0; i < csr.rows; ++i) {
-        csr.row_ptr[i + 1] += csr.row_ptr[i];
-    }
-
-    // Step 3: Copy tracking array to insert elements in order
-    std::vector<int32_t> current_row_pos = csr.row_ptr;
-
-    // Step 4: Fill column and value arrays
-    for (int32_t i = 0; i < coo.nnz; ++i) {
-        int32_t row = coo.row_indices[i];
-        int32_t dest_pos = current_row_pos[row]++;
-        csr.col_indices[dest_pos] = coo.col_indices[i];
-        csr.values[dest_pos] = coo.values[i];
-    }
-
-    return csr;
-}
-
-// Compute b = A * x using CSR layout (Sparse Matrix-Vector Multiplication)
-std::vector<float> compute_rhs_spmv(const SparseMatrixCSR& A, const std::vector<float>& x) {
-    std::vector<float> b(A.rows, 0.0f);
-    
-    for (int32_t i = 0; i < A.rows; ++i) {
-        float sum = 0.0f;
-        int32_t row_start = A.row_ptr[i];
-        int32_t row_end = A.row_ptr[i + 1];
-        
-        for (int32_t j = row_start; j < row_end; ++j) {
-            sum += A.values[j] * x[A.col_indices[j]];
-        }
-        b[i] = sum;
-    }
-    return b;
-}
 
 void caf_main(actor_system& sys) {
     // Initialize GPU Manager with cuBLAS and cuSPARSE enabled
@@ -181,4 +83,4 @@ void caf_main(actor_system& sys) {
     }
     manager::shutdown();
 }
-CAF_MAIN(id_block::cuda)
+CAF_MAIN(id_block::cuda, id_block::cg_actor)
