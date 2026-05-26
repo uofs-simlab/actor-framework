@@ -15,6 +15,7 @@ set(CMAKE_CXX_COMPILER "/usr/bin/g++")
 set(CMAKE_C_COMPILER "/usr/bin/gcc")
 
 project(CUDA_ACTORS)
+enable_language(CUDA)
 
 find_package(CUDA REQUIRED)
 find_package(CUDAToolkit REQUIRED)
@@ -44,3 +45,9 @@ target_link_libraries(test
     CUDA::cusparse
 )
 
+add_executable(benchmark main.cu)
+target_link_libraries(benchmark
+  PRIVATE
+    CUDA::cublas
+    CUDA::cusparse
+)

@@ -1,5 +1,5 @@
 /**
- * This test file evaluates the correctness of sparse_cg_actor for solving Ax = b.
+ * This test file evaluates the correctness of sparse_bicgstab_actor for solving Ax = b.
  * It covers:
  * - CSR, CSC, and COO formats.
  * - Convergence verification with simple matrices.
@@ -16,7 +16,7 @@
 #include <numeric>
 #include <cmath>
 #include "caf/actor_registry.hpp"
-#include "caf/actorSOLVE/sparse-matrix-solvers/sparse-CGS-actor/sparse-CGS-actor.hpp"
+#include "caf/actorSOLVE/sparse-matrix-solvers/sparse-BiCGSTAB-actor/sparse-BiCGSTAB-actor.hpp"
 
 using namespace caf;
 using namespace caf::cuda;
@@ -65,7 +65,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto solver = sys.spawn<sparse_cg_actor>(
+        auto solver = sys.spawn<sparse_bicgstab_actor>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(h_b), create_in_out_arg(h_x),
             matrix_format::csr, n, nnz, tolerance, max_iter, 0, 0, actor_cast<actor>(self));
@@ -86,7 +86,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto solver = sys.spawn<sparse_cg_actor>(
+        auto solver = sys.spawn<sparse_bicgstab_actor>(
             create_in_arg(col_ptr), create_in_arg(row_ind), create_in_arg(values),
             create_in_arg(h_b), create_in_out_arg(h_x),
             matrix_format::csc, n, nnz, tolerance, max_iter, 0, 1, actor_cast<actor>(self));
@@ -119,7 +119,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> x_large(N_large, 0.0f);
         
         auto start = std::chrono::high_resolution_clock::now();
-        auto stress_solver = sys.spawn<sparse_cg_actor>(
+        auto stress_solver = sys.spawn<sparse_bicgstab_actor>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(b_large), create_in_out_arg(x_large),
             matrix_format::csr, N_large, (int)values.size(), 1e-4f, 20000, 0, 2, actor_cast<actor>(self));
