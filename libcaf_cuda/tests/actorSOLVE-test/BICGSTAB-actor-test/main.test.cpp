@@ -445,6 +445,56 @@ void caf_main(actor_system& sys) {
         );
     }
 
+    // Test 10: Facade Actor CSR Simple
+    {
+        std::cout << "\n[INFO] Test 10: Facade actor CSR simple matrix..." << std::endl;
+        int n_f = 3, nnz_f = 3;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_b = {8.0f, 9.0f, 2.0f};
+        std::vector<float> h_x(n_f, 0.0f);
+        std::vector<float> expected_f = {2.0f, 3.0f, 1.0f};
+
+        auto facade = sys.spawn<sparse_bicgstab_facade<float>>();
+
+        self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::csr, n_f, nnz_f, tolerance, max_iter, 0, 9).send(facade);
+
+        self->receive(
+            [&](std::vector<float> result_x) {
+                verify_solution("Facade CSR Simple", result_x, expected_f, tolerance);
+            }
+        );
+    }
+
+    // Test 11: Facade Actor Real Matrix
+    {
+        std::string path = "/scratch/nqr159/matrix-collection/matrices/unsymmetric/lnsp3937.bin";
+        std::cout << "\n[INFO] Test 11: Facade actor real-world matrix " << path << "..." << std::endl;
+        try {
+            LocalCSR<float> A = load_binary_matrix_manual<float>(path);
+            std::vector<float> expected_real(A.rows, 1.0f);
+            std::vector<float> b_real = compute_rhs_manual<float>(A, expected_real);
+            std::vector<float> x_real(A.rows, 0.0f);
+
+            auto facade = sys.spawn<sparse_bicgstab_facade<float>>();
+
+            self->mail(create_in_arg(A.row_ptr), create_in_arg(A.col_ind), create_in_arg(A.values),
+                       create_in_arg(b_real), create_in_out_arg(x_real),
+                       matrix_format::csr, A.rows, A.nnz, 1e-5f, 5000, 0, 10).send(facade);
+
+            self->receive(
+                [&](std::vector<float> result) {
+                    verify_solution("Facade Real Matrix", result, expected_real, 1e-2f);
+                }
+            );
+        } catch (const std::exception& e) {
+            std::cout << "[ERROR] Test 11 Failed: " << e.what() << std::endl;
+        }
+    }
+
     manager::shutdown();
 }
 CAF_MAIN(id_block::cuda, id_block::cg_actor)

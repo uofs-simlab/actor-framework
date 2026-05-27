@@ -249,4 +249,132 @@ private:
   }
 };
 
+/**
+ * A stateless (facade) variant of the BiCGSTAB solver.
+ * This actor can be reused for multiple solve requests. It receives all 
+ * solve parameters as a message and returns the solution vector to the sender.
+ */
+template <class T = float>
+class sparse_bicgstab_facade : public event_based_actor {
+public:
+  sparse_bicgstab_facade(actor_config& cfg) : event_based_actor(cfg) {}
+
+  behavior make_behavior() override {
+    return {
+      [this](in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
+             matrix_format fmt, int n, int nnz, float tol, int max_iter,
+             int device_num, int stream_id) -> std::vector<T> {
+        command_runner<> runner;
+
+        // 1. Transfer problem data to device
+        auto res = runner.transfer_memory(device_num, stream_id,
+                                          rp, ci, val, b_in, x_in);
+
+        auto A_row_ptr = std::get<0>(res);
+        auto A_col_ind = std::get<1>(res);
+        auto A_values  = std::get<2>(res);
+        auto b         = std::get<3>(res);
+        auto x         = std::get<4>(res);
+
+        auto d_ptr = platform::create()->schedule(stream_id, device_num);
+
+        // 2. Allocate workspace
+        command_runner<out<T>> work_runner;
+        auto r     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+        auto r_hat = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+        auto p     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+        auto v     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+        auto s_vec = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+        auto t_vec = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+        auto y_tmp = work_runner.transfer_memory(device_num, stream_id, out<T>(1));
+
+        // 3. Setup SPMV workspace
+        mem_ptr<char> spmv_workspace;
+        size_t ws_size = 0;
+        if (fmt == matrix_format::csr)
+          ws_size = d_ptr->spmv_csr_buffer_size(stream_id, n, n, nnz, A_row_ptr, A_col_ind, A_values, x, v);
+        else if (fmt == matrix_format::csc)
+          ws_size = d_ptr->spmv_csc_buffer_size(stream_id, n, n, nnz, A_row_ptr, A_col_ind, A_values, x, v);
+        else if (fmt == matrix_format::coo)
+          ws_size = d_ptr->spmv_coo_buffer_size(stream_id, n, n, nnz, A_row_ptr, A_col_ind, A_values, x, v);
+
+        if (ws_size > 0) {
+          command_runner<out<char>> ws_runner;
+          spmv_workspace = ws_runner.transfer_memory(device_num, stream_id, out<char>(static_cast<int>(ws_size)));
+        }
+
+        // Helper lambdas for GPU operations
+        auto execute_spmv = [&](mem_ptr<T> input_v, mem_ptr<T> output_v) {
+          switch (fmt) {
+            case matrix_format::csr: d_ptr->spmv_csr(stream_id, n, n, nnz, T{1}, A_row_ptr, A_col_ind, A_values, input_v, T{0}, output_v, spmv_workspace); break;
+            case matrix_format::csc: d_ptr->spmv_csc(stream_id, n, n, nnz, T{1}, A_row_ptr, A_col_ind, A_values, input_v, T{0}, output_v, spmv_workspace); break;
+            case matrix_format::coo: d_ptr->spmv_coo(stream_id, n, n, nnz, T{1}, A_row_ptr, A_col_ind, A_values, input_v, T{0}, output_v, spmv_workspace); break;
+            default: break;
+          }
+        };
+        auto execute_copy = [&](mem_ptr<T> src, mem_ptr<T> dst) {
+          if constexpr (std::is_same_v<T, double>) d_ptr->dcopy(stream_id, n, src, dst);
+          else d_ptr->scopy(stream_id, n, src, dst);
+        };
+        auto execute_axpy = [&](T alpha, mem_ptr<T> ax, mem_ptr<T> ay) {
+          if constexpr (std::is_same_v<T, double>) d_ptr->daxpy(stream_id, n, alpha, ax, ay);
+          else d_ptr->saxpy(stream_id, n, static_cast<float>(alpha), ax, ay);
+        };
+        auto execute_dot = [&](mem_ptr<T> dx, mem_ptr<T> dy, mem_ptr<T> dres) {
+          if constexpr (std::is_same_v<T, double>) d_ptr->ddot(stream_id, n, dx, dy, dres);
+          else d_ptr->sdot(stream_id, n, dx, dy, dres);
+        };
+
+        // 4. Initial Residual: r = b - Ax
+        execute_spmv(x, v); 
+        execute_copy(b, r);
+        execute_axpy(T{-1}, v, r);
+        execute_copy(r, r_hat);
+        execute_dot(r, r, y_tmp);
+        T norm_sq = y_tmp->copy_to_host()[0];
+
+        int iterations = 0;
+        T rho_val = T{1}, alpha_val = T{1}, omega_val = T{1}, beta_val = T{0};
+
+        // BiCGSTAB Loop
+        while (norm_sq > (tol * tol) && iterations < max_iter) {
+          iterations++;
+          execute_dot(r_hat, r, y_tmp);
+          T rho_new = y_tmp->copy_to_host()[0];
+
+          if (iterations == 1) {
+            execute_copy(r, p);
+          } else {
+            beta_val = (rho_new / rho_val) * (alpha_val / omega_val);
+            execute_axpy(-omega_val, v, p);
+            execute_copy(r, s_vec);
+            execute_axpy(beta_val, p, s_vec);
+            execute_copy(s_vec, p);
+          }
+          rho_val = rho_new;
+          execute_spmv(p, v);
+          execute_dot(r_hat, v, y_tmp);
+          T alpha_denom = y_tmp->copy_to_host()[0];
+          alpha_val = rho_val / alpha_denom;
+          execute_copy(r, s_vec);
+          execute_axpy(-alpha_val, v, s_vec);
+          execute_spmv(s_vec, t_vec);
+          execute_dot(t_vec, s_vec, y_tmp);
+          T omega_num = y_tmp->copy_to_host()[0];
+          execute_dot(t_vec, t_vec, y_tmp);
+          T omega_denom = y_tmp->copy_to_host()[0];
+          omega_val = omega_num / omega_denom;
+          execute_axpy(alpha_val, p, x);
+          execute_axpy(omega_val, s_vec, x);
+          execute_copy(s_vec, r);
+          execute_axpy(-omega_val, t_vec, r);
+          execute_dot(r, r, y_tmp);
+          norm_sq = y_tmp->copy_to_host()[0];
+        }
+        return x->copy_to_host();
+      }
+    };
+  }
+};
+
 } // namespace caf::cuda

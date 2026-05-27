@@ -158,6 +158,22 @@ bool inspect(Inspector& f, buffer_variant& x) {
   return f.apply(x);
 }
 
+namespace caf::cuda {
+
+// Serialization support for matrix_format
+template <class Inspector>
+bool inspect(Inspector& f, matrix_format& x) {
+  auto val = static_cast<int>(x);
+  if (f.apply(val)) {
+    if constexpr (Inspector::is_loading)
+      x = static_cast<matrix_format>(val);
+    return true;
+  }
+  return false;
+}
+
+} // namespace caf::cuda
+
 // Check CUDA errors macro
 #define CHECK_CUDA(call) \
     do { \
@@ -204,6 +220,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<float>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<double>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<char>))  
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::matrix_format))
   
   //atoms 
   CAF_ADD_ATOM(cuda, kernel_done_atom)
@@ -230,3 +247,4 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::nd_range)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::program_ptr)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(output_mapping)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<output_mapping>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::matrix_format)
