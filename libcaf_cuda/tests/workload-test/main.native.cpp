@@ -292,11 +292,18 @@ void gpu_dispatcher(int device_id, std::vector<MatrixTask> assigned_tasks, int n
     for (size_t i = 0; i < assigned_tasks.size(); ++i) {
         int s_idx = i % num_workers;
         const auto& t = assigned_tasks[i];
+        auto start_task = std::chrono::steady_clock::now();
         if (t.type == CGS_SOLVER) {
             solve_cg_async(cublas_handles[s_idx], cusparse_handles[s_idx], t, streams[s_idx]);
         } else {
             solve_bicgstab_async(cublas_handles[s_idx], cusparse_handles[s_idx], t, streams[s_idx]); 
         }
+        CHECK_CUDA(cudaStreamSynchronize(streams[s_idx]));
+        auto end_task = std::chrono::steady_clock::now();
+        std::chrono::duration<double> task_duration = end_task - start_task;
+        std::string solver_type_str = (t.type == CGS_SOLVER) ? "CGS_SOLVER" : "BICSTAB_SOLVER";
+        std::cout << "Stream " << (device_id * 100 + s_idx) << ": Solve time for " << t.path 
+                  << " (" << solver_type_str << ") took " << task_duration.count() << " s" << std::endl;
     }
 
     // Wait for everything on this device to finish
