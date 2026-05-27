@@ -44,6 +44,9 @@ target_link_libraries(test
     CUDA::cusparse
 )
 
+# FindThreads is required for std::thread in the native version
+find_package(Threads REQUIRED)
+
 # 6) Declare the native benchmark executable (raw CUDA/cuBLAS/cuSPARSE)
 add_executable(workload-native main.native.cpp sparse_utils.cpp)
 
@@ -54,6 +57,3 @@ target_link_libraries(workload-native
     CUDA::cusparse
     Threads::Threads
 )
-
-# FindThreads is required for std::thread in the native version
-find_package(Threads REQUIRED)

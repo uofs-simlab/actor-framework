@@ -57,7 +57,7 @@ struct MatrixTask {
 };
 
 // Simplified CG Solver using raw cuBLAS and cuSPARSE
-void solve_cg(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task) {
+void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream) {
     int n = task.rows;
     float alpha = 1.0f, beta = 0.0f, r0 = 0.0f, r1 = 0.0f, a = 0.0f, na = 0.0f, b = 0.0f;
     float tolerance = 1e-5f;
@@ -66,22 +66,26 @@ void solve_cg(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask
     float *d_val, *d_x, *d_r, *d_p, *d_Ap, *d_b;
     int *d_row_ptr, *d_col_ind;
 
-    CHECK_CUDA(cudaMalloc(&d_val, task.nnz * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_row_ptr, (n + 1) * sizeof(int)));
-    CHECK_CUDA(cudaMalloc(&d_col_ind, task.nnz * sizeof(int)));
-    CHECK_CUDA(cudaMalloc(&d_x, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_r, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_p, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_Ap, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_b, n * sizeof(float)));
+    // Use Stream Ordered Allocator
+    CHECK_CUDA(cudaMallocAsync(&d_val, task.nnz * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_row_ptr, (n + 1) * sizeof(int), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.nnz * sizeof(int), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_x, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_r, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_p, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_Ap, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_b, n * sizeof(float), stream));
 
-    CHECK_CUDA(cudaMemcpy(d_val, task.values.data(), task.nnz * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_row_ptr, task.row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_col_ind, task.col_indices.data(), task.nnz * sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_b, task.b.data(), n * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemset(d_x, 0, n * sizeof(float)));
+    CHECK_CUDA(cudaMemcpyAsync(d_val, task.values.data(), task.nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.col_indices.data(), task.nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_b, task.b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemsetAsync(d_x, 0, n * sizeof(float), stream));
 
     // Create descriptors
+    CHECK_CUBLAS(cublasSetStream(cublas, stream));
+    CHECK_CUSPARSE(cusparseSetStream(cusparse, stream));
+
     cusparseSpMatDescr_t matA;
     cusparseDnVecDescr_t vecX, vecP, vecAp;
     CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.nnz, d_row_ptr, d_col_ind, d_val, 
@@ -94,7 +98,7 @@ void solve_cg(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask
     void* d_buffer = nullptr;
     CHECK_CUSPARSE(cusparseSpMV_bufferSize(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecX, &beta, vecAp, 
                                            CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize));
-    CHECK_CUDA(cudaMalloc(&d_buffer, bufferSize));
+    CHECK_CUDA(cudaMallocAsync(&d_buffer, bufferSize, stream));
 
     // CG Logic: r = b - Ax (initially r = b since x=0)
     CHECK_CUBLAS(cublasScopy(cublas, n, d_b, 1, d_r, 1));
@@ -135,13 +139,21 @@ void solve_cg(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask
     cusparseDestroyDnVec(vecX);
     cusparseDestroyDnVec(vecP);
     cusparseDestroyDnVec(vecAp);
-    cudaFree(d_val); cudaFree(d_row_ptr); cudaFree(d_col_ind);
-    cudaFree(d_x); cudaFree(d_r); cudaFree(d_p); cudaFree(d_Ap); cudaFree(d_b);
-    cudaFree(d_buffer);
+
+    // Stream-ordered free
+    CHECK_CUDA(cudaFreeAsync(d_val, stream));
+    CHECK_CUDA(cudaFreeAsync(d_row_ptr, stream));
+    CHECK_CUDA(cudaFreeAsync(d_col_ind, stream));
+    CHECK_CUDA(cudaFreeAsync(d_x, stream));
+    CHECK_CUDA(cudaFreeAsync(d_r, stream));
+    CHECK_CUDA(cudaFreeAsync(d_p, stream));
+    CHECK_CUDA(cudaFreeAsync(d_Ap, stream));
+    CHECK_CUDA(cudaFreeAsync(d_b, stream));
+    CHECK_CUDA(cudaFreeAsync(d_buffer, stream));
 }
 
-// BiCGSTAB Solver using raw cuBLAS and cuSPARSE
-void solve_bicgstab(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task) {
+// BiCGSTAB Solver using raw cuBLAS and cuSPARSE (Asynchronous version)
+void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream) {
     int n = task.rows;
     float alpha = 1.0f, beta = 0.0f, omega = 1.0f, rho = 1.0f, rho_prev = 1.0f;
     float tolerance = 1e-5f;
@@ -150,25 +162,28 @@ void solve_bicgstab(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
     float *d_val, *d_x, *d_r, *d_r_hat, *d_p, *d_v, *d_s, *d_t, *d_b;
     int *d_row_ptr, *d_col_ind;
 
-    CHECK_CUDA(cudaMalloc(&d_val, task.nnz * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_row_ptr, (n + 1) * sizeof(int)));
-    CHECK_CUDA(cudaMalloc(&d_col_ind, task.nnz * sizeof(int)));
-    CHECK_CUDA(cudaMalloc(&d_x, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_r, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_r_hat, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_p, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_v, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_s, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_t, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_b, n * sizeof(float)));
+    CHECK_CUDA(cudaMallocAsync(&d_val, task.nnz * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_row_ptr, (n + 1) * sizeof(int), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.nnz * sizeof(int), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_x, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_r, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_r_hat, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_p, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_v, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_s, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_t, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_b, n * sizeof(float), stream));
 
-    CHECK_CUDA(cudaMemcpy(d_val, task.values.data(), task.nnz * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_row_ptr, task.row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_col_ind, task.col_indices.data(), task.nnz * sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_b, task.b.data(), n * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemset(d_x, 0, n * sizeof(float)));
-    CHECK_CUDA(cudaMemset(d_v, 0, n * sizeof(float)));
-    CHECK_CUDA(cudaMemset(d_p, 0, n * sizeof(float)));
+    CHECK_CUDA(cudaMemcpyAsync(d_val, task.values.data(), task.nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.col_indices.data(), task.nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_b, task.b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemsetAsync(d_x, 0, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMemsetAsync(d_v, 0, n * sizeof(float), stream));
+    CHECK_CUDA(cudaMemsetAsync(d_p, 0, n * sizeof(float), stream));
+
+    CHECK_CUBLAS(cublasSetStream(cublas, stream));
+    CHECK_CUSPARSE(cusparseSetStream(cusparse, stream));
 
     cusparseSpMatDescr_t matA;
     cusparseDnVecDescr_t vecX, vecP, vecV, vecS, vecT;
@@ -184,7 +199,7 @@ void solve_bicgstab(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
     float one = 1.0f, zero = 0.0f;
     CHECK_CUSPARSE(cusparseSpMV_bufferSize(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecP, &zero, vecV, 
                                            CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize));
-    CHECK_CUDA(cudaMalloc(&d_buffer, bufferSize));
+    CHECK_CUDA(cudaMallocAsync(&d_buffer, bufferSize, stream));
 
     // r = b - Ax (initially r = b)
     CHECK_CUBLAS(cublasScopy(cublas, n, d_b, 1, d_r, 1));
@@ -197,8 +212,8 @@ void solve_bicgstab(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
             CHECK_CUBLAS(cublasScopy(cublas, n, d_r, 1, d_p, 1));
         } else {
             beta = (rho / rho_prev) * (alpha / omega);
-            float neg_omega = -omega;
-            CHECK_CUBLAS(cublasSaxpy(cublas, n, &neg_omega, d_v, 1, d_p, 1));
+            float minus_omega = -omega;
+            CHECK_CUBLAS(cublasSaxpy(cublas, n, &minus_omega, d_v, 1, d_p, 1));
             CHECK_CUBLAS(cublasSscal(cublas, n, &beta, d_p, 1));
             CHECK_CUBLAS(cublasSaxpy(cublas, n, &one, d_r, 1, d_p, 1));
         }
@@ -231,8 +246,8 @@ void solve_bicgstab(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
 
         // r = s - omega*t
         CHECK_CUBLAS(cublasScopy(cublas, n, d_s, 1, d_r, 1));
-        float neg_omega = -omega;
-        CHECK_CUBLAS(cublasSaxpy(cublas, n, &neg_omega, d_t, 1, d_r, 1));
+        float neg_omega_bc = -omega;
+        CHECK_CUBLAS(cublasSaxpy(cublas, n, &neg_omega_bc, d_t, 1, d_r, 1));
 
         float norm_r;
         CHECK_CUBLAS(cublasSnrm2(cublas, n, d_r, 1, &norm_r));
@@ -245,40 +260,53 @@ void solve_bicgstab(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
     cusparseDestroySpMat(matA);
     cusparseDestroyDnVec(vecP); cusparseDestroyDnVec(vecV);
     cusparseDestroyDnVec(vecS); cusparseDestroyDnVec(vecT);
-    cudaFree(d_val); cudaFree(d_row_ptr); cudaFree(d_col_ind);
-    cudaFree(d_x); cudaFree(d_r); cudaFree(d_r_hat); cudaFree(d_p);
-    cudaFree(d_v); cudaFree(d_s); cudaFree(d_t); cudaFree(d_b);
-    cudaFree(d_buffer);
+    CHECK_CUDA(cudaFreeAsync(d_val, stream));
+    CHECK_CUDA(cudaFreeAsync(d_row_ptr, stream));
+    CHECK_CUDA(cudaFreeAsync(d_col_ind, stream));
+    CHECK_CUDA(cudaFreeAsync(d_x, stream));
+    CHECK_CUDA(cudaFreeAsync(d_r, stream));
+    CHECK_CUDA(cudaFreeAsync(d_r_hat, stream));
+    CHECK_CUDA(cudaFreeAsync(d_p, stream));
+    CHECK_CUDA(cudaFreeAsync(d_v, stream));
+    CHECK_CUDA(cudaFreeAsync(d_s, stream));
+    CHECK_CUDA(cudaFreeAsync(d_t, stream));
+    CHECK_CUDA(cudaFreeAsync(d_b, stream));
+    CHECK_CUDA(cudaFreeAsync(d_buffer, stream));
 }
 
-// Worker thread function
-void gpu_worker(int device_id, std::queue<size_t>& tasks, std::mutex& mtx, const std::vector<MatrixTask>& all_tasks) {
+// New GPU Dispatcher function (One thread per GPU)
+void gpu_dispatcher(int device_id, std::vector<MatrixTask> assigned_tasks, int num_workers) {
     CHECK_CUDA(cudaSetDevice(device_id));
     
-    cublasHandle_t cublas;
-    cusparseHandle_t cusparse;
-    CHECK_CUBLAS(cublasCreate(&cublas));
-    CHECK_CUSPARSE(cusparseCreate(&cusparse));
+    std::vector<cudaStream_t> streams(num_workers);
+    std::vector<cublasHandle_t> cublas_handles(num_workers);
+    std::vector<cusparseHandle_t> cusparse_handles(num_workers);
 
-    while (true) {
-        size_t task_idx;
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            if (tasks.empty()) break;
-            task_idx = tasks.front();
-            tasks.pop();
-        }
+    for (int i = 0; i < num_workers; ++i) {
+        CHECK_CUDA(cudaStreamCreateWithFlags(&streams[i], cudaStreamNonBlocking));
+        CHECK_CUBLAS(cublasCreate(&cublas_handles[i]));
+        CHECK_CUSPARSE(cusparseCreate(&cusparse_handles[i]));
+    }
 
-        const auto& t = all_tasks[task_idx];
+    // Deep pipelining: Loop through assigned tasks and dispatch to streams round-robin
+    for (size_t i = 0; i < assigned_tasks.size(); ++i) {
+        int s_idx = i % num_workers;
+        const auto& t = assigned_tasks[i];
         if (t.type == CGS_SOLVER) {
-            solve_cg(cublas, cusparse, t);
+            solve_cg_async(cublas_handles[s_idx], cusparse_handles[s_idx], t, streams[s_idx]);
         } else {
-            solve_bicgstab(cublas, cusparse, t); 
+            solve_bicgstab_async(cublas_handles[s_idx], cusparse_handles[s_idx], t, streams[s_idx]); 
         }
     }
 
-    cublasDestroy(cublas);
-    cusparseDestroy(cusparse);
+    // Wait for everything on this device to finish
+    CHECK_CUDA(cudaDeviceSynchronize());
+
+    for (int i = 0; i < num_workers; ++i) {
+        cublasDestroy(cublas_handles[i]);
+        cusparseDestroy(cusparse_handles[i]);
+        cudaStreamDestroy(streams[i]);
+    }
 }
 
 int main() {
@@ -317,24 +345,24 @@ int main() {
     int num_gpus;
     CHECK_CUDA(cudaGetDeviceCount(&num_gpus));
     int workers_per_gpu = 8;
-
-    std::queue<size_t> task_indices;
-    for (size_t i = 0; i < tasks.size(); ++i) task_indices.push(i);
-    std::mutex queue_mutex;
+    
+    // Static Round-Robin Partitioning
+    std::vector<std::vector<MatrixTask>> partitions(num_gpus);
+    for (size_t i = 0; i < tasks.size(); ++i) {
+        partitions[i % num_gpus].push_back(std::move(tasks[i]));
+    }
 
     std::cout << "[INFO] Processing " << tasks.size() << " tasks using " 
-              << num_gpus << " GPUs (" << workers_per_gpu << " threads/GPU)...\n";
+              << num_gpus << " Dispatcher threads (" << workers_per_gpu << " streams/GPU)...\n";
 
     auto start = std::chrono::steady_clock::now();
 
-    std::vector<std::thread> workers;
+    std::vector<std::thread> dispatchers;
     for (int i = 0; i < num_gpus; ++i) {
-        for (int j = 0; j < workers_per_gpu; ++j) {
-            workers.emplace_back(gpu_worker, i, std::ref(task_indices), std::ref(queue_mutex), std::cref(tasks));
-        }
+        dispatchers.emplace_back(gpu_dispatcher, i, std::move(partitions[i]), workers_per_gpu);
     }
 
-    for (auto& w : workers) w.join();
+    for (auto& d : dispatchers) d.join();
 
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = end - start;
