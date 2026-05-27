@@ -24,14 +24,16 @@ using namespace caf::cuda;
 
 // --- Manual Sparse Utilities for Testing ---
 
+template <class T = float>
 struct LocalCSR {
     int rows, cols, nnz;
     std::vector<int> row_ptr;
     std::vector<int> col_ind;
-    std::vector<float> values;
+    std::vector<T> values;
 };
 
-LocalCSR load_binary_matrix_manual(const std::string& path) {
+template <class T = float>
+LocalCSR<T> load_binary_matrix_manual(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) throw std::runtime_error("Could not open " + path);
 
@@ -60,7 +62,7 @@ LocalCSR load_binary_matrix_manual(const std::string& path) {
     }
 
     // Convert COO to CSR
-    LocalCSR csr;
+    LocalCSR<T> csr;
     csr.rows = r; csr.cols = c; csr.nnz = n;
     csr.row_ptr.assign(r + 1, 0);
     csr.col_ind.resize(n);
@@ -74,15 +76,16 @@ LocalCSR load_binary_matrix_manual(const std::string& path) {
         int row = rows_coo[i];
         int dest = current_pos[row]++;
         csr.col_ind[dest] = cols_coo[i];
-        csr.values[dest] = vals_coo[i];
+        csr.values[dest] = static_cast<T>(vals_coo[i]);
     }
     return csr;
 }
 
-std::vector<float> compute_rhs_manual(const LocalCSR& A, const std::vector<float>& x) {
-    std::vector<float> b(A.rows, 0.0f);
+template <class T = float>
+std::vector<T> compute_rhs_manual(const LocalCSR<T>& A, const std::vector<T>& x) {
+    std::vector<T> b(A.rows, T{0});
     for (int i = 0; i < A.rows; ++i) {
-        float sum = 0.0f;
+        T sum = T{0};
         for (int j = A.row_ptr[i]; j < A.row_ptr[i+1]; ++j) {
             sum += A.values[j] * x[A.col_ind[j]];
         }
@@ -93,8 +96,9 @@ std::vector<float> compute_rhs_manual(const LocalCSR& A, const std::vector<float
 
 // --- End Manual Utilities ---
 
-void verify_solution(const std::string& test_name, const std::vector<float>& actual, 
-                     const std::vector<float>& expected, float tol = 1e-3) {
+template <class T = float>
+void verify_solution(const std::string& test_name, const std::vector<T>& actual, 
+                     const std::vector<T>& expected, T tol = 1e-3) {
     if (actual.size() != expected.size()) {
         std::cout << "[ERROR] " << test_name << " failed: Size mismatch (got " 
                   << actual.size() << ", expected " << expected.size() << ")" << std::endl;
@@ -137,7 +141,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto solver = sys.spawn<sparse_bicgstab_actor>(
+        auto solver = sys.spawn<sparse_bicgstab_actor<float>>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(h_b), create_in_out_arg(h_x),
             matrix_format::csr, n, nnz, tolerance, max_iter, 0, 0, actor_cast<actor>(self));
@@ -158,7 +162,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto solver = sys.spawn<sparse_bicgstab_actor>(
+        auto solver = sys.spawn<sparse_bicgstab_actor<float>>(
             create_in_arg(col_ptr), create_in_arg(row_ind), create_in_arg(values),
             create_in_arg(h_b), create_in_out_arg(h_x),
             matrix_format::csc, n, nnz, tolerance, max_iter, 0, 1, actor_cast<actor>(self));
@@ -179,7 +183,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto solver = sys.spawn<sparse_bicgstab_actor>(
+        auto solver = sys.spawn<sparse_bicgstab_actor<float>>(
             create_in_arg(row_ind), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(h_b), create_in_out_arg(h_x),
             matrix_format::coo, n, nnz, tolerance, max_iter, 0, 2, actor_cast<actor>(self));
@@ -206,7 +210,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> x_tri(3, 0.0f);
         std::vector<float> expected_tri = {1.0f, 1.0f, 1.0f};
 
-        auto solver = sys.spawn<sparse_bicgstab_actor>(
+        auto solver = sys.spawn<sparse_bicgstab_actor<float>>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(b_tri), create_in_out_arg(x_tri),
             matrix_format::csr, 3, 7, tolerance, max_iter, 0, 3, actor_cast<actor>(self));
@@ -252,7 +256,7 @@ void caf_main(actor_system& sys) {
 
         std::vector<float> x_mid(N_mid, 0.0f);
         
-        auto solver = sys.spawn<sparse_bicgstab_actor>(
+        auto solver = sys.spawn<sparse_bicgstab_actor<float>>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(b_mid), create_in_out_arg(x_mid),
             matrix_format::csr, N_mid, (int)values.size(), 1e-5f, 500, 0, 4, actor_cast<actor>(self));
@@ -301,7 +305,7 @@ void caf_main(actor_system& sys) {
 
         std::vector<float> x_high(N_high, 0.0f);
 
-        auto solver = sys.spawn<sparse_bicgstab_actor>(
+        auto solver = sys.spawn<sparse_bicgstab_actor<float>>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(b_high), create_in_out_arg(x_high),
             matrix_format::csr, N_high, (int)values.size(), 1e-6f, 15000, 0, 5, actor_cast<actor>(self));
@@ -320,7 +324,7 @@ void caf_main(actor_system& sys) {
         std::cout << "\n[INFO] Test 7: Loading real-world matrix " << path << "..." << std::endl;
         
         try {
-            LocalCSR A = load_binary_matrix_manual(path);
+            LocalCSR<float> A = load_binary_matrix_manual<float>(path);
             std::cout << "[INFO] Matrix Metadata: Rows=" << A.rows 
                       << ", Cols=" << A.cols 
                       << ", NNZ=" << A.nnz << std::endl;
@@ -331,10 +335,10 @@ void caf_main(actor_system& sys) {
             std::cout << std::endl;
             
             std::vector<float> expected_real(A.rows, 1.0f);
-            std::vector<float> b_real = compute_rhs_manual(A, expected_real);
+            std::vector<float> b_real = compute_rhs_manual<float>(A, expected_real);
             std::vector<float> x_real(A.rows, 0.0f);
 
-            auto solver = sys.spawn<sparse_bicgstab_actor>(
+            auto solver = sys.spawn<sparse_bicgstab_actor<float>>(
                 create_in_arg(A.row_ptr), create_in_arg(A.col_ind), create_in_arg(A.values),
                 create_in_arg(b_real), create_in_out_arg(x_real),
                 matrix_format::csr, A.rows, A.nnz, 1e-5f, 5000, 0, 6, actor_cast<actor>(self));
@@ -370,7 +374,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> x_large(N_large, 0.0f);
         
         auto start = std::chrono::high_resolution_clock::now();
-        auto stress_solver = sys.spawn<sparse_bicgstab_actor>(
+        auto stress_solver = sys.spawn<sparse_bicgstab_actor<float>>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(b_large), create_in_out_arg(x_large),
             matrix_format::csr, N_large, (int)values.size(), 1e-4f, 20000, 0, 7, actor_cast<actor>(self));
@@ -384,6 +388,30 @@ void caf_main(actor_system& sys) {
                 std::cout << "[INFO] First 5 elements of solution: ";
                 for(int i=0; i<5; ++i) std::cout << result[i] << " ";
                 std::cout << "..." << std::endl;
+            }
+        );
+    }
+
+    // Test 9: Double Precision Test (CSR)
+    {
+        std::cout << "\n[INFO] Test 9: Double precision CSR format..." << std::endl;
+        int n_d = 3, nnz_d = 3;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<double> values = {4.0, 3.0, 2.0};
+        std::vector<double> h_b = {8.0, 9.0, 2.0};
+        std::vector<double> h_x(n_d, 0.0);
+        std::vector<double> expected_d = {2.0, 3.0, 1.0};
+
+        auto solver = sys.spawn<sparse_bicgstab_actor<double>>(
+            create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+            create_in_arg(h_b), create_in_out_arg(h_x),
+            matrix_format::csr, n_d, nnz_d, 1e-10f, 100, 0, 8, actor_cast<actor>(self));
+
+        self->mail(start_atom_v).send(solver);
+        self->receive(
+            [&](std::vector<double> result_x) {
+                verify_solution<double>("Double CSR Simple", result_x, expected_d, 1e-9);
             }
         );
     }
