@@ -10,6 +10,7 @@
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include "caf/actorSOLVE/actorSOLVE.hpp"
 #include "sparse_utils.hpp"
 
@@ -19,9 +20,18 @@ namespace fs = std::filesystem;
 
 enum SolverType { CGS_SOLVER, BICSTAB_SOLVER };
 
+struct MatrixData {
+    std::vector<int> row_ptr;
+    std::vector<int> col_indices;
+    std::vector<float> values;
+    std::vector<float> b;
+    std::vector<float> x_guess;
+};
+
 struct MatrixTask {
     std::string path;
     SolverType type;
+    std::shared_ptr<MatrixData> data;
 };
 
 template <class Inspector>
@@ -35,11 +45,6 @@ bool inspect(Inspector& f, SolverType& x) {
     return false;
 }
 
-template <class Inspector>
-bool inspect(Inspector& f, MatrixTask& x) {
-    return f.object(x).fields(f.field("path", x.path), f.field("type", x.type));
-}
-
 CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::bicgstab_actor::end)
     CAF_ADD_ATOM(workload_test, get_work_atom)
     CAF_ADD_ATOM(workload_test, release_memory_atom)
@@ -48,7 +53,13 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::bicgstab_actor::end)
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
     CAF_ADD_TYPE_ID(workload_test, (std::vector<MatrixTask>))
+    CAF_ADD_TYPE_ID(workload_test, (std::shared_ptr<MatrixData>))
 CAF_END_TYPE_ID_BLOCK(workload_test)
+
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(MatrixData)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<MatrixData>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(MatrixTask)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<MatrixTask>)
 
 // ---------------------------- GLOBAL TASK POOL ----------------------------
 struct pool_state {
@@ -73,18 +84,9 @@ behavior global_task_pool(stateful_actor<pool_state>* self, std::vector<MatrixTa
 }
 
 // ---------------------------- DEVICE/GPU ACTOR ----------------------------
-struct MatrixData {
-    std::vector<int> row_ptr;
-    std::vector<int> col_indices;
-    std::vector<float> values;
-    std::vector<float> b;
-    std::vector<float> x_guess;
-};
-
 struct device_actor_state {
     caf::actor global_pool;
     std::deque<MatrixTask> local_tasks;
-    std::unordered_map<std::string, MatrixData> cache;
     int active_workers = 0;
     int device_id = -1;
     bool fetching = false;
@@ -123,7 +125,7 @@ behavior gpu_device_actor(stateful_actor<device_actor_state>* self,
     refill();
 
     return {
-        [=](get_work_atom) -> result<SolverType, std::string, in<int>, in<int>, in<float>, in<float>, in_out<float>, int, int> {
+        [=](get_work_atom) -> result<SolverType, std::string, in<int>, in<int>, in<float>, in<float>, in_out<float>, int, int, std::shared_ptr<MatrixData>> {
             auto& st = self->state();
 
             // If local tasks are available, process immediately
@@ -132,23 +134,13 @@ behavior gpu_device_actor(stateful_actor<device_actor_state>* self,
                 st.local_tasks.pop_front();
                 refill(); // Try to refill if below low water mark
 
-                auto& data = st.cache[t.path];
-                if (data.row_ptr.empty()) {
-                    auto coo = load_binary_coo(t.path);
-                    auto A = convert_coo_to_csr(coo);
-                    data.b = compute_rhs_spmv(A, std::vector<float>(A.cols, 1.0f));
-                    data.row_ptr = std::move(A.row_ptr);
-                    data.col_indices = std::move(A.col_indices);
-                    data.values = std::move(A.values);
-                    data.x_guess.assign(A.cols, 0.0f);
-                }
-
+                auto& data = *t.data;
                 return {t.type, t.path, create_in_arg(data.row_ptr), create_in_arg(data.col_indices), 
                         create_in_arg(data.values), create_in_arg(data.b), create_in_out_arg(data.x_guess), 
-                        (int)data.row_ptr.size() - 1, (int)data.values.size()};
+                        (int)data.row_ptr.size() - 1, (int)data.values.size(), t.data};
             }
 
-            auto promise = self->make_response_promise<SolverType, std::string, in<int>, in<int>, in<float>, in<float>, in_out<float>, int, int>();
+            auto promise = self->make_response_promise<SolverType, std::string, in<int>, in<int>, in<float>, in<float>, in_out<float>, int, int, std::shared_ptr<MatrixData>>();
             self->mail(get_work_atom_v, st.batch_size).request(st.global_pool, infinite).then(
                 [=](std::vector<MatrixTask>& batch) mutable {
                     auto& st_inner = self->state();
@@ -165,20 +157,10 @@ behavior gpu_device_actor(stateful_actor<device_actor_state>* self,
                     MatrixTask t = std::move(batch.front()); // Process the first task from the batch
                     refill(); // Try to refill if below low water mark (after adding tasks)
 
-                    auto& data = st_inner.cache[t.path];
-                    if (data.row_ptr.empty()) {
-                        auto coo = load_binary_coo(t.path);
-                        auto A = convert_coo_to_csr(coo);
-                        data.b = compute_rhs_spmv(A, std::vector<float>(A.cols, 1.0f));
-                        data.row_ptr = std::move(A.row_ptr);
-                        data.col_indices = std::move(A.col_indices);
-                        data.values = std::move(A.values);
-                        data.x_guess.assign(A.cols, 0.0f);
-                    }
-
+                    auto& data = *t.data;
                     promise.deliver(t.type, t.path, create_in_arg(data.row_ptr), create_in_arg(data.col_indices), 
                                     create_in_arg(data.values), create_in_arg(data.b), create_in_out_arg(data.x_guess), 
-                                    (int)data.row_ptr.size() - 1, (int)data.values.size());
+                                    (int)data.row_ptr.size() - 1, (int)data.values.size(), t.data);
                 },
                 [=](error& err) mutable {
                     promise.deliver(err); // Propagate error from global pool
@@ -187,7 +169,7 @@ behavior gpu_device_actor(stateful_actor<device_actor_state>* self,
             return promise;
         },
         [=](release_memory_atom, std::string path) {
-            self->state().cache.erase(path);
+            // No longer used with pre-loaded pool
         },
         [=](worker_done_atom) {
             if (--self->state().active_workers <= 0)
@@ -202,6 +184,7 @@ struct worker_state {
     caf::actor supervisor;
     int device_id;
     int stream_id;
+    std::shared_ptr<MatrixData> current_data;
     std::string current_matrix_path;
 };
 
@@ -218,8 +201,9 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
         [=](request_work_atom) {
             self->mail(get_work_atom_v).request(self->state().device_actor, infinite).then(
                 [=](SolverType type, std::string path, in<int> rp, in<int> ci, in<float> val,
-                    in<float> b, in_out<float> x, int rows, int nnz) {
+                    in<float> b, in_out<float> x, int rows, int nnz, std::shared_ptr<MatrixData> data) {
                     self->state().current_matrix_path = path;
+                    self->state().current_data = data;
                     actor solver;
                     if (type == CGS_SOLVER) {
                         solver = self->spawn<sparse_cg_actor>(
@@ -244,6 +228,7 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
         },
         [=](std::vector<float>& solution) {
             self->mail(1).send(self->state().supervisor);
+            self->state().current_data.reset();
             self->mail(release_memory_atom_v, self->state().current_matrix_path).send(self->state().device_actor);
             self->mail(request_work_atom_v).send(self);
         }
@@ -291,12 +276,24 @@ void caf_main(actor_system& sys) {
         if (!fs::exists(dir)) return;
         for (const auto& entry : fs::directory_iterator(dir)) {
             if (entry.path().extension() == ".bin")
-                tasks.push_back({entry.path().string(), type});
+                tasks.push_back({entry.path().string(), type, nullptr});
         }
     };
 
     scan("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
     scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
+
+    std::cout << "[INFO] Pre-loading " << tasks.size() << " matrices into memory...\n";
+    for (auto& t : tasks) {
+        auto coo = load_binary_coo(t.path);
+        auto A = convert_coo_to_csr(coo);
+        t.data = std::make_shared<MatrixData>();
+        t.data->b = compute_rhs_spmv(A, std::vector<float>(A.cols, 1.0f));
+        t.data->row_ptr = std::move(A.row_ptr);
+        t.data->col_indices = std::move(A.col_indices);
+        t.data->values = std::move(A.values);
+        t.data->x_guess.assign(A.cols, 0.0f);
+    }
 
     if (tasks.empty()) {
         std::cerr << "No matrix files found in search paths.\n";
