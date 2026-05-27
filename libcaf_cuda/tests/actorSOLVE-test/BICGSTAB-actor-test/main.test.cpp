@@ -231,6 +231,55 @@ void caf_main(actor_system& sys) {
         );
     }
 
+    // Test 7: Ill-conditioned / High Iteration Count Test (N=5000)
+    // This uses a non-symmetric tridiagonal matrix with very weak diagonal dominance.
+    // A_ii = 2.0001, A_{i,i-1} = -1.1, A_{i,i+1} = -0.9.
+    // The near-singularity forces BiCGSTAB to take many iterations to converge.
+    {
+        int N_high = 5000;
+        std::cout << "\n[INFO] Test 7: High Iteration Count Test (N=" << N_high << ")..." << std::endl;
+
+        std::vector<int> row_ptr;
+        std::vector<int> col_ind;
+        std::vector<float> values;
+        std::vector<float> expected_high(N_high, 1.0f);
+        std::vector<float> b_high(N_high, 0.0f);
+
+        row_ptr.push_back(0);
+        for(int i=0; i<N_high; ++i) {
+            float row_sum = 0.0f;
+            if(i > 0) {
+                col_ind.push_back(i-1);
+                values.push_back(-1.1f);
+                row_sum += -1.1f;
+            }
+            col_ind.push_back(i);
+            values.push_back(2.0001f); // Extremely low diagonal dominance
+            row_sum += 2.0001f;
+            if(i < N_high-1) {
+                col_ind.push_back(i+1);
+                values.push_back(-0.9f);
+                row_sum += -0.9f;
+            }
+            row_ptr.push_back(col_ind.size());
+            b_high[i] = row_sum; // b = A * ones()
+        }
+
+        std::vector<float> x_high(N_high, 0.0f);
+
+        auto solver = sys.spawn<sparse_bicgstab_actor>(
+            create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+            create_in_arg(b_high), create_in_out_arg(x_high),
+            matrix_format::csr, N_high, (int)values.size(), 1e-6f, 15000, 0, 6, actor_cast<actor>(self));
+
+        self->mail(start_atom_v).send(solver);
+        self->receive(
+            [&](std::vector<float> result) {
+                verify_solution("High Iteration Count Test", result, expected_high, 5e-2f);
+            }
+        );
+    }
+
     manager::shutdown();
 }
 CAF_MAIN(id_block::cuda, id_block::cg_actor)
