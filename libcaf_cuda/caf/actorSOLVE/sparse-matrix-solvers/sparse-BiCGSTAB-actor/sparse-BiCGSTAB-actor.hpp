@@ -10,23 +10,8 @@
 #include "caf/cuda/platform.hpp"
 #include "caf/actorSOLVE/sparse-matrix-solvers/sparse-CGS-actor/sparse-CGS-actor.hpp"
 
-// Define a new block for BiCGSTAB specific atoms starting where the cuda block ended
-CAF_BEGIN_TYPE_ID_BLOCK(bicgstab_actor, caf::id_block::cg_actor::end)
-  CAF_ADD_ATOM(bicgstab_actor, bicgstab_next_step_atom)
-CAF_END_TYPE_ID_BLOCK(bicgstab_actor)
 
 namespace caf::cuda {
-
-enum class sparse_bicgstab_step {
-  idle,
-  init_residual_norm_sq, // Calculate initial ||r||^2
-  calc_rho_new,          // Calculate rho_new = <r_hat, r>
-  calc_alpha_denom,      // Calculate <r_hat, v> for alpha
-  calc_omega_num,        // Calculate <t, s> for omega
-  calc_omega_denom,      // Calculate <t, t> for omega
-  check_convergence,     // Check ||r||^2 for convergence
-  finished
-};
 
 struct sparse_bicgstab_state {
   // Host Data
@@ -55,14 +40,7 @@ struct sparse_bicgstab_state {
   float alpha_val = 1.0f;
   float omega_val = 1.0f;
   float beta_val = 0.0f;
-  float residual_norm_sq_val = 0.0f; // Stores the latest ||r||^2
-  float rho_new_val = 0.0f; // Stores the result of <r_hat, r>
-  float alpha_denom_val = 0.0f; // Stores the result of <r_hat, v>
-  float omega_num_val = 0.0f; // Stores the result of <t, s>
-  float omega_denom_val = 0.0f; // Stores the result of <t, t>
-
   int iterations = 0;
-  sparse_bicgstab_step step = sparse_bicgstab_step::idle;
 };
 
 class sparse_bicgstab_actor : public stateful_actor<sparse_bicgstab_state> {
@@ -92,35 +70,6 @@ public:
           s.supervisor = actor_cast<caf::actor>(this->current_sender());
         start_solve();
       },
-      [this](bicgstab_next_step_atom, float val) {
-        auto& s = state();
-        // Thread-safely update scalars based on the stage that just finished
-        switch (s.step) {
-          case sparse_bicgstab_step::init_residual_norm_sq:
-          case sparse_bicgstab_step::check_convergence:
-            s.residual_norm_sq_val = val;
-            break;
-          case sparse_bicgstab_step::calc_rho_new:
-            s.rho_new_val = val;
-            break;
-          case sparse_bicgstab_step::calc_alpha_denom:
-            s.alpha_denom_val = val;
-            break;
-          case sparse_bicgstab_step::calc_omega_num:
-            s.omega_num_val = val;
-            break;
-          case sparse_bicgstab_step::calc_omega_denom:
-            s.omega_denom_val = val;
-            break;
-          default: break;
-        }
-        perform_bicgstab_step();
-      },
-      [this](gpu_done_atom, std::vector<float>& solution) {
-        if (state().supervisor)
-          this->mail(std::move(solution)).send(state().supervisor);
-        this->quit();
-      }
     };
   }
 private:
@@ -169,137 +118,85 @@ private:
     // 1. Initial Residual: r = b - Ax
     execute_spmv(s.x, s.v); 
     s.d_ptr->scopy(s.stream_id, s.n, s.b, s.r);
-    s.d_ptr->saxpy(s.stream_id, s.n, -1.0f, s.v, s.r);
+    s.d_ptr->saxpy(s.stream_id, s.n, -1.0f, s.v, s.r); // r = b - Ax
     
     // 2. Choose r_hat = r
     s.d_ptr->scopy(s.stream_id, s.n, s.r, s.r_hat);
 
-    s.iterations = 0;
-    // Initial calculation of residual_norm_sq
+    // 3. Initial norm calculation
     s.d_ptr->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
-    s.step = sparse_bicgstab_step::init_residual_norm_sq;
-    auto self = actor_cast<actor>(this);
-    runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
-      anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
-    });
-  }
+    float norm_sq = s.y_tmp->copy_to_host()[0];
 
-  void perform_bicgstab_step() {
-    auto& s = state();
-    command_runner<> runner;
-    auto self = actor_cast<actor>(this);
+    s.iterations = 0;
+    s.rho_val = 1.0f;
+    s.alpha_val = 1.0f;
+    s.omega_val = 1.0f;
 
-    switch (s.step) {
-      case sparse_bicgstab_step::init_residual_norm_sq:
-      case sparse_bicgstab_step::check_convergence: {
-        s.iterations++; // Increment for the current iteration
+    // BiCGSTAB Loop
+    while (norm_sq > (s.tol * s.tol) && s.iterations < s.max_iter) {
+      s.iterations++;
 
-        // Check convergence
-        if (s.residual_norm_sq_val <= (s.tol * s.tol) || s.iterations > s.max_iter) {
-          finish_solve();
-          return;
-        }
+      // rho_new = <r_hat, r>
+      s.d_ptr->sdot(s.stream_id, s.n, s.r_hat, s.r, s.y_tmp);
+      float rho_new = s.y_tmp->copy_to_host()[0];
 
-        // rho_i = <r_hat, r>
-        s.d_ptr->sdot(s.stream_id, s.n, s.r_hat, s.r, s.y_tmp);
-        s.step = sparse_bicgstab_step::calc_rho_new;
-        runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
-          anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
-        });
-        break;
-      }
-
-      case sparse_bicgstab_step::calc_rho_new: {
-        // Update p based on rho_new_val
-        if (s.iterations == 1) { // This is the first iteration
-          s.d_ptr->scopy(s.stream_id, s.n, s.r, s.p);
-        } else { // Subsequent iterations
-          s.beta_val = (s.rho_new_val / s.rho_val) * (s.alpha_val / s.omega_val);
-          // p = r + beta * (p - omega * v)
-          s.d_ptr->saxpy(s.stream_id, s.n, -s.omega_val, s.v, s.p); // p = p - omega*v
-          s.d_ptr->scopy(s.stream_id, s.n, s.r, s.s_vec);      // use s_vec as temporary
-          s.d_ptr->saxpy(s.stream_id, s.n, s.beta_val, s.p, s.s_vec); // s_vec = r + beta*p
-          s.d_ptr->scopy(s.stream_id, s.n, s.s_vec, s.p);
-        }
-        s.rho_val = s.rho_new_val; // Update old rho
-
-        // v = Ap
-        execute_spmv(s.p, s.v);
-
-        // alpha = rho / <r_hat, v> -> calculate denominator
-        s.d_ptr->sdot(s.stream_id, s.n, s.r_hat, s.v, s.y_tmp);
-        s.step = sparse_bicgstab_step::calc_alpha_denom;
-        runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
-          anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
-        });
-        break;
-      }
-
-      case sparse_bicgstab_step::calc_alpha_denom: {
-        s.alpha_val = s.rho_val / s.alpha_denom_val;
-
-        // s = r - alpha * v
+      if (s.iterations == 1) {
+        s.d_ptr->scopy(s.stream_id, s.n, s.r, s.p);
+      } else {
+        s.beta_val = (rho_new / s.rho_val) * (s.alpha_val / s.omega_val);
+        // p = r + beta * (p - omega * v)
+        s.d_ptr->saxpy(s.stream_id, s.n, -s.omega_val, s.v, s.p);
         s.d_ptr->scopy(s.stream_id, s.n, s.r, s.s_vec);
-        s.d_ptr->saxpy(s.stream_id, s.n, -s.alpha_val, s.v, s.s_vec);
-
-        // t = As
-        execute_spmv(s.s_vec, s.t_vec);
-
-        // omega = <t, s> / <t, t> -> calculate numerator <t, s>
-        s.d_ptr->sdot(s.stream_id, s.n, s.t_vec, s.s_vec, s.y_tmp);
-        s.step = sparse_bicgstab_step::calc_omega_num;
-        runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
-          anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
-        });
-        break;
+        s.d_ptr->saxpy(s.stream_id, s.n, s.beta_val, s.p, s.s_vec);
+        s.d_ptr->scopy(s.stream_id, s.n, s.s_vec, s.p);
       }
+      s.rho_val = rho_new;
 
-      case sparse_bicgstab_step::calc_omega_num: {
-        // omega = <t, s> / <t, t> -> calculate denominator <t, t>
-        s.d_ptr->sdot(s.stream_id, s.n, s.t_vec, s.t_vec, s.y_tmp);
-        s.step = sparse_bicgstab_step::calc_omega_denom;
-        runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
-          anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
-        });
-        break;
-      }
+      // v = Ap
+      execute_spmv(s.p, s.v);
 
-      case sparse_bicgstab_step::calc_omega_denom: {
-        s.omega_val = s.omega_num_val / s.omega_denom_val;
+      // alpha = rho / <r_hat, v>
+      s.d_ptr->sdot(s.stream_id, s.n, s.r_hat, s.v, s.y_tmp);
+      float alpha_denom = s.y_tmp->copy_to_host()[0];
+      s.alpha_val = s.rho_val / alpha_denom;
 
-        // x = x + alpha*p + omega*s
-        s.d_ptr->saxpy(s.stream_id, s.n, s.alpha_val, s.p, s.x);
-        s.d_ptr->saxpy(s.stream_id, s.n, s.omega_val, s.s_vec, s.x);
+      // s = r - alpha * v
+      s.d_ptr->scopy(s.stream_id, s.n, s.r, s.s_vec);
+      s.d_ptr->saxpy(s.stream_id, s.n, -s.alpha_val, s.v, s.s_vec);
 
-        // r = s - omega*t
-        s.d_ptr->scopy(s.stream_id, s.n, s.s_vec, s.r);
-        s.d_ptr->saxpy(s.stream_id, s.n, -s.omega_val, s.t_vec, s.r);
+      // t = As
+      execute_spmv(s.s_vec, s.t_vec);
 
-        // Calculate new residual_norm_sq for next iteration's convergence check
-        s.d_ptr->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
-        s.step = sparse_bicgstab_step::check_convergence;
-        runner.copy_to_host_async(s.y_tmp, [self](std::vector<float> host_data) {
-          anon_mail(bicgstab_next_step_atom_v, host_data[0]).send(self);
-        });
-        break;
-      }
+      // omega = <t, s> / <t, t>
+      s.d_ptr->sdot(s.stream_id, s.n, s.t_vec, s.s_vec, s.y_tmp);
+      float omega_num = s.y_tmp->copy_to_host()[0];
+      s.d_ptr->sdot(s.stream_id, s.n, s.t_vec, s.t_vec, s.y_tmp);
+      float omega_denom = s.y_tmp->copy_to_host()[0];
+      s.omega_val = omega_num / omega_denom;
 
-      case sparse_bicgstab_step::idle:
-      case sparse_bicgstab_step::finished:
-        // Should not happen if logic is correct
-        break;
+      // x = x + alpha*p + omega*s
+      s.d_ptr->saxpy(s.stream_id, s.n, s.alpha_val, s.p, s.x);
+      s.d_ptr->saxpy(s.stream_id, s.n, s.omega_val, s.s_vec, s.x);
+
+      // r = s - omega*t
+      s.d_ptr->scopy(s.stream_id, s.n, s.s_vec, s.r);
+      s.d_ptr->saxpy(s.stream_id, s.n, -s.omega_val, s.t_vec, s.r);
+
+      // check convergence: norm_sq = <r, r>
+      s.d_ptr->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
+      norm_sq = s.y_tmp->copy_to_host()[0];
     }
+
+    finish_solve();
   }
 
   void finish_solve() {
     auto& s = state();
-    s.step = sparse_bicgstab_step::finished;
-    // Final copy to host and send result to supervisor
-    auto self = actor_cast<actor>(this);
-    command_runner<> runner;
-    runner.copy_to_host_async(s.x, [self](std::vector<float> solution) {
-      anon_mail(gpu_done_atom_v, std::move(solution)).send(self);
-    });
+    // Copy result back to host and notify supervisor
+    std::vector<float> solution = s.x->copy_to_host();
+    if (s.supervisor)
+      this->mail(std::move(solution)).send(s.supervisor);
+    this->quit();
   }
 
   void execute_spmv(mem_ptr<float> input_v, mem_ptr<float> output_v) {
