@@ -214,7 +214,7 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
                             std::move(b), std::move(x),
                             matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id, actor_cast<actor>(self));
                     } else {
-                        solver = self->spawn<sparse_bicgstab_actor>(
+                        solver = self->spawn<sparse_bicgstab_actor<float>>(
                             std::move(rp), std::move(ci), std::move(val),
                             std::move(b), std::move(x),
                             matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id, actor_cast<actor>(self));
