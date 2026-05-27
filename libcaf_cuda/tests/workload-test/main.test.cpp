@@ -63,20 +63,20 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<MatrixTask>)
 
 // ---------------------------- GLOBAL TASK POOL ----------------------------
 struct pool_state {
-    std::vector<MatrixTask> tasks;
+    std::shared_ptr<std::vector<MatrixTask>> tasks;
     size_t next_task_idx = 0;
 };
 
-behavior global_task_pool(stateful_actor<pool_state>* self, std::vector<MatrixTask> tasks) {
+behavior global_task_pool(stateful_actor<pool_state>* self, std::shared_ptr<std::vector<MatrixTask>> tasks) {
     self->state().tasks = std::move(tasks);
     return {
         [=](get_work_atom, size_t batch_size) -> result<std::vector<MatrixTask>> {
             auto& st = self->state();
-            if (st.next_task_idx >= st.tasks.size())
+            if (st.next_task_idx >= st.tasks->size())
                 return sec::end_of_stream;
-            size_t count = std::min(batch_size, st.tasks.size() - st.next_task_idx);
-            std::vector<MatrixTask> batch(st.tasks.begin() + st.next_task_idx, 
-                                          st.tasks.begin() + st.next_task_idx + count);
+            size_t count = std::min(batch_size, st.tasks->size() - st.next_task_idx);
+            std::vector<MatrixTask> batch(st.tasks->begin() + st.next_task_idx, 
+                                          st.tasks->begin() + st.next_task_idx + count);
             st.next_task_idx += count;
             return batch;
         }
@@ -87,6 +87,7 @@ behavior global_task_pool(stateful_actor<pool_state>* self, std::vector<MatrixTa
 struct device_actor_state {
     caf::actor global_pool;
     std::deque<MatrixTask> local_tasks;
+    std::vector<caf::response_promise> pending_promises; // Store untyped promises cleanly
     int active_workers = 0;
     int device_id = -1;
     bool fetching = false;
@@ -100,24 +101,52 @@ behavior gpu_device_actor(stateful_actor<device_actor_state>* self,
     self->state().device_id = dev_id;
     self->state().active_workers = num_workers;
 
-    // Dynamically calculate prefetch markers based on the total pipeline capacity
     self->state().low_water_mark = static_cast<size_t>(num_workers * max_in_flight);
     self->state().batch_size = self->state().low_water_mark * 2;
 
+    auto satisfy_promises = [=]() {
+        auto& st = self->state();
+        while (!st.pending_promises.empty() && !st.local_tasks.empty()) {
+            auto promise = std::move(st.pending_promises.front());
+            st.pending_promises.erase(st.pending_promises.begin());
+
+            MatrixTask t = std::move(st.local_tasks.front());
+            st.local_tasks.pop_front();
+
+            auto& data = *t.data;
+            promise.deliver(t.type, t.path, create_in_arg(data.row_ptr), create_in_arg(data.col_indices), 
+                            create_in_arg(data.values), create_in_arg(data.b), create_in_out_arg(data.x_guess), 
+                            (int)data.row_ptr.size() - 1, (int)data.values.size(), t.data);
+        }
+    };
+
     auto refill = [=]() {
         auto& st = self->state();
-        if (st.fetching || st.local_tasks.size() >= st.low_water_mark)
+        if (st.fetching)
+            return;
+
+        if (st.local_tasks.size() >= st.low_water_mark && st.pending_promises.empty())
             return;
 
         st.fetching = true;
         self->mail(get_work_atom_v, st.batch_size).request(st.global_pool, infinite).then(
             [=](std::vector<MatrixTask>& batch) {
+                auto& st_inner = self->state();
+                st_inner.fetching = false;
+
                 for (auto& task : batch)
-                    self->state().local_tasks.push_back(std::move(task));
-                self->state().fetching = false;
+                    st_inner.local_tasks.push_back(std::move(task));
+
+                satisfy_promises();
             },
             [=](error& err) {
-                self->state().fetching = false;
+                auto& st_inner = self->state();
+                st_inner.fetching = false;
+                
+                for (auto& promise : st_inner.pending_promises) {
+                    promise.deliver(err);
+                }
+                st_inner.pending_promises.clear();
             }
         );
     };
@@ -127,49 +156,18 @@ behavior gpu_device_actor(stateful_actor<device_actor_state>* self,
     return {
         [=](get_work_atom) -> result<SolverType, std::string, in<int>, in<int>, in<float>, in<float>, in_out<float>, int, int, std::shared_ptr<MatrixData>> {
             auto& st = self->state();
+            
+            // Fixed Type Mismatch: Explicitly use untyped response_promise
+            caf::response_promise promise = self->make_response_promise();
+            st.pending_promises.push_back(promise);
+            
+            satisfy_promises();
+            refill();
 
-            // If local tasks are available, process immediately
-            if (!st.local_tasks.empty()) {
-                MatrixTask t = std::move(st.local_tasks.front());
-                st.local_tasks.pop_front();
-                refill(); // Try to refill if below low water mark
-
-                auto& data = *t.data;
-                return {t.type, t.path, create_in_arg(data.row_ptr), create_in_arg(data.col_indices), 
-                        create_in_arg(data.values), create_in_arg(data.b), create_in_out_arg(data.x_guess), 
-                        (int)data.row_ptr.size() - 1, (int)data.values.size(), t.data};
-            }
-
-            auto promise = self->make_response_promise<SolverType, std::string, in<int>, in<int>, in<float>, in<float>, in_out<float>, int, int, std::shared_ptr<MatrixData>>();
-            self->mail(get_work_atom_v, st.batch_size).request(st.global_pool, infinite).then(
-                [=](std::vector<MatrixTask>& batch) mutable {
-                    auto& st_inner = self->state();
-                    if (batch.empty()) { // Global pool returned empty batch, meaning no more work
-                        promise.deliver(make_error(sec::end_of_stream));
-                        return;
-                    }
-
-                    // Add remaining tasks to local queue
-                    for (size_t i = 1; i < batch.size(); ++i) {
-                        st_inner.local_tasks.push_back(std::move(batch[i]));
-                    }
-
-                    MatrixTask t = std::move(batch.front()); // Process the first task from the batch
-                    refill(); // Try to refill if below low water mark (after adding tasks)
-
-                    auto& data = *t.data;
-                    promise.deliver(t.type, t.path, create_in_arg(data.row_ptr), create_in_arg(data.col_indices), 
-                                    create_in_arg(data.values), create_in_arg(data.b), create_in_out_arg(data.x_guess), 
-                                    (int)data.row_ptr.size() - 1, (int)data.values.size(), t.data);
-                },
-                [=](error& err) mutable {
-                    promise.deliver(err); // Propagate error from global pool
-                }
-            );
             return promise;
         },
         [=](release_memory_atom, std::string path) {
-            // No longer used with pre-loaded pool
+            // Managed entirely by shared_ptrs
         },
         [=](worker_done_atom) {
             if (--self->state().active_workers <= 0)
@@ -229,7 +227,6 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
         [=](std::vector<float>& solution) {
             self->mail(1).send(self->state().supervisor);
             self->state().current_data.reset();
-            self->mail(release_memory_atom_v, self->state().current_matrix_path).send(self->state().device_actor);
             self->mail(request_work_atom_v).send(self);
         }
     };
@@ -239,16 +236,18 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
 struct supervisor_state {
     int total_tasks;
     int completed = 0;
+    std::shared_ptr<std::vector<MatrixTask>> tasks_holder; // Anchors shared_ptr reference count
 };
 
-behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, int total, std::vector<MatrixTask> tasks) {
+behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, int total, std::shared_ptr<std::vector<MatrixTask>> tasks) {
     self->state().total_tasks = total;
-    auto pool = self->spawn(global_task_pool, std::move(tasks));
+    self->state().tasks_holder = tasks; // Retain ownership within supervisor state
+    auto pool = self->spawn(global_task_pool, tasks); // Pass a copy, don't move it
     
     manager& mgr = manager::get();
     int num_gpus = mgr.get_num_devices();
-    int workers_per_gpu = 8; // Adjustable worker count per physical GPU
-    int max_in_flight_tasks_per_worker = 2; // How many tasks each worker can have in flight
+    int workers_per_gpu = 8;
+    int max_in_flight_tasks_per_worker = 2;
 
     for (int i = 0; i < num_gpus; ++i) {
         auto broker = self->spawn(gpu_device_actor, pool, workers_per_gpu, i, max_in_flight_tasks_per_worker);
@@ -270,21 +269,21 @@ behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, int total,
 
 void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
-    std::vector<MatrixTask> tasks;
+    auto tasks = std::make_shared<std::vector<MatrixTask>>();
     
     auto scan = [&](const std::string& dir, SolverType type) {
         if (!fs::exists(dir)) return;
         for (const auto& entry : fs::directory_iterator(dir)) {
             if (entry.path().extension() == ".bin")
-                tasks.push_back({entry.path().string(), type, nullptr});
+                tasks->push_back({entry.path().string(), type, nullptr});
         }
     };
 
     scan("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
     scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
 
-    std::cout << "[INFO] Pre-loading " << tasks.size() << " matrices into memory...\n";
-    for (auto& t : tasks) {
+    std::cout << "[INFO] Pre-loading " << tasks->size() << " matrices into memory...\n";
+    for (auto& t : *tasks) {
         auto coo = load_binary_coo(t.path);
         auto A = convert_coo_to_csr(coo);
         t.data = std::make_shared<MatrixData>();
@@ -295,18 +294,19 @@ void caf_main(actor_system& sys) {
         t.data->x_guess.assign(A.cols, 0.0f);
     }
 
-    if (tasks.empty()) {
+    if (tasks->empty()) {
         std::cerr << "No matrix files found in search paths.\n";
         manager::shutdown();
         return;
     }
 
-    auto task_count = tasks.size();
+    auto task_count = tasks->size();
     std::cout << "[INFO] Found " << task_count << " matrices. Spawning workload...\n";
 
     auto start = std::chrono::steady_clock::now();
 
-    sys.spawn(supervisor_actor_fun, static_cast<int>(task_count), std::move(tasks));
+    // Fixed Exit Race: Pass tasks directly by copy to keep it active inside caf_main frame
+    sys.spawn(supervisor_actor_fun, static_cast<int>(task_count), tasks);
     sys.await_all_actors_done();
 
     auto end = std::chrono::steady_clock::now();
