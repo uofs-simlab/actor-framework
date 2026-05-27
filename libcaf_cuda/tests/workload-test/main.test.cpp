@@ -45,7 +45,7 @@ bool inspect(Inspector& f, SolverType& x) {
     return false;
 }
 
-CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::bicgstab_actor::end)
+CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cg_actor::end)
     CAF_ADD_ATOM(workload_test, get_work_atom)
     CAF_ADD_ATOM(workload_test, release_memory_atom)
     CAF_ADD_ATOM(workload_test, request_work_atom)
@@ -184,6 +184,8 @@ struct worker_state {
     int stream_id;
     std::shared_ptr<MatrixData> current_data;
     std::string current_matrix_path;
+    std::chrono::steady_clock::time_point task_start;
+    SolverType current_solver_type;
 };
 
 behavior sparse_worker_fun(stateful_actor<worker_state>* self,
@@ -201,6 +203,9 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
                 [=](SolverType type, std::string path, in<int> rp, in<int> ci, in<float> val,
                     in<float> b, in_out<float> x, int rows, int nnz, std::shared_ptr<MatrixData> data) {
                     self->state().current_matrix_path = path;
+                    self->state().current_solver_type = type;
+                    self->state().task_start = std::chrono::steady_clock::now();
+                    auto start_spawn = std::chrono::steady_clock::now();
                     self->state().current_data = data;
                     actor solver;
                     if (type == CGS_SOLVER) {
@@ -214,6 +219,9 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
                             std::move(b), std::move(x),
                             matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id, actor_cast<actor>(self));
                     }
+                    auto end_spawn = std::chrono::steady_clock::now();
+                    std::chrono::duration<double> spawn_duration = end_spawn - start_spawn;
+                    // self->println("Worker {}: Solver actor spawned in {} s", self->state().stream_id, spawn_duration.count());
                     self->mail(start_atom_v).send(solver);
                 },
                 [=](error& err) {
@@ -225,6 +233,15 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
             );
         },
         [=](std::vector<float>& solution) {
+            auto task_end = std::chrono::steady_clock::now();
+            std::chrono::duration<double> task_duration = task_end - self->state().task_start;
+            std::string solver_type_str;
+            if (self->state().current_solver_type == CGS_SOLVER) {
+                solver_type_str = "CGS_SOLVER";
+            } else {
+                solver_type_str = "BICSTAB_SOLVER";
+            }
+            self->println("Worker {}: Round-trip time (Spawn to Result) for {} ({}) took {} s", self->state().stream_id, self->state().current_matrix_path, solver_type_str, task_duration.count());
             self->mail(1).send(self->state().supervisor);
             self->state().current_data.reset();
             self->mail(request_work_atom_v).send(self);
@@ -247,7 +264,7 @@ behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, int total,
     manager& mgr = manager::get();
     int num_gpus = mgr.get_num_devices();
     int workers_per_gpu = 8;
-    int max_in_flight_tasks_per_worker = 2;
+    int max_in_flight_tasks_per_worker = 1;
 
     for (int i = 0; i < num_gpus; ++i) {
         auto broker = self->spawn(gpu_device_actor, pool, workers_per_gpu, i, max_in_flight_tasks_per_worker);
@@ -319,4 +336,4 @@ void caf_main(actor_system& sys) {
 
     manager::shutdown();
 }
-CAF_MAIN(id_block::cuda, id_block::cg_actor, id_block::bicgstab_actor, id_block::workload_test)
+CAF_MAIN(id_block::cuda, id_block::cg_actor,id_block::workload_test)
