@@ -291,6 +291,8 @@ int main() {
                 auto coo = load_binary_coo(entry.path().string());
                 auto csr = convert_coo_to_csr(coo);
                 MatrixTask t;
+                // Compute t.b using the valid csr object before its internal vectors are moved
+                t.b = compute_rhs_spmv(csr, std::vector<float>(csr.cols, 1.0f));
                 t.path = entry.path().string();
                 t.type = type;
                 t.rows = csr.rows;
@@ -298,7 +300,6 @@ int main() {
                 t.row_ptr = std::move(csr.row_ptr);
                 t.col_indices = std::move(csr.col_indices);
                 t.values = std::move(csr.values);
-                t.b = compute_rhs_spmv(csr, std::vector<float>(csr.cols, 1.0f));
                 tasks.push_back(std::move(t));
             }
         }
