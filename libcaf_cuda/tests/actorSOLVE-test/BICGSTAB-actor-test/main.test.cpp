@@ -320,19 +320,14 @@ void caf_main(actor_system& sys) {
 
     // Test 7: Real-world matrix from file (lnsp3937.bin)
     {
+    // Test 7a: Real-world matrix (lnsp3937.bin) - Float Precision
+    {
         std::string path = "/scratch/nqr159/matrix-collection/matrices/unsymmetric/lnsp3937.bin";
-        std::cout << "\n[INFO] Test 7: Loading real-world matrix " << path << "..." << std::endl;
-        
+        std::cout << "\n[INFO] Test 7a: Loading real-world matrix (Float) " << path << "..." << std::endl;
         try {
             LocalCSR<float> A = load_binary_matrix_manual<float>(path);
-            std::cout << "[INFO] Matrix Metadata: Rows=" << A.rows 
-                      << ", Cols=" << A.cols 
+            std::cout << "[INFO] Matrix Metadata: Rows=" << A.rows << ", Cols=" << A.cols 
                       << ", NNZ=" << A.nnz << std::endl;
-            
-            std::cout << "[INFO] First 5 matrix values: ";
-            for(int i=0; i<std::min(5, (int)A.values.size()); ++i) 
-                std::cout << A.values[i] << " ";
-            std::cout << std::endl;
             
             std::vector<float> expected_real(A.rows, 1.0f);
             std::vector<float> b_real = compute_rhs_manual<float>(A, expected_real);
@@ -346,12 +341,46 @@ void caf_main(actor_system& sys) {
             self->mail(start_atom_v).send(solver);
             self->receive(
                 [&](std::vector<float> result) {
-                    verify_solution("Real Matrix (lnsp3937)", result, expected_real, 1e-2f);
+                    verify_solution("Real Matrix (Float)", result, expected_real, 1e-2f);
                 }
             );
         } catch (const std::exception& e) {
-            std::cout << "[ERROR] Test 7 Failed: Could not load matrix file: " << e.what() << std::endl;
+            std::cout << "[ERROR] Test 7a Failed: " << e.what() << std::endl;
         }
+    }
+
+    // Test 7b: Real-world matrix (lnsp3937.bin) - Double Precision
+    {
+        std::string path = "/scratch/nqr159/matrix-collection/matrices/unsymmetric/lnsp3937.bin";
+        std::cout << "\n[INFO] Test 7b: Loading real-world matrix (Double) " << path << "..." << std::endl;
+        try {
+            LocalCSR<double> A = load_binary_matrix_manual<double>(path);
+            std::cout << "[INFO] Matrix Metadata: Rows=" << A.rows << ", Cols=" << A.cols 
+                      << ", NNZ=" << A.nnz << std::endl;
+            std::cout << "[INFO] First 5 matrix values: ";
+            for(int i=0; i<std::min(5, (int)A.values.size()); ++i)
+                std::cout << A.values[i] << " ";
+            std::cout << std::endl;
+
+            std::vector<double> expected_real(A.rows, 1.0);
+            std::vector<double> b_real = compute_rhs_manual<double>(A, expected_real);
+            std::vector<double> x_real(A.rows, 0.0);
+
+            auto solver = sys.spawn<sparse_bicgstab_actor<double>>(
+                create_in_arg(A.row_ptr), create_in_arg(A.col_ind), create_in_arg(A.values),
+                create_in_arg(b_real), create_in_out_arg(x_real),
+                matrix_format::csr, A.rows, A.nnz, 1e-10, 5000, 0, 7, actor_cast<actor>(self));
+
+            self->mail(start_atom_v).send(solver);
+            self->receive(
+                [&](std::vector<double> result) {
+                    verify_solution<double>("Real Matrix (Double)", result, expected_real, 1e-8);
+                }
+            );
+        } catch (const std::exception& e) {
+            std::cout << "[ERROR] Test 7b Failed: " << e.what() << std::endl;
+        }
+    }
     }
 
     // Test 8: Stress Test - 1D Laplacian (N=10000)
