@@ -99,10 +99,104 @@ void caf_main(actor_system& sys) {
         );
     }
 
-    // Test 3: Stress Test - 1D Laplacian (N=10000)
+    // Test 3: COO Format
+    {
+        std::cout << "\n[INFO] Test 3: COO format simple matrix..." << std::endl;
+        std::vector<int> row_ind = {0, 1, 2};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        auto solver = sys.spawn<sparse_bicgstab_actor>(
+            create_in_arg(row_ind), create_in_arg(col_ind), create_in_arg(values),
+            create_in_arg(h_b), create_in_out_arg(h_x),
+            matrix_format::coo, n, nnz, tolerance, max_iter, 0, 2, actor_cast<actor>(self));
+
+        self->mail(start_atom_v).send(solver);
+        self->receive(
+            [&](std::vector<float> result_x) {
+                verify_solution("COO Simple", result_x, expected);
+            }
+        );
+    }
+
+    // Test 4: Tridiagonal matrix (CSR) - Known solution x = [1, 1, 1]
+    {
+        std::cout << "\n[INFO] Test 4: CSR format tridiagonal matrix (3x3)..." << std::endl;
+        // Matrix: [ 2 -1  0 ]
+        //         [-1  2 -1 ]
+        //         [ 0 -1  2 ]
+        // b = [1, 0, 1] -> Expected x = [1, 1, 1]
+        std::vector<int> row_ptr = {0, 2, 5, 7};
+        std::vector<int> col_ind = {0, 1, 0, 1, 2, 1, 2};
+        std::vector<float> values = {2.0f, -1.0f, -1.0f, 2.0f, -1.0f, -1.0f, 2.0f};
+        std::vector<float> b_tri = {1.0f, 0.0f, 1.0f};
+        std::vector<float> x_tri(3, 0.0f);
+        std::vector<float> expected_tri = {1.0f, 1.0f, 1.0f};
+
+        auto solver = sys.spawn<sparse_bicgstab_actor>(
+            create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+            create_in_arg(b_tri), create_in_out_arg(x_tri),
+            matrix_format::csr, 3, 7, tolerance, max_iter, 0, 3, actor_cast<actor>(self));
+
+        self->mail(start_atom_v).send(solver);
+        self->receive(
+            [&](std::vector<float> result_x) {
+                verify_solution("CSR Tridiagonal (3x3)", result_x, expected_tri);
+            }
+        );
+    }
+
+    // Test 5: Larger Tridiagonal Correctness (N=100)
+    {
+        int N_mid = 100;
+        std::cout << "\n[INFO] Test 5: CSR format tridiagonal correctness (N=" << N_mid << ")..." << std::endl;
+        
+        std::vector<int> row_ptr;
+        std::vector<int> col_ind;
+        std::vector<float> values;
+        std::vector<float> expected_mid(N_mid, 1.0f);
+        std::vector<float> b_mid(N_mid, 0.0f);
+
+        row_ptr.push_back(0);
+        for(int i=0; i<N_mid; ++i) {
+            float row_sum = 0.0f;
+            if(i > 0) { 
+                col_ind.push_back(i-1); 
+                values.push_back(-1.0f); 
+                row_sum += -1.0f;
+            }
+            col_ind.push_back(i); 
+            values.push_back(2.1f); // Diagonally dominant to ensure convergence
+            row_sum += 2.1f;
+            if(i < N_mid-1) { 
+                col_ind.push_back(i+1); 
+                values.push_back(-1.0f); 
+                row_sum += -1.0f;
+            }
+            row_ptr.push_back(col_ind.size());
+            b_mid[i] = row_sum; // b = A * ones()
+        }
+
+        std::vector<float> x_mid(N_mid, 0.0f);
+        
+        auto solver = sys.spawn<sparse_bicgstab_actor>(
+            create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+            create_in_arg(b_mid), create_in_out_arg(x_mid),
+            matrix_format::csr, N_mid, (int)values.size(), 1e-5f, 500, 0, 4, actor_cast<actor>(self));
+
+        self->mail(start_atom_v).send(solver);
+        self->receive(
+            [&](std::vector<float> result) {
+                verify_solution("CSR N=100 Correctness", result, expected_mid, 1e-2f);
+            }
+        );
+    }
+
+    // Test 6: Stress Test - 1D Laplacian (N=10000)
     {
         int N_large = 10000;
-        std::cout << "\n[INFO] Test 3: Stress Test - Non-Symmetric Matrix (N=" << N_large << ")..." << std::endl;
+        std::cout << "\n[INFO] Test 6: Stress Test - Non-Symmetric Matrix (N=" << N_large << ")..." << std::endl;
         
         std::vector<int> row_ptr;
         std::vector<int> col_ind;
@@ -122,7 +216,7 @@ void caf_main(actor_system& sys) {
         auto stress_solver = sys.spawn<sparse_bicgstab_actor>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(b_large), create_in_out_arg(x_large),
-            matrix_format::csr, N_large, (int)values.size(), 1e-4f, 20000, 0, 2, actor_cast<actor>(self));
+            matrix_format::csr, N_large, (int)values.size(), 1e-4f, 20000, 0, 5, actor_cast<actor>(self));
 
         self->mail(start_atom_v).send(stress_solver);
         self->receive(
