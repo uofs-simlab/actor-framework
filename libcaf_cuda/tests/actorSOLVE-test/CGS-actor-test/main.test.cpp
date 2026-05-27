@@ -137,6 +137,28 @@ void caf_main(actor_system& sys) {
         );
     }
 
+    // Test 4: Facade Actor CSR Simple
+    {
+        std::cout << "\n[INFO] Test 4: Facade actor CSR simple matrix..." << std::endl;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        auto facade = sys.spawn<sparse_cg_facade>();
+
+        self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::csr, n, nnz, tolerance, max_iter, 0, 3).send(facade);
+
+        self->receive(
+            [&](std::vector<float> result_x) {
+                verify_solution("Facade CSR Simple", result_x, expected);
+            }
+        );
+    }
+
     manager::shutdown();
 }
-CAF_MAIN(id_block::cuda)
+
+CAF_MAIN(id_block::cuda, id_block::cg_actor)

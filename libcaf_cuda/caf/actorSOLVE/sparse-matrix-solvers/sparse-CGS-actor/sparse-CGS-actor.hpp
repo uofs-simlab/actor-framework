@@ -194,4 +194,97 @@ private:
  }
 };
 
+/**
+ * A stateless (facade) variant of the CG solver.
+ * This actor can be reused for multiple solve requests. It receives all 
+ * solve parameters as a message and returns the solution vector to the sender.
+ */
+class sparse_cg_facade : public event_based_actor {
+public:
+  sparse_cg_facade(actor_config& cfg) : event_based_actor(cfg) {}
+
+  behavior make_behavior() override {
+    return {
+      [this](in<int> rp, in<int> ci, in<float> val, in<float> b_in, in_out<float> x_in,
+             matrix_format fmt, int n, int nnz, float tol, int max_iter,
+             int device_num, int stream_id) -> std::vector<float> {
+        command_runner<float> runner;
+
+        // 1. Transfer problem data to device
+        auto res = runner.transfer_memory(device_num, stream_id,
+                                          rp, ci, val, b_in, x_in);
+
+        auto A_row_ptr = std::get<0>(res);
+        auto A_col_ind = std::get<1>(res);
+        auto A_values  = std::get<2>(res);
+        auto b         = std::get<3>(res);
+        auto x         = std::get<4>(res);
+
+        auto d_ptr = platform::create()->schedule(stream_id, device_num);
+
+        // 2. Allocate workspace
+        command_runner<out<float>> work_runner;
+        auto r     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
+        auto p     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
+        auto w     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
+        auto y_tmp = work_runner.transfer_memory(device_num, stream_id, create_out_arg_with_size<float>(1));
+
+        // Setup SPMV workspace
+        mem_ptr<char> spmv_workspace;
+        size_t ws_size = 0;
+        if (fmt == matrix_format::csr)
+          ws_size = d_ptr->spmv_csr_buffer_size(stream_id, n, n, nnz, A_row_ptr, A_col_ind, A_values, x, w);
+        else if (fmt == matrix_format::csc)
+          ws_size = d_ptr->spmv_csc_buffer_size(stream_id, n, n, nnz, A_row_ptr, A_col_ind, A_values, x, w);
+        else if (fmt == matrix_format::coo)
+          ws_size = d_ptr->spmv_coo_buffer_size(stream_id, n, n, nnz, A_row_ptr, A_col_ind, A_values, x, w);
+
+        if (ws_size > 0) {
+          command_runner<out<char>> ws_runner;
+          spmv_workspace = ws_runner.transfer_memory(device_num, stream_id, out<char>(static_cast<int>(ws_size)));
+        }
+
+        auto execute_spmv = [&](mem_ptr<float> input_v, mem_ptr<float> output_v) {
+          switch (fmt) {
+            case matrix_format::csr: d_ptr->spmv_csr(stream_id, n, n, nnz, 1.0f, A_row_ptr, A_col_ind, A_values, input_v, 0.0f, output_v, spmv_workspace); break;
+            case matrix_format::csc: d_ptr->spmv_csc(stream_id, n, n, nnz, 1.0f, A_row_ptr, A_col_ind, A_values, input_v, 0.0f, output_v, spmv_workspace); break;
+            case matrix_format::coo: d_ptr->spmv_coo(stream_id, n, n, nnz, 1.0f, A_row_ptr, A_col_ind, A_values, input_v, 0.0f, output_v, spmv_workspace); break;
+            default: break;
+          }
+        };
+
+        // 3. Initial Residual Setup: r = b - Ax
+        execute_spmv(x, w);
+        d_ptr->scopy(stream_id, n, b, r);
+        d_ptr->saxpy(stream_id, n, -1.0f, w, r);
+        d_ptr->sdot(stream_id, n, r, r, y_tmp);
+        float rho_val = runner.copy_to_host(y_tmp)[0];
+        float old_rho_val = 0.0f;
+        int iterations = 0;
+
+        while (rho_val > (tol * tol) && iterations < max_iter) {
+          iterations++;
+          if (iterations > 1) {
+            float beta_val = rho_val / old_rho_val;
+            d_ptr->scopy(stream_id, n, r, w);
+            d_ptr->saxpy(stream_id, n, beta_val, p, w);
+            d_ptr->scopy(stream_id, n, w, p);
+          } else {
+            d_ptr->scopy(stream_id, n, r, p);
+          }
+          execute_spmv(p, w);
+          d_ptr->sdot(stream_id, n, p, w, y_tmp);
+          float alpha_val = rho_val / runner.copy_to_host(y_tmp)[0];
+          d_ptr->saxpy(stream_id, n, alpha_val, p, x);
+          d_ptr->saxpy(stream_id, n, -alpha_val, w, r);
+          old_rho_val = rho_val;
+          d_ptr->sdot(stream_id, n, r, r, y_tmp);
+          rho_val = runner.copy_to_host(y_tmp)[0];
+        }
+        return x->copy_to_host();
+      }
+    };
+  }
+};
+
 } // namespace caf::cuda
