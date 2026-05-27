@@ -456,14 +456,14 @@ void caf_main(actor_system& sys) {
         std::vector<float> h_x(n_f, 0.0f);
         std::vector<float> expected_f = {2.0f, 3.0f, 1.0f};
 
-        auto facade = sys.spawn<sparse_bicgstab_facade<float>>();
+        auto facade = sys.spawn<sparse_bicgstab_facade<float>>(100);
 
         self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
                    create_in_arg(h_b), create_in_out_arg(h_x),
                    matrix_format::csr, n_f, nnz_f, tolerance, max_iter, 0, 9).send(facade);
 
         self->receive(
-            [&](std::vector<float> result_x) {
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x) {
                 verify_solution("Facade CSR Simple", result_x, expected_f, tolerance);
             }
         );
@@ -479,20 +479,66 @@ void caf_main(actor_system& sys) {
             std::vector<float> b_real = compute_rhs_manual<float>(A, expected_real);
             std::vector<float> x_real(A.rows, 0.0f);
 
-            auto facade = sys.spawn<sparse_bicgstab_facade<float>>();
+            auto facade = sys.spawn<sparse_bicgstab_facade<float>>(100);
 
             self->mail(create_in_arg(A.row_ptr), create_in_arg(A.col_ind), create_in_arg(A.values),
                        create_in_arg(b_real), create_in_out_arg(x_real),
                        matrix_format::csr, A.rows, A.nnz, 1e-5f, 5000, 0, 10).send(facade);
 
             self->receive(
-                [&](std::vector<float> result) {
+                [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result) {
                     verify_solution("Facade Real Matrix", result, expected_real, 1e-2f);
                 }
             );
         } catch (const std::exception& e) {
             std::cout << "[ERROR] Test 11 Failed: " << e.what() << std::endl;
         }
+    }
+
+    // Test 12: Facade Actor CSR with Custom Buffer
+    {
+        std::cout << "\n[INFO] Test 12: Facade actor CSR with custom buffer..." << std::endl;
+        std::vector<float> custom_x(n, 0.0f);
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        output_mapping m{4, custom_x.data(), (size_t)n};
+        
+        auto facade = sys.spawn<sparse_bicgstab_facade<float>>(100);
+        self->mail(std::vector<output_mapping>{m},
+                   create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(custom_x),
+                   matrix_format::csr, n, nnz, tolerance, max_iter, 0, 11).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int index) {
+                if (index == 4)
+                  verify_solution("Facade Custom Buffer", custom_x, expected);
+            }
+        );
+    }
+
+    // Test 13: Facade Actor CSR returning mem_ptr handles
+    {
+        std::cout << "\n[INFO] Test 13: Facade actor CSR returning mem_ptr..." << std::endl;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        auto facade = sys.spawn<sparse_bicgstab_facade<float>>(100);
+
+        self->mail(return_mem_ptr_atom_v,
+                   create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::csr, n, nnz, tolerance, max_iter, 0, 12).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, mem_ptr<float> ptr) {
+                auto result_x = ptr->copy_to_host();
+                verify_solution("Facade mem_ptr", result_x, expected);
+            }
+        );
     }
 
     manager::shutdown();
