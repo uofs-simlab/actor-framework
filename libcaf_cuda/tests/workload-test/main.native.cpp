@@ -189,6 +189,7 @@ void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, cons
     cusparseDnVecDescr_t vecX, vecP, vecV, vecS, vecT;
     CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.nnz, d_row_ptr, d_col_ind, d_val, 
                                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
+    CHECK_CUSPARSE(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecP, n, d_p, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecV, n, d_v, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecS, n, d_s, CUDA_R_32F));
@@ -201,8 +202,13 @@ void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, cons
                                            CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize));
     CHECK_CUDA(cudaMallocAsync(&d_buffer, bufferSize, stream));
 
-    // r = b - Ax (initially r = b)
+    // r = b - Ax
+    // Note: We compute Ax explicitly to support non-zero initial guesses in the future
+    CHECK_CUSPARSE(cusparseSpMV(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecX, &zero, vecV, 
+                                CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, d_buffer));
     CHECK_CUBLAS(cublasScopy(cublas, n, d_b, 1, d_r, 1));
+    float minus_one = -1.0f;
+    CHECK_CUBLAS(cublasSaxpy(cublas, n, &minus_one, d_v, 1, d_r, 1));
     CHECK_CUBLAS(cublasScopy(cublas, n, d_r, 1, d_r_hat, 1));
 
     for (int i = 1; i <= max_iters; ++i) {
@@ -258,7 +264,7 @@ void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, cons
 
     // Cleanup
     cusparseDestroySpMat(matA);
-    cusparseDestroyDnVec(vecP); cusparseDestroyDnVec(vecV);
+    cusparseDestroyDnVec(vecX); cusparseDestroyDnVec(vecP); cusparseDestroyDnVec(vecV);
     cusparseDestroyDnVec(vecS); cusparseDestroyDnVec(vecT);
     CHECK_CUDA(cudaFreeAsync(d_val, stream));
     CHECK_CUDA(cudaFreeAsync(d_row_ptr, stream));
@@ -274,46 +280,37 @@ void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, cons
     CHECK_CUDA(cudaFreeAsync(d_buffer, stream));
 }
 
-// New GPU Dispatcher function (One thread per GPU)
-void gpu_dispatcher(int device_id, std::vector<MatrixTask> assigned_tasks, int num_workers) {
+// GPU Worker function (One thread per stream)
+void gpu_worker(int device_id, int thread_id, std::vector<MatrixTask> assigned_tasks) {
     CHECK_CUDA(cudaSetDevice(device_id));
     
-    std::vector<cudaStream_t> streams(num_workers);
-    std::vector<cublasHandle_t> cublas_handles(num_workers);
-    std::vector<cusparseHandle_t> cusparse_handles(num_workers);
+    cudaStream_t stream;
+    cublasHandle_t cublas_handle;
+    cusparseHandle_t cusparse_handle;
 
-    for (int i = 0; i < num_workers; ++i) {
-        CHECK_CUDA(cudaStreamCreateWithFlags(&streams[i], cudaStreamNonBlocking));
-        CHECK_CUBLAS(cublasCreate(&cublas_handles[i]));
-        CHECK_CUSPARSE(cusparseCreate(&cusparse_handles[i]));
-    }
+    CHECK_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    CHECK_CUBLAS(cublasCreate(&cublas_handle));
+    CHECK_CUSPARSE(cusparseCreate(&cusparse_handle));
 
-    // Deep pipelining: Loop through assigned tasks and dispatch to streams round-robin
-    for (size_t i = 0; i < assigned_tasks.size(); ++i) {
-        int s_idx = i % num_workers;
-        const auto& t = assigned_tasks[i];
+    for (const auto& t : assigned_tasks) {
         auto start_task = std::chrono::steady_clock::now();
         if (t.type == CGS_SOLVER) {
-            solve_cg_async(cublas_handles[s_idx], cusparse_handles[s_idx], t, streams[s_idx]);
+            solve_cg_async(cublas_handle, cusparse_handle, t, stream);
         } else {
-            solve_bicgstab_async(cublas_handles[s_idx], cusparse_handles[s_idx], t, streams[s_idx]); 
+            solve_bicgstab_async(cublas_handle, cusparse_handle, t, stream); 
         }
-        CHECK_CUDA(cudaStreamSynchronize(streams[s_idx]));
+        // CHECK_CUDA(cudaStreamSynchronize(stream)); solvers are synchronious anyways do not need this
+
         auto end_task = std::chrono::steady_clock::now();
         std::chrono::duration<double> task_duration = end_task - start_task;
         std::string solver_type_str = (t.type == CGS_SOLVER) ? "CGS_SOLVER" : "BICSTAB_SOLVER";
-        std::cout << "Stream " << (device_id * 100 + s_idx) << ": Solve time for " << t.path 
+        std::cout << "Thread " << thread_id << ": Solve time for " << t.path 
                   << " (" << solver_type_str << ") took " << task_duration.count() << " s" << std::endl;
     }
 
-    // Wait for everything on this device to finish
-    CHECK_CUDA(cudaDeviceSynchronize());
-
-    for (int i = 0; i < num_workers; ++i) {
-        cublasDestroy(cublas_handles[i]);
-        cusparseDestroy(cusparse_handles[i]);
-        cudaStreamDestroy(streams[i]);
-    }
+    cublasDestroy(cublas_handle);
+    cusparseDestroy(cusparse_handle);
+    cudaStreamDestroy(stream);
 }
 
 int main() {
@@ -353,23 +350,28 @@ int main() {
     CHECK_CUDA(cudaGetDeviceCount(&num_gpus));
     int workers_per_gpu = 8;
     
-    // Static Round-Robin Partitioning
-    std::vector<std::vector<MatrixTask>> partitions(num_gpus);
+    // Hierarchical Static Partitioning: Queue -> Devices -> Worker Threads
+    std::vector<std::vector<std::vector<MatrixTask>>> partitions(num_gpus, 
+                                        std::vector<std::vector<MatrixTask>>(workers_per_gpu));
     for (size_t i = 0; i < tasks.size(); ++i) {
-        partitions[i % num_gpus].push_back(std::move(tasks[i]));
+        int g_id = i % num_gpus;
+        int w_id = (i / num_gpus) % workers_per_gpu;
+        partitions[g_id][w_id].push_back(std::move(tasks[i]));
     }
 
     std::cout << "[INFO] Processing " << tasks.size() << " tasks using " 
-              << num_gpus << " Dispatcher threads (" << workers_per_gpu << " streams/GPU)...\n";
+              << (num_gpus * workers_per_gpu) << " worker threads (" << workers_per_gpu << " threads/GPU)...\n";
 
     auto start = std::chrono::steady_clock::now();
 
-    std::vector<std::thread> dispatchers;
+    std::vector<std::thread> workers;
     for (int i = 0; i < num_gpus; ++i) {
-        dispatchers.emplace_back(gpu_dispatcher, i, std::move(partitions[i]), workers_per_gpu);
+        for (int j = 0; j < workers_per_gpu; ++j) {
+            workers.emplace_back(gpu_worker, i, (i * 100 + j), std::move(partitions[i][j]));
+        }
     }
 
-    for (auto& d : dispatchers) d.join();
+    for (auto& w : workers) w.join();
 
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = end - start;
