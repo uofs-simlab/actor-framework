@@ -254,7 +254,7 @@ public:
     };
   }
 
-private:
+protected:
   mem_ptr<float> solve_core(in<int> rp, in<int> ci, in<float> val, in<float> b_in,
                             in_out<float> x_in,
                             matrix_format fmt, int n, int nnz,

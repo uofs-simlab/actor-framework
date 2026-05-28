@@ -310,7 +310,7 @@ public:
     };
   }
 
-private:
+protected:
   mem_ptr<T> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
                         in_out<T> x_in,
                         matrix_format fmt, int n, int nnz,
