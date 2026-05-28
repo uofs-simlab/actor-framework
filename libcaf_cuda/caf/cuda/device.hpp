@@ -878,6 +878,38 @@ public:
       throw std::runtime_error("cublasDaxpy failed on device " + std::to_string(id_));
   }
 
+  /// Performs single precision vector scaling (x = alpha*x).
+  void sscal(int stream_id, int n, float alpha, mem_ptr<float> x) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+
+    cublasStatus_t status = cublasSscal(handle, n, &alpha,
+                                        reinterpret_cast<float*>(x->mem()), 1);
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasSscal failed on device " + std::to_string(id_));
+  }
+
+  /// Performs double precision vector scaling (x = alpha*x).
+  void dscal(int stream_id, int n, double alpha, mem_ptr<double> x) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
+    if (!handle)
+      throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+
+    cublasStatus_t status = cublasDscal(handle, n, &alpha,
+                                        reinterpret_cast<double*>(x->mem()), 1);
+
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasDscal failed on device " + std::to_string(id_));
+  }
+
   /// Performs single precision Euclidean norm (result = ||x||2).
   void snrm2(int stream_id, int n, mem_ptr<float> x, mem_ptr<float> result) {
     cublasHandle_t handle = get_cublas_handle(stream_id);
