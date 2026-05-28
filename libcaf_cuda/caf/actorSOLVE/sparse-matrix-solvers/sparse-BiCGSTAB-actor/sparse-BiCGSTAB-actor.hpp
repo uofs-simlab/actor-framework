@@ -25,7 +25,7 @@ struct sparse_bicgstab_state {
   mem_ptr<T> A_values, b, x;
   matrix_format format;
   int n, nnz;
-  float tol;
+  T tol;
   int max_iter;
   int device_num;
   int stream_id;
@@ -47,9 +47,10 @@ struct sparse_bicgstab_state {
 template <class T = float>
 class sparse_bicgstab_actor : public stateful_actor<sparse_bicgstab_state<T>> {
 public:
-  sparse_bicgstab_actor(actor_config& cfg, in<int> rp, in<int> ci,
-                        in<T> val, in<T> b, in_out<T> x,
-                        matrix_format fmt, int n, int nnz, float tol, int max_iter, int device_num, int stream_id,
+  sparse_bicgstab_actor(actor_config& cfg, in<int> rp, in<int> ci, in<T> val,
+                        in<T> b, in_out<T> x, matrix_format fmt, int n,
+                        int nnz, T tol, int max_iter, int device_num,
+                        int stream_id,
                         caf::actor supervisor = nullptr)
     : stateful_actor<sparse_bicgstab_state<T>>(cfg) {
     this->state().h_row_ptr = std::move(rp);
@@ -174,6 +175,13 @@ private:
       execute_copy(s.r, s.s_vec);
       execute_axpy(-s.alpha_val, s.v, s.s_vec);
 
+      // Convergence check: Exit if the solution is reached after the alpha update
+      execute_dot(s.s_vec, s.s_vec, s.y_tmp);
+      if (runner.copy_to_host(s.y_tmp)[0] < (s.tol * s.tol)) {
+        execute_axpy(s.alpha_val, s.p, s.x);
+        break;
+      }
+
       // t = As
       execute_spmv(s.s_vec, s.t_vec);
 
@@ -269,7 +277,7 @@ public:
              in<int> rp, in<int> ci, in<T> val,
              in<T> b_in, in_out<T> x_in,
              matrix_format fmt, int n, int nnz,
-             float tol, int max_iter,
+             T tol, int max_iter,
              int device_num, int stream_id) {
 
         auto x = solve_core(rp, ci, val, b_in, x_in,
@@ -286,7 +294,7 @@ public:
              in<int> rp, in<int> ci, in<T> val,
              in<T> b_in, in_out<T> x_in,
              matrix_format fmt, int n, int nnz,
-             float tol, int max_iter,
+             T tol, int max_iter,
              int device_num, int stream_id) {
 
         auto x = solve_core(rp, ci, val, b_in, x_in,
@@ -298,7 +306,7 @@ public:
 
       // Mode 3: Default (return vector to sender)
       [this](in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
-             matrix_format fmt, int n, int nnz, float tol, int max_iter,
+             matrix_format fmt, int n, int nnz, T tol, int max_iter,
              int device_num, int stream_id) {
 
         auto x = solve_core(rp, ci, val, b_in, x_in,
@@ -311,11 +319,10 @@ public:
   }
 
 protected:
-  mem_ptr<T> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
-                        in_out<T> x_in,
-                        matrix_format fmt, int n, int nnz,
-                        float tol, int max_iter,
-                        int device_num, int stream_id) {
+  virtual mem_ptr<T> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
+                                in_out<T> x_in, matrix_format fmt, int n,
+                                int nnz, T tol, int max_iter,
+                                int device_num, int stream_id) {
     command_runner<T> runner;
     auto res = runner.transfer_memory(device_num, stream_id,
                                       rp, ci, val, b_in, x_in);
@@ -480,7 +487,7 @@ protected:
   mem_ptr<T> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
                         in_out<T> x_in,
                         matrix_format fmt, int n, int nnz,
-                        float tol, int max_iter,
+                        T tol, int max_iter,
                         int device_num, int stream_id) override {
 
     command_runner<T> runner;
@@ -579,8 +586,10 @@ protected:
       rho_val = rho_new;
 
       // Apply Preconditioner: p_hat = D_inv * p
-      if constexpr (std::is_same_v<T, float>) d_ptr->s_elementwise_multiply(stream_id, n, D_inv, p, p_hat);
-      else execute_copy(p, p_hat); // Fallback if double elementwise mult is not in device.hpp
+      if constexpr (std::is_same_v<T, float>)
+        d_ptr->s_elementwise_multiply(stream_id, n, D_inv, p, p_hat);
+      else
+        d_ptr->d_elementwise_multiply(stream_id, n, D_inv, p, p_hat);
 
       execute_spmv(p_hat, v);
       execute_dot(r_hat, v, y_tmp);
@@ -589,12 +598,21 @@ protected:
       execute_copy(r, s_vec);
       execute_axpy(-alpha_val, v, s_vec);
       
+      // Convergence check: Exit if the solution is reached after the alpha update
+      execute_dot(s_vec, s_vec, y_tmp);
+      if (runner.copy_to_host(y_tmp)[0] < (tol * tol)) {
+        execute_axpy(alpha_val, p_hat, x);
+        return x;
+      }
+
       // Apply Preconditioner: s_hat = D_inv * s
-      if constexpr (std::is_same_v<T, float>) d_ptr->s_elementwise_multiply(stream_id, n, D_inv, s_vec, s_hat);
-      else execute_copy(s_vec, s_hat);
+      if constexpr (std::is_same_v<T, float>)
+        d_ptr->s_elementwise_multiply(stream_id, n, D_inv, s_vec, s_hat);
+      else
+        d_ptr->d_elementwise_multiply(stream_id, n, D_inv, s_vec, s_hat);
 
       execute_spmv(s_hat, t_vec);
-      execute_dot(t_vec, s_hat, y_tmp);
+      execute_dot(t_vec, s_vec, y_tmp); // Corrected: Numerator uses unpreconditioned residual s
       T omega_num = runner.copy_to_host(y_tmp)[0];
       execute_dot(t_vec, t_vec, y_tmp);
       T omega_denom = runner.copy_to_host(y_tmp)[0];

@@ -191,6 +191,25 @@ public:
       throw std::runtime_error("cublasSdgmm failed on device " + std::to_string(id_));
   }
 
+  /// Performs element-wise multiplication of two vectors: result = x .* y.
+  /// This is implemented using cublasDdgmm (Diagonal Matrix-Vector Multiplication).
+  void d_elementwise_multiply(int stream_id, int n, mem_ptr<double> x, mem_ptr<double> y, mem_ptr<double> result) {
+    cublasHandle_t handle = get_cublas_handle(stream_id);
+    if (!handle) throw std::runtime_error("cuBLAS not enabled on device " + std::to_string(id_));
+
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    // cublasDdgmm: C = diag(X) * Y. When Y is a vector (n x 1), this is element-wise mult.
+    cublasStatus_t status = cublasDdgmm(handle, CUBLAS_SIDE_LEFT,
+                                        n, 1,
+                                        reinterpret_cast<const double*>(y->mem()), n,
+                                        reinterpret_cast<const double*>(x->mem()), 1,
+                                        reinterpret_cast<double*>(result->mem()), n);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    if (status != CUBLAS_STATUS_SUCCESS)
+      throw std::runtime_error("cublasDdgmm failed on device " + std::to_string(id_));
+  }
+
+
   /// Returns the required buffer size for SpMV CSR.
   template <class T>
   size_t spmv_csr_buffer_size(int stream_id, int m, int n, int nnz, 
