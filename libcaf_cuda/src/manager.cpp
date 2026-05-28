@@ -96,6 +96,11 @@ void manager::shutdown() {
     instance_ = nullptr;
 }
 
+void manager::flush_programs() {
+  std::unique_lock<std::shared_mutex> lock(programs_mutex_);
+  programs_.clear();
+}
+
 device_ptr manager::find_device(std::size_t) const {
   throw std::runtime_error("OpenCL support disabled: manager::find_device");
 }
@@ -116,24 +121,44 @@ double manager::available_memory_mb(int id) {
 program_ptr manager::create_program(const char * kernel,
                                     const std::string& name,
                                     device_ptr device) {
-  
+  size_t h = std::hash<std::string>{}(name + kernel);
+  {
+    std::shared_lock<std::shared_mutex> lock(programs_mutex_);
+    auto it = programs_.find(h);
+    if (it != programs_.end()) {
+      return it->second;
+    }
+  }
 
-	CUdevice current_device = device -> getDevice();;
+  CUdevice current_device = device -> getDevice();
 
-	//the compiled program can be accessed via ptx.data() afterwards
-	std::vector<char> ptx;
-        if (!compile_nvrtc_program(kernel,current_device,ptx)) {
-	
-		throw std::runtime_error("Program failed to compile\n");
-	
-	}
-	program_ptr prog = make_counted<program>(name, ptx);
-	return prog;
+  //the compiled program can be accessed via ptx.data() afterwards
+  std::vector<char> ptx;
+  if (!compile_nvrtc_program(kernel,current_device,ptx)) {
+    throw std::runtime_error("Program failed to compile\n");
+  }
+
+  program_ptr prog = make_counted<program>(name, ptx);
+
+  {
+    std::unique_lock<std::shared_mutex> lock(programs_mutex_);
+    programs_[h] = prog;
+  }
+
+  return prog;
 }
 //this actually doesnt even work do not use 
 program_ptr manager::create_program_from_ptx(const std::string& filename,
                                              const char* kernel_name,
                                              [[maybe_unused]] device_ptr device) {
+  size_t h = std::hash<std::string>{}(filename + kernel_name);
+  {
+    std::shared_lock<std::shared_mutex> lock(programs_mutex_);
+    auto it = programs_.find(h);
+    if (it != programs_.end())
+      return it->second;
+  }
+
   static std::mutex global_ptx_mutex_map_guard;
   static std::map<std::string, std::shared_ptr<std::mutex>> ptx_mutex_map;
 
@@ -163,6 +188,12 @@ program_ptr manager::create_program_from_ptx(const std::string& filename,
    // 🔒 Guard the actual JIT as well — this is the critical part!
   std::lock_guard<std::mutex> guard(*file_mutex);
   program_ptr prog = make_counted<program>(kernel_name, ptx);
+
+  {
+    std::unique_lock<std::shared_mutex> lock(programs_mutex_);
+    programs_[h] = prog;
+  }
+
   return prog;
 }
 
@@ -171,6 +202,14 @@ program_ptr manager::create_program_from_ptx(const std::string& filename,
 program_ptr manager::create_program_from_cubin(const std::string& filename,
                                                const char* kernel_name,
                                                [[maybe_unused]] device_ptr device) {
+  size_t h = std::hash<std::string>{}(filename + kernel_name);
+  {
+    std::shared_lock<std::shared_mutex> lock(programs_mutex_);
+    auto it = programs_.find(h);
+    if (it != programs_.end())
+      return it->second;
+  }
+
   // Open the cubin file in binary mode
   std::ifstream in(filename, std::ios::binary);
   if (!in)
@@ -182,6 +221,12 @@ program_ptr manager::create_program_from_cubin(const std::string& filename,
 
    // Reuse the same constructor as PTX (program class doesn't care)
   program_ptr prog = make_counted<program>(kernel_name, std::move(cubin));
+
+  {
+    std::unique_lock<std::shared_mutex> lock(programs_mutex_);
+    programs_[h] = prog;
+  }
+
   return prog;
 }
 
@@ -189,6 +234,14 @@ program_ptr manager::create_program_from_cubin(const std::string& filename,
 //creates a program given a path to a cubin file and the kernels name
 program_ptr manager::create_program_from_cubin(const std::string& filename,
                                                const char* kernel_name) {
+  size_t h = std::hash<std::string>{}(filename + kernel_name);
+  {
+    std::shared_lock<std::shared_mutex> lock(programs_mutex_);
+    auto it = programs_.find(h);
+    if (it != programs_.end())
+      return it->second;
+  }
+
   // Open the cubin file in binary mode
   std::ifstream in(filename, std::ios::binary);
   if (!in)
@@ -200,6 +253,12 @@ program_ptr manager::create_program_from_cubin(const std::string& filename,
 
    // Reuse the same constructor as PTX (program class doesn't care)
   program_ptr prog = make_counted<program>(kernel_name, std::move(cubin));
+
+  {
+    std::unique_lock<std::shared_mutex> lock(programs_mutex_);
+    programs_[h] = prog;
+  }
+
   return prog;
 }
 
@@ -208,6 +267,14 @@ program_ptr manager::create_program_from_cubin(const std::string& filename,
 //creates a program given a path to a fatbin file and the kernels name
 program_ptr manager::create_program_from_fatbin(const std::string& filename,
                                                const char* kernel_name) {
+  size_t h = std::hash<std::string>{}(filename + kernel_name);
+  {
+    std::shared_lock<std::shared_mutex> lock(programs_mutex_);
+    auto it = programs_.find(h);
+    if (it != programs_.end())
+      return it->second;
+  }
+
   // Open the fatbin file in binary mode
   std::ifstream in(filename, std::ios::binary);
   if (!in)
@@ -219,6 +286,12 @@ program_ptr manager::create_program_from_fatbin(const std::string& filename,
 
    // Reuse the same constructor as PTX (program class doesn't care)
   program_ptr prog = make_counted<program>(kernel_name, std::move(cubin),true);
+
+  {
+    std::unique_lock<std::shared_mutex> lock(programs_mutex_);
+    programs_[h] = prog;
+  }
+
   return prog;
 }
 

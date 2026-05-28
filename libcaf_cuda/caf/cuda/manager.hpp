@@ -6,6 +6,8 @@
 #include <mutex>
 #include <fstream>
 #include <map>
+#include <shared_mutex>
+#include <unordered_map>
 
 #include <caf/actor_system.hpp>
 #include <caf/actor.hpp>
@@ -58,6 +60,9 @@ public:
   /// Deletes the singleton if needed (optional).
   //deletes the scheduler actor as well if it exists
   static void shutdown();
+
+  /// Flushes the cache of compiled programs.
+  void flush_programs();
 
   // Prevent copy/assignment
   manager(const manager&) = delete;
@@ -195,6 +200,9 @@ private:
 
   static manager* instance_;
   static std::mutex mutex_;
+
+  mutable std::shared_mutex programs_mutex_;
+  std::unordered_map<size_t, program_ptr> programs_;
 };
 
 } // namespace caf::cuda
