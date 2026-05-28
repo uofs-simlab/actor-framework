@@ -181,9 +181,10 @@ public:
 
     CHECK_CUDA(cuCtxPushCurrent(context_));
     // cublasSdgmm: C = diag(X) * Y. When Y is a vector (n x 1), this is element-wise mult.
-    cublasStatus_t status = cublasSdgmm(handle, CUBLAS_SIDE_LEFT, n, 1,
-                                        reinterpret_cast<const float*>(x->mem()), n,
+    cublasStatus_t status = cublasSdgmm(handle, CUBLAS_SIDE_LEFT,
+                                        n, 1,
                                         reinterpret_cast<const float*>(y->mem()), n,
+                                        reinterpret_cast<const float*>(x->mem()), 1,
                                         reinterpret_cast<float*>(result->mem()), n);
     CHECK_CUDA(cuCtxPopCurrent(nullptr));
     if (status != CUBLAS_STATUS_SUCCESS)
