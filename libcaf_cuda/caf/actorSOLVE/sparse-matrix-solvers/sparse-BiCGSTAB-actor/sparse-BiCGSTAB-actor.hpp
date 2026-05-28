@@ -460,4 +460,156 @@ protected:
   uint32_t reply_id_;
 };
 
+/**
+ * A variant of the BiCGSTAB solver facade that uses Jacobi preconditioning.
+ */
+template <class T = float>
+class sparse_bicgstab_jacobi_facade : public sparse_bicgstab_facade<T> {
+public:
+  sparse_bicgstab_jacobi_facade(actor_config& cfg, uint32_t response_id)
+    : sparse_bicgstab_facade<T>(cfg, response_id) {
+    // Deduce path to cubin relative to this header file at runtime
+    std::string current_file = __FILE__;
+    auto pos = current_file.find_last_of('/');
+    std::string dir = (pos == std::string::npos) ? "" : current_file.substr(0, pos + 1);
+    auto& mgr = manager::get();
+    diag_prog_ = mgr.create_program_from_cubin(dir + "jacobi_kernels.cubin", "extract_diag_inv");
+  }
+
+protected:
+  mem_ptr<T> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
+                        in_out<T> x_in,
+                        matrix_format fmt, int n, int nnz,
+                        float tol, int max_iter,
+                        int device_num, int stream_id) override {
+
+    command_runner<T> runner;
+    auto res = runner.transfer_memory(device_num, stream_id,
+                                      rp, ci, val, b_in, x_in);
+
+    auto A_row_ptr = std::get<0>(res);
+    auto A_col_ind = std::get<1>(res);
+    auto A_values  = std::get<2>(res);
+    auto b         = std::get<3>(res);
+    auto x         = std::get<4>(res);
+
+    auto d_ptr = platform::create()->schedule(stream_id, device_num);
+
+    command_runner<out<T>> work_runner;
+    auto r     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto r_hat = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto p     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto v     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto s_vec = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto t_vec = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto D_inv = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto p_hat = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto s_hat = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto y_tmp = work_runner.transfer_memory(device_num, stream_id, out<T>(1));
+
+    mem_ptr<char> spmv_workspace;
+    size_t ws_size = 0;
+
+    if (fmt == matrix_format::csr)
+      ws_size = d_ptr->spmv_csr_buffer_size(stream_id, n, n, nnz, A_row_ptr, A_col_ind, A_values, x, v);
+    else if (fmt == matrix_format::csc)
+      ws_size = d_ptr->spmv_csc_buffer_size(stream_id, n, n, nnz, A_row_ptr, A_col_ind, A_values, x, v);
+    else if (fmt == matrix_format::coo)
+      ws_size = d_ptr->spmv_coo_buffer_size(stream_id, n, n, nnz, A_row_ptr, A_col_ind, A_values, x, v);
+
+    if (ws_size > 0) {
+      command_runner<out<char>> ws_runner;
+      spmv_workspace = ws_runner.transfer_memory(device_num, stream_id, out<char>(static_cast<int>(ws_size)));
+    }
+
+    auto execute_spmv = [&](mem_ptr<T> input_v, mem_ptr<T> output_v) {
+      switch (fmt) {
+        case matrix_format::csr: d_ptr->spmv_csr(stream_id, n, n, nnz, T{1}, A_row_ptr, A_col_ind, A_values, input_v, T{0}, output_v, spmv_workspace); break;
+        case matrix_format::csc: d_ptr->spmv_csc(stream_id, n, n, nnz, T{1}, A_row_ptr, A_col_ind, A_values, input_v, T{0}, output_v, spmv_workspace); break;
+        case matrix_format::coo: d_ptr->spmv_coo(stream_id, n, n, nnz, T{1}, A_row_ptr, A_col_ind, A_values, input_v, T{0}, output_v, spmv_workspace); break;
+        default: break;
+      }
+    };
+    auto execute_copy = [&](mem_ptr<T> src, mem_ptr<T> dst) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->dcopy(stream_id, n, src, dst);
+      else d_ptr->scopy(stream_id, n, src, dst);
+    };
+    auto execute_axpy = [&](T alpha, mem_ptr<T> ax, mem_ptr<T> ay) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->daxpy(stream_id, n, alpha, ax, ay);
+      else d_ptr->saxpy(stream_id, n, static_cast<float>(alpha), ax, ay);
+    };
+    auto execute_dot = [&](mem_ptr<T> dx, mem_ptr<T> dy, mem_ptr<T> dres) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->ddot(stream_id, n, dx, dy, dres);
+      else d_ptr->sdot(stream_id, n, dx, dy, dres);
+    };
+
+    // Preconditioning setup: Extract diagonal inverse
+    int threads = 256;
+    int blocks = (n + threads - 1) / threads;
+    nd_range range(blocks, 1, 1, threads, 1, 1);
+    d_ptr->launch_kernel_mem_ref(diag_prog_->get_kernel(d_ptr->getId()), range,
+                                 std::make_tuple(in<int>(n), A_row_ptr, A_col_ind, A_values, D_inv),
+                                 stream_id);
+
+    // Initial Residual: r = b - Ax
+    execute_spmv(x, v); 
+    execute_copy(b, r);
+    execute_axpy(T{-1}, v, r);
+    execute_copy(r, r_hat);
+    execute_dot(r, r, y_tmp);
+    T norm_sq = runner.copy_to_host(y_tmp)[0];
+
+    int iterations = 0;
+    T rho_val = T{1}, alpha_val = T{1}, omega_val = T{1}, beta_val = T{0};
+
+    while (norm_sq > (tol * tol) && iterations < max_iter) {
+      iterations++;
+      execute_dot(r_hat, r, y_tmp);
+      T rho_new = runner.copy_to_host(y_tmp)[0];
+
+      if (iterations == 1) {
+        execute_copy(r, p);
+      } else {
+        beta_val = (rho_new / rho_val) * (alpha_val / omega_val);
+        execute_axpy(-omega_val, v, p);
+        execute_copy(r, s_vec);
+        execute_axpy(beta_val, p, s_vec);
+        execute_copy(s_vec, p);
+      }
+      rho_val = rho_new;
+
+      // Apply Preconditioner: p_hat = D_inv * p
+      if constexpr (std::is_same_v<T, float>) d_ptr->s_elementwise_multiply(stream_id, n, D_inv, p, p_hat);
+      else execute_copy(p, p_hat); // Fallback if double elementwise mult is not in device.hpp
+
+      execute_spmv(p_hat, v);
+      execute_dot(r_hat, v, y_tmp);
+      T alpha_denom = runner.copy_to_host(y_tmp)[0];
+      alpha_val = rho_val / alpha_denom;
+      execute_copy(r, s_vec);
+      execute_axpy(-alpha_val, v, s_vec);
+      
+      // Apply Preconditioner: s_hat = D_inv * s
+      if constexpr (std::is_same_v<T, float>) d_ptr->s_elementwise_multiply(stream_id, n, D_inv, s_vec, s_hat);
+      else execute_copy(s_vec, s_hat);
+
+      execute_spmv(s_hat, t_vec);
+      execute_dot(t_vec, s_hat, y_tmp);
+      T omega_num = runner.copy_to_host(y_tmp)[0];
+      execute_dot(t_vec, t_vec, y_tmp);
+      T omega_denom = runner.copy_to_host(y_tmp)[0];
+      omega_val = omega_num / omega_denom;
+      execute_axpy(alpha_val, p_hat, x);
+      execute_axpy(omega_val, s_hat, x);
+      execute_copy(s_vec, r);
+      execute_axpy(-omega_val, t_vec, r);
+      execute_dot(r, r, y_tmp);
+      norm_sq = runner.copy_to_host(y_tmp)[0];
+    }
+    return x;
+  }
+private:
+  program_ptr diag_prog_;
+};
+
 } // namespace caf::cuda
