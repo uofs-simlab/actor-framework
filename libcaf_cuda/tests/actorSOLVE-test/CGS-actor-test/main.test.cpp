@@ -248,6 +248,117 @@ void caf_main(actor_system& sys) {
         );
     }
 
+    // Test 9: Jacobi Facade Actor CSR Simple
+    {
+        std::cout << "\n[INFO] Test 9: Jacobi Facade actor CSR simple matrix..." << std::endl;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+
+        self->mail(std::vector<output_mapping>{},
+                   create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::csr, n, nnz, tolerance, max_iter, 0, 8).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x) {
+                verify_solution("Jacobi Facade CSR Simple", result_x, expected);
+            }
+        );
+    }
+
+    // Test 10: Jacobi Facade Actor CSR with Custom Buffer
+    {
+        std::cout << "\n[INFO] Test 10: Jacobi Facade actor CSR with custom buffer..." << std::endl;
+        std::vector<float> custom_x(n, 0.0f);
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        output_mapping m{4, custom_x.data(), (size_t)n};
+        
+        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+        self->mail(std::vector<output_mapping>{m},
+                   create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(custom_x),
+                   matrix_format::csr, n, nnz, tolerance, max_iter, 0, 9).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int index) {
+                if (index == 4)
+                  verify_solution("Jacobi Facade Custom Buffer", custom_x, expected);
+            }
+        );
+    }
+
+    // Test 11: Jacobi Facade Actor CSR returning mem_ptr handles
+    {
+        std::cout << "\n[INFO] Test 11: Jacobi Facade actor CSR returning mem_ptr..." << std::endl;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+
+        self->mail(return_mem_ptr_atom_v,
+                   create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::csr, n, nnz, tolerance, max_iter, 0, 10).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, mem_ptr<float> ptr) {
+                auto result_x = ptr->copy_to_host();
+                verify_solution("Jacobi Facade mem_ptr", result_x, expected);
+            }
+        );
+    }
+
+    // Test 12: Jacobi Facade Actor Default (No mapping vector)
+    {
+        std::cout << "\n[INFO] Test 12: Jacobi Facade actor default (no mapping vector)..." << std::endl;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+
+        self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::csr, n, nnz, tolerance, max_iter, 0, 11).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x) {
+                verify_solution("Jacobi Facade Default", result_x, expected);
+            }
+        );
+    }
+
+    // Test 13: Jacobi Facade Actor CSC Simple
+    {
+        std::cout << "\n[INFO] Test 13: Jacobi Facade actor CSC simple matrix..." << std::endl;
+        std::vector<int> col_ptr = {0, 1, 2, 3};
+        std::vector<int> row_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+
+        self->mail(std::vector<output_mapping>{},
+                   create_in_arg(col_ptr), create_in_arg(row_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::csc, n, nnz, tolerance, max_iter, 0, 12).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x) {
+                verify_solution("Jacobi Facade CSC Simple", result_x, expected);
+            }
+        );
+    }
+
     manager::shutdown();
 }
 
