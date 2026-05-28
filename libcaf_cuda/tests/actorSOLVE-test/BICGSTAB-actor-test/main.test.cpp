@@ -631,6 +631,32 @@ void caf_main(actor_system& sys) {
         );
     }
 
+    // Test 18: Jacobi Facade Actor Real Matrix
+    {
+        std::string path = "/scratch/nqr159/matrix-collection/matrices/unsymmetric/lnsp3937.bin";
+        std::cout << "\n[INFO] Test 18: Jacobi Facade actor real-world matrix " << path << "..." << std::endl;
+        try {
+            LocalCSR<float> A = load_binary_matrix_manual<float>(path);
+            std::vector<float> expected_real(A.rows, 1.0f);
+            std::vector<float> b_real = compute_rhs_manual<float>(A, expected_real);
+            std::vector<float> x_real(A.rows, 0.0f);
+
+            auto facade = sys.spawn<sparse_bicgstab_jacobi_facade<float>>(200);
+
+            self->mail(create_in_arg(A.row_ptr), create_in_arg(A.col_ind), create_in_arg(A.values),
+                       create_in_arg(b_real), create_in_out_arg(x_real),
+                       matrix_format::csr, A.rows, A.nnz, 1e-5f, 5000, 0, 17).send(facade);
+
+            self->receive(
+                [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result) {
+                    verify_solution("Jacobi Facade Real Matrix", result, expected_real, 1e-2f);
+                }
+            );
+        } catch (const std::exception& e) {
+            std::cout << "[ERROR] Test 18 Failed: " << e.what() << std::endl;
+        }
+    }
+
     manager::shutdown();
 }
 CAF_MAIN(id_block::cuda, id_block::cg_actor)
