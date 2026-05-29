@@ -12,6 +12,7 @@
 #include <vector>
 #include <chrono>
 #include <thread>
+#include <fstream>
 #include <algorithm>
 #include <numeric>
 #include <cmath>
@@ -20,6 +21,78 @@
 
 using namespace caf;
 using namespace caf::cuda;
+
+// --- Manual Sparse Utilities for Testing ---
+
+template <class T = float>
+struct LocalCSR {
+    int rows, cols, nnz;
+    std::vector<int> row_ptr;
+    std::vector<int> col_ind;
+    std::vector<T> values;
+};
+
+template <class T = float>
+LocalCSR<T> load_binary_matrix_manual(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("Could not open " + path);
+
+    int32_t r, c, n;
+    file.read(reinterpret_cast<char*>(&r), sizeof(int32_t));
+    file.read(reinterpret_cast<char*>(&c), sizeof(int32_t));
+    file.read(reinterpret_cast<char*>(&n), sizeof(int32_t));
+
+    std::vector<int32_t> rows_coo(n), cols_coo(n);
+    std::vector<float> vals_coo(n);
+
+    file.read(reinterpret_cast<char*>(rows_coo.data()), n * sizeof(int32_t));
+    file.read(reinterpret_cast<char*>(cols_coo.data()), n * sizeof(int32_t));
+    file.read(reinterpret_cast<char*>(vals_coo.data()), n * sizeof(float));
+
+    // Detect and fix 1-based indexing (Matrix Market standard)
+    int max_idx = 0;
+    for(auto v : rows_coo) if(v > max_idx) max_idx = v;
+    for(auto v : cols_coo) if(v > max_idx) max_idx = v;
+
+    if (max_idx == r || max_idx == c) {
+        for(auto& v : rows_coo) v--;
+        for(auto& v : cols_coo) v--;
+    }
+
+    // Convert COO to CSR
+    LocalCSR<T> csr;
+    csr.rows = r; csr.cols = c; csr.nnz = n;
+    csr.row_ptr.assign(r + 1, 0);
+    csr.col_ind.resize(n);
+    csr.values.resize(n);
+
+    for (int i = 0; i < n; ++i) csr.row_ptr[rows_coo[i] + 1]++;
+    for (int i = 0; i < r; ++i) csr.row_ptr[i + 1] += csr.row_ptr[i];
+
+    std::vector<int> current_pos = csr.row_ptr;
+    for (int i = 0; i < n; ++i) {
+        int row = rows_coo[i];
+        int dest = current_pos[row]++;
+        csr.col_ind[dest] = cols_coo[i];
+        csr.values[dest] = static_cast<T>(vals_coo[i]);
+    }
+    return csr;
+}
+
+template <class T = float>
+std::vector<T> compute_rhs_manual(const LocalCSR<T>& A, const std::vector<T>& x) {
+    std::vector<T> b(A.rows, T{0});
+    for (int i = 0; i < A.rows; ++i) {
+        T sum = T{0};
+        for (int j = A.row_ptr[i]; j < A.row_ptr[i+1]; ++j) {
+            sum += A.values[j] * x[A.col_ind[j]];
+        }
+        b[i] = sum;
+    }
+    return b;
+}
+
+// --- End Manual Utilities ---
 
 void verify_solution(const std::string& test_name, const std::vector<float>& actual, 
                      const std::vector<float>& expected, float tol = 1e-3) {
@@ -182,6 +255,36 @@ void caf_main(actor_system& sys) {
                 verify_solution("GMRES Facade CSC Simple", result_x, expected);
             }
         );
+    }
+
+    // Test 6: Real-world matrix from file (lnsp3937.bin)
+    {
+        std::string path = "/scratch/nqr159/matrix-collection/matrices/unsymmetric/lnsp3937.bin";
+        std::cout << "\n[INFO] Test 6: Loading real-world matrix " << path << "..." << std::endl;
+        try {
+            LocalCSR<float> A = load_binary_matrix_manual<float>(path);
+            std::cout << "[INFO] Matrix Metadata: Rows=" << A.rows << ", Cols=" << A.cols 
+                      << ", NNZ=" << A.nnz << std::endl;
+            
+            std::vector<float> expected_real(A.rows, 1.0f);
+            std::vector<float> b_real = compute_rhs_manual<float>(A, expected_real);
+            std::vector<float> h_x(A.rows, 0.0f);
+
+            auto facade = sys.spawn<sparse_gmres_facade<float>>(100);
+
+            self->mail(create_in_arg(A.row_ptr), create_in_arg(A.col_ind), create_in_arg(A.values),
+                       create_in_arg(b_real), create_in_out_arg(h_x),
+                       matrix_format::csr, A.rows, A.nnz, 1e-5f, 5000, 30, 0, 5).send(facade);
+
+            self->receive(
+                [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result, solver_result_meta meta) {
+                    std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << std::boolalpha << meta.converged << std::endl;
+                    verify_solution("GMRES Real Matrix", result, expected_real, 1e-2f);
+                }
+            );
+        } catch (const std::exception& e) {
+            std::cout << "[ERROR] Test 6 Failed: " << e.what() << std::endl;
+        }
     }
 
     manager::shutdown();
