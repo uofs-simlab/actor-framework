@@ -159,20 +159,40 @@ bool run_one_variant(actor_system& sys,
   auto solver = sys.spawn<Facade>(kReplyId);
 
   std::vector<T> x0(A.rows, T{0});
-  self->mail(return_mem_ptr_atom_v,
-             create_in_arg(A.row_ptr),
-             create_in_arg(A.col_ind),
-             create_in_arg(A.values),
-             create_in_arg(b),
-             create_in_out_arg(x0),
-             matrix_format::csr,
-             A.rows,
-             A.nnz,
-             static_cast<T>(tol),
-             max_iter,
-             0,
-             0)
-      .send(solver);
+
+  // GMRES requires a restart parameter (k) which the other solvers do not.
+  if constexpr (std::is_same_v<Facade, sparse_gmres_facade<T>>) {
+    self->mail(return_mem_ptr_atom_v,
+               create_in_arg(A.row_ptr),
+               create_in_arg(A.col_ind),
+               create_in_arg(A.values),
+               create_in_arg(b),
+               create_in_out_arg(x0),
+               matrix_format::csr,
+               A.rows,
+               A.nnz,
+               static_cast<T>(tol),
+               max_iter,
+               30, // Restart parameter k
+               0,  // device_num
+               0)  // stream_id
+        .send(solver);
+  } else {
+    self->mail(return_mem_ptr_atom_v,
+               create_in_arg(A.row_ptr),
+               create_in_arg(A.col_ind),
+               create_in_arg(A.values),
+               create_in_arg(b),
+               create_in_out_arg(x0),
+               matrix_format::csr,
+               A.rows,
+               A.nnz,
+               static_cast<T>(tol),
+               max_iter,
+               0, // device_num
+               0) // stream_id
+        .send(solver);
+  }
 
   bool solved = false;
   bool received = false;
@@ -184,12 +204,17 @@ bool run_one_variant(actor_system& sys,
       received = true;
       solved = meta.converged;
     },
+    [&](const error& err) {
+      received = true;
+      solved = false;
+    },
     after(std::chrono::minutes(20)) >> [&] {
       received = false;
       solved = false;
     }
   );
 
+  self->send_exit(solver, exit_reason::user_shutdown);
   return received && solved;
 }
 
