@@ -10,11 +10,6 @@
 #include "caf/actorBLAS/copy-actor/copy-actor.hpp"
 #include "caf/cuda/platform.hpp"
 
-// Define a new block for CG specific atoms starting where the cuda block ended
-CAF_BEGIN_TYPE_ID_BLOCK(cg_actor, caf::id_block::cuda::end)
-  CAF_ADD_ATOM(cg_actor, cg_next_step_atom)
-CAF_END_TYPE_ID_BLOCK(cg_actor)
-
 namespace caf::cuda {
 
 // Reply IDs used to distinguish which actor type is replying

@@ -235,9 +235,11 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   CAF_ADD_ATOM(cuda, csc_atom)
   CAF_ADD_ATOM(cuda, coo_atom)  
   CAF_ADD_ATOM(cuda, start_atom)
-
+  CAF_ADD_ATOM(cuda, cg_next_step_atom)
 
 CAF_END_TYPE_ID_BLOCK(cuda)
+
+
 
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<int>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<float>)

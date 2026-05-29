@@ -362,4 +362,4 @@ void caf_main(actor_system& sys) {
     manager::shutdown();
 }
 
-CAF_MAIN(id_block::cuda, id_block::cg_actor)
+CAF_MAIN(id_block::cuda)
