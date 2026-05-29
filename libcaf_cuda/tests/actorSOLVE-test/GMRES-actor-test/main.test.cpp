@@ -73,7 +73,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, n, nnz, tolerance, max_iter, restart_m, 0, 0).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x) {
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x, solver_result_meta meta) {
                 verify_solution("GMRES Facade CSR Simple", result_x, expected);
             }
         );
@@ -95,7 +95,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, n, nnz, tolerance, max_iter, restart_m, 0, 1).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, int index) {
+            [&](uint32_t /*resp_id*/, int index, solver_result_meta meta) {
                 if (index == 4)
                   verify_solution("GMRES Facade Custom Buffer", custom_x, expected);
             }
@@ -118,7 +118,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, n, nnz, tolerance, max_iter, restart_m, 0, 2).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, mem_ptr<float> ptr) {
+            [&](uint32_t /*resp_id*/, mem_ptr<float> ptr, solver_result_meta meta) {
                 auto result_x = ptr->copy_to_host();
                 verify_solution("GMRES Facade mem_ptr", result_x, expected);
             }
@@ -152,7 +152,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, N_large, (int)values.size(), 1e-4f, 2000, 30, 0, 3).send(facade);
 
         self->receive(
-            [&](uint32_t, int, std::vector<float> result) {
+            [&](uint32_t, int, std::vector<float> result, solver_result_meta meta) {
                 auto end = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double> elapsed = end - start;
                 std::cout << "[SUCCESS] Stress Test completed in " << elapsed.count() << " seconds." << std::endl;
@@ -178,7 +178,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csc, n, nnz, tolerance, max_iter, restart_m, 0, 4).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x) {
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x, solver_result_meta meta) {
                 verify_solution("GMRES Facade CSC Simple", result_x, expected);
             }
         );

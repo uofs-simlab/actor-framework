@@ -148,7 +148,8 @@ void caf_main(actor_system& sys) {
 
         self->mail(start_atom_v).send(solver);
         self->receive(
-            [&](std::vector<float> result_x) {
+            [&](std::vector<float> result_x, solver_result_meta meta) {
+                std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << std::boolalpha << meta.converged << std::endl;
                 verify_solution("CSR Simple", result_x, expected, tolerance);
             }
         );
@@ -169,7 +170,7 @@ void caf_main(actor_system& sys) {
 
         self->mail(start_atom_v).send(solver);
         self->receive(
-            [&](std::vector<float> result_x) {
+            [&](std::vector<float> result_x, solver_result_meta meta) {
                 verify_solution("CSC Simple", result_x, expected, tolerance);
             }
         );
@@ -190,7 +191,7 @@ void caf_main(actor_system& sys) {
 
         self->mail(start_atom_v).send(solver);
         self->receive(
-            [&](std::vector<float> result_x) {
+            [&](std::vector<float> result_x, solver_result_meta meta) {
                 verify_solution("COO Simple", result_x, expected, tolerance);
             }
         );
@@ -217,7 +218,7 @@ void caf_main(actor_system& sys) {
 
         self->mail(start_atom_v).send(solver);
         self->receive(
-            [&](std::vector<float> result_x) {
+            [&](std::vector<float> result_x, solver_result_meta meta) {
                 verify_solution("CSR Tridiagonal (3x3)", result_x, expected_tri, tolerance);
             }
         );
@@ -263,7 +264,7 @@ void caf_main(actor_system& sys) {
 
         self->mail(start_atom_v).send(solver);
         self->receive(
-            [&](std::vector<float> result) {
+            [&](std::vector<float> result, solver_result_meta meta) {
                 verify_solution("CSR N=100 Correctness", result, expected_mid, 1e-4f);
             }
         );
@@ -312,7 +313,7 @@ void caf_main(actor_system& sys) {
 
         self->mail(start_atom_v).send(solver);
         self->receive(
-            [&](std::vector<float> result) {
+            [&](std::vector<float> result, solver_result_meta meta) {
                 verify_solution("High Iteration Count Test", result, expected_high, 1e-2f);
             }
         );
@@ -340,7 +341,7 @@ void caf_main(actor_system& sys) {
 
             self->mail(start_atom_v).send(solver);
             self->receive(
-                [&](std::vector<float> result) {
+                [&](std::vector<float> result, solver_result_meta meta) {
                     verify_solution("Real Matrix (Float)", result, expected_real, 1e-2f);
                 }
             );
@@ -373,7 +374,7 @@ void caf_main(actor_system& sys) {
 
             self->mail(start_atom_v).send(solver);
             self->receive(
-                [&](std::vector<double> result) {
+                [&](std::vector<double> result, solver_result_meta meta) {
                     verify_solution<double>("Real Matrix (Double)", result, expected_real, 1e-8);
                 }
             );
@@ -410,10 +411,11 @@ void caf_main(actor_system& sys) {
 
         self->mail(start_atom_v).send(stress_solver);
         self->receive(
-            [&](std::vector<float> result) {
+            [&](std::vector<float> result, solver_result_meta meta) {
                 auto end = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double> elapsed = end - start;
                 std::cout << "[SUCCESS] Stress Test completed in " << elapsed.count() << " seconds." << std::endl;
+                std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << meta.converged << std::endl;
                 std::cout << "[INFO] First 5 elements of solution: ";
                 for(int i=0; i<5; ++i) std::cout << result[i] << " ";
                 std::cout << "..." << std::endl;
@@ -439,7 +441,7 @@ void caf_main(actor_system& sys) {
 
         self->mail(start_atom_v).send(solver);
         self->receive(
-            [&](std::vector<double> result_x) {
+            [&](std::vector<double> result_x, solver_result_meta meta) {
                 verify_solution<double>("Double CSR Simple", result_x, expected_d, 1e-9);
             }
         );
@@ -463,7 +465,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, n_f, nnz_f, tolerance, max_iter, 0, 9).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x) {
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x, solver_result_meta meta) {
                 verify_solution("Facade CSR Simple", result_x, expected_f, tolerance);
             }
         );
@@ -486,7 +488,7 @@ void caf_main(actor_system& sys) {
                        matrix_format::csr, A.rows, A.nnz, 1e-5f, 5000, 0, 10).send(facade);
 
             self->receive(
-                [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result) {
+                [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result, solver_result_meta meta) {
                     verify_solution("Facade Real Matrix", result, expected_real, 1e-2f);
                 }
             );
@@ -511,7 +513,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, n, nnz, tolerance, max_iter, 0, 11).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, int index) {
+            [&](uint32_t /*resp_id*/, int index, solver_result_meta meta) {
                 if (index == 4)
                   verify_solution("Facade Custom Buffer", custom_x, expected);
             }
@@ -534,7 +536,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, n, nnz, tolerance, max_iter, 0, 12).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, mem_ptr<float> ptr) {
+            [&](uint32_t /*resp_id*/, mem_ptr<float> ptr, solver_result_meta meta) {
                 auto result_x = ptr->copy_to_host();
                 verify_solution("Facade mem_ptr", result_x, expected);
             }
@@ -557,7 +559,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, n, nnz, tolerance, max_iter, 0, 13).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x) {
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x, solver_result_meta meta) {
                 verify_solution("Jacobi Facade CSR Simple", result_x, expected);
             }
         );
@@ -579,7 +581,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, n, nnz, tolerance, max_iter, 0, 14).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, int index) {
+            [&](uint32_t /*resp_id*/, int index, solver_result_meta meta) {
                 if (index == 4)
                   verify_solution("Jacobi Facade Custom Buffer", custom_x, expected);
             }
@@ -602,7 +604,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csr, n, nnz, tolerance, max_iter, 0, 15).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, mem_ptr<float> ptr) {
+            [&](uint32_t /*resp_id*/, mem_ptr<float> ptr, solver_result_meta meta) {
                 auto result_x = ptr->copy_to_host();
                 verify_solution("Jacobi Facade mem_ptr", result_x, expected);
             }
@@ -625,7 +627,7 @@ void caf_main(actor_system& sys) {
                    matrix_format::csc, n, nnz, tolerance, max_iter, 0, 16).send(facade);
 
         self->receive(
-            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x) {
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x, solver_result_meta meta) {
                 verify_solution("Jacobi Facade CSC Simple", result_x, expected);
             }
         );
@@ -648,7 +650,7 @@ void caf_main(actor_system& sys) {
                        matrix_format::csr, A.rows, A.nnz, 1e-5f, 5000, 0, 17).send(facade);
 
             self->receive(
-                [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result) {
+                [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result, solver_result_meta meta) {
                     verify_solution("Jacobi Facade Real Matrix", result, expected_real, 1e-2f);
                 }
             );
@@ -659,4 +661,4 @@ void caf_main(actor_system& sys) {
 
     manager::shutdown();
 }
-CAF_MAIN(id_block::cuda, id_block::cg_actor)
+CAF_MAIN(id_block::cuda)

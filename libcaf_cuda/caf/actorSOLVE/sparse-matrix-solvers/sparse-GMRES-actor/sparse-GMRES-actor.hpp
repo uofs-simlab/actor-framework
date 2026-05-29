@@ -69,6 +69,12 @@ public:
         if (!this->state().supervisor)
           this->state().supervisor = actor_cast<caf::actor>(this->current_sender());
         start_solve();
+      },
+      [this](gpu_done_atom, std::vector<T>& solution, solver_result_meta meta) {
+        auto& s = this->state();
+        if (s.supervisor)
+          this->mail(std::move(solution), meta).send(s.supervisor);
+        this->quit();
       }
     };
   }
