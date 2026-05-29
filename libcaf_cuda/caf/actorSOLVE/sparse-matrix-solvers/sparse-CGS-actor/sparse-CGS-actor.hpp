@@ -18,18 +18,19 @@ constexpr int id_spmv = 200;
 constexpr int id_axpy = 300;
 constexpr int id_copy = 400;
 
+template <class T = float>
 struct sparse_cg_state {
  // Host Data (stored until start)
  in<int> h_row_ptr, h_col_ind;
- in<float> h_values, h_b;
- in_out<float> h_x;
+ in<T> h_values, h_b;
+ in_out<T> h_x;
 
  // Device Problem data
  mem_ptr<int> A_row_ptr, A_col_ind;
- mem_ptr<float> A_values, b, x;
+ mem_ptr<T> A_values, b, x;
  matrix_format format;
  int n, nnz;
- float tol;
+ T tol;
  int max_iter;
  int device_num;
  int stream_id;
@@ -37,35 +38,36 @@ struct sparse_cg_state {
  caf::actor supervisor;
 
  // Workspace vectors
- mem_ptr<float> r, p, w, y_tmp;
+ mem_ptr<T> r, p, w, y_tmp;
  mem_ptr<char> spmv_workspace;
  
  // Scalars needed across asynchronous steps
- float rho_val = 0.0f;
- float old_rho_val = 0.0f;
- float alpha_val = 0.0f;
- float beta_val = 0.0f;
- float dot_pw_val = 0.0f;
+ T rho_val = T{0};
+ T old_rho_val = T{0};
+ T alpha_val = T{0};
+ T beta_val = T{0};
+ T dot_pw_val = T{0};
  int iterations = 0;
 };
 
-class sparse_cg_actor : public stateful_actor<sparse_cg_state> {
+template <class T = float>
+class sparse_cg_actor : public stateful_actor<sparse_cg_state<T>> {
 public:
  sparse_cg_actor(actor_config& cfg, in<int> rp, in<int> ci,
-                 in<float> val, in<float> b, in_out<float> x,
-                 matrix_format fmt, int n, int nnz, float tol, int max_iter, int device_num, int stream_id,
+                 in<T> val, in<T> b, in_out<T> x,
+                 matrix_format fmt, int n, int nnz, T tol, int max_iter, int device_num, int stream_id,
                  caf::actor supervisor = nullptr)
-   : stateful_actor<sparse_cg_state>(cfg) {
-   state().h_row_ptr = std::move(rp);
-   state().h_col_ind = std::move(ci);
-   state().h_values = std::move(val);
-   state().h_b = std::move(b);
-   state().h_x = std::move(x);
-   state().format = fmt;
-   state().n = n; state().nnz = nnz;
-   state().tol = tol; state().max_iter = max_iter;
-   state().device_num = device_num; state().stream_id = stream_id;
-   state().supervisor = supervisor;
+   : stateful_actor<sparse_cg_state<T>>(cfg) {
+   this->state().h_row_ptr = std::move(rp);
+   this->state().h_col_ind = std::move(ci);
+   this->state().h_values = std::move(val);
+   this->state().h_b = std::move(b);
+   this->state().h_x = std::move(x);
+   this->state().format = fmt;
+   this->state().n = n; this->state().nnz = nnz;
+   this->state().tol = tol; this->state().max_iter = max_iter;
+   this->state().device_num = device_num; this->state().stream_id = stream_id;
+   this->state().supervisor = supervisor;
  }
 
  ~sparse_cg_actor() override = default;
@@ -73,14 +75,14 @@ public:
  behavior make_behavior() override {
    return {
      [this](start_atom) {
-       auto& s = state();
+       auto& s = this->state();
        if (!s.supervisor)
          s.supervisor = actor_cast<caf::actor>(this->current_sender());
        start_solve();
      },
-     [this](gpu_done_atom, std::vector<float>& solution, solver_result_meta meta) {
-       if (state().supervisor)
-         this->mail(std::move(solution), meta).send(state().supervisor);
+     [this](gpu_done_atom, std::vector<T>& solution, solver_result_meta meta) {
+       if (this->state().supervisor)
+         this->mail(std::move(solution), meta).send(this->state().supervisor);
        this->quit();
      }
    };
@@ -88,8 +90,8 @@ public:
 
 private:
  void start_solve() {
-   auto& s = state();
-   command_runner<float> runner;
+   auto& s = this->state();
+   command_runner<T> runner;
 
    // Transfer problem data to device
    auto res = runner.transfer_memory(s.device_num, s.stream_id,
@@ -108,11 +110,11 @@ private:
    s.d_ptr = platform::create()->schedule(s.stream_id, s.device_num);
 
    // Allocate workspace
-   command_runner<out<float>> work_runner;
-   s.r = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
-   s.p = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
-   s.w = work_runner.transfer_memory(s.device_num, s.stream_id, out<float>(s.n));
-   s.y_tmp = work_runner.transfer_memory(s.device_num, s.stream_id, create_out_arg_with_size<float>(1));
+   command_runner<out<T>> work_runner;
+   s.r = work_runner.transfer_memory(s.device_num, s.stream_id, out<T>(s.n));
+   s.p = work_runner.transfer_memory(s.device_num, s.stream_id, out<T>(s.n));
+   s.w = work_runner.transfer_memory(s.device_num, s.stream_id, out<T>(s.n));
+   s.y_tmp = work_runner.transfer_memory(s.device_num, s.stream_id, create_out_arg_with_size<T>(1));
    
    // Allocate SPMV workspace to avoid reallocations in the loop
    size_t ws_size = 0;
@@ -128,63 +130,80 @@ private:
      s.spmv_workspace = ws_runner.transfer_memory(s.device_num, s.stream_id, out<char>(static_cast<int>(ws_size)));
    }
 
+   auto execute_copy = [&](mem_ptr<T> src, mem_ptr<T> dst) {
+     if constexpr (std::is_same_v<T, double>) s.d_ptr->dcopy(s.stream_id, s.n, src, dst); else s.d_ptr->scopy(s.stream_id, s.n, src, dst);
+   };
+   auto execute_axpy = [&](T alpha, mem_ptr<T> xv, mem_ptr<T> yv) {
+     if constexpr (std::is_same_v<T, double>) s.d_ptr->daxpy(s.stream_id, s.n, alpha, xv, yv); else s.d_ptr->saxpy(s.stream_id, s.n, static_cast<float>(alpha), xv, yv);
+   };
+   auto execute_dot = [&](mem_ptr<T> xv, mem_ptr<T> yv, mem_ptr<T> rv) {
+     if constexpr (std::is_same_v<T, double>) s.d_ptr->ddot(s.stream_id, s.n, xv, yv, rv); else s.d_ptr->sdot(s.stream_id, s.n, xv, yv, rv);
+   };
+
    // 1. Initial SpMV: w = A * x
    execute_spmv(s.x, s.w);
 
    // 2. Initial r = b - w
-   s.d_ptr->scopy(s.stream_id, s.n, s.b, s.r);
-   s.d_ptr->saxpy(s.stream_id, s.n, -1.0f, s.w, s.r);
+   execute_copy(s.b, s.r);
+   execute_axpy(T{-1}, s.w, s.r);
 
    // 3. Initial rho = r * r
-   s.d_ptr->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
+   execute_dot(s.r, s.r, s.y_tmp);
    
    // Fetch initial rho synchronously to start the loop
    s.rho_val = runner.copy_to_host(s.y_tmp)[0];
+   T threshold = s.tol * s.tol;
 
    // The Real Performance Fix: The Tight CG Loop
    // By running the loop here, we eliminate 20,000+ scheduler context switches.
-   while (s.rho_val > (s.tol * s.tol) && s.iterations < s.max_iter) {
+   while (s.rho_val > threshold && s.iterations < s.max_iter) {
      s.iterations++;
 
      if (s.iterations > 1) {
        s.beta_val = s.rho_val / s.old_rho_val;
-       s.d_ptr->scopy(s.stream_id, s.n, s.r, s.w);
-       s.d_ptr->saxpy(s.stream_id, s.n, s.beta_val, s.p, s.w);
-       s.d_ptr->scopy(s.stream_id, s.n, s.w, s.p);
+       execute_copy(s.r, s.w);
+       execute_axpy(s.beta_val, s.p, s.w);
+       execute_copy(s.w, s.p);
      } else {
-       s.d_ptr->scopy(s.stream_id, s.n, s.r, s.p);
+       execute_copy(s.r, s.p);
      }
 
      execute_spmv(s.p, s.w);
 
-     s.d_ptr->sdot(s.stream_id, s.n, s.p, s.w, s.y_tmp);
+     execute_dot(s.p, s.w, s.y_tmp);
      // This synchronous call blocks the CAF thread ONLY until this dot product is ready.
      // This is 100x faster than yielding to the scheduler.
      s.dot_pw_val = runner.copy_to_host(s.y_tmp)[0];
 
      s.alpha_val = s.rho_val / s.dot_pw_val;
-     s.d_ptr->saxpy(s.stream_id, s.n, s.alpha_val, s.p, s.x);
-     s.d_ptr->saxpy(s.stream_id, s.n, -s.alpha_val, s.w, s.r);
+     execute_axpy(s.alpha_val, s.p, s.x);
+     execute_axpy(-s.alpha_val, s.w, s.r);
 
      s.old_rho_val = s.rho_val;
-     s.d_ptr->sdot(s.stream_id, s.n, s.r, s.r, s.y_tmp);
+     execute_dot(s.r, s.r, s.y_tmp);
      s.rho_val = runner.copy_to_host(s.y_tmp)[0];
    }
 
    // Exit the loop and return the result via the standard async path
    auto self = actor_cast<actor>(this);
-   solver_result_meta meta(s.device_num, s.stream_id, s.iterations, s.rho_val <= (s.tol * s.tol));
-   runner.copy_to_host_async(s.x, [self, meta](std::vector<float> solution) {
+   solver_result_meta meta(s.device_num, s.stream_id, s.iterations, s.rho_val <= threshold);
+   runner.copy_to_host_async(s.x, [self, meta](std::vector<T> solution) {
      anon_mail(gpu_done_atom_v, std::move(solution), meta).send(self);
    });
  }
 
- void execute_spmv(mem_ptr<float> input_v, mem_ptr<float> output_v) {
-   auto& s = state();
+ void execute_spmv(mem_ptr<T> input_v, mem_ptr<T> output_v) {
+   auto& s = this->state();
    switch (s.format) {
-     case matrix_format::csr: s.d_ptr->spmv_csr(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v, s.spmv_workspace); break;
-     case matrix_format::csc: s.d_ptr->spmv_csc(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v, s.spmv_workspace); break;
-     case matrix_format::coo: s.d_ptr->spmv_coo(s.stream_id, s.n, s.n, s.nnz, 1.0f, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, 0.0f, output_v, s.spmv_workspace); break;
+     case matrix_format::csr:
+       s.d_ptr->spmv_csr(s.stream_id, s.n, s.n, s.nnz, T{1}, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, T{0}, output_v, s.spmv_workspace);
+       break;
+     case matrix_format::csc:
+       s.d_ptr->spmv_csc(s.stream_id, s.n, s.n, s.nnz, T{1}, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, T{0}, output_v, s.spmv_workspace);
+       break;
+     case matrix_format::coo:
+       s.d_ptr->spmv_coo(s.stream_id, s.n, s.n, s.nnz, T{1}, s.A_row_ptr, s.A_col_ind, s.A_values, input_v, T{0}, output_v, s.spmv_workspace);
+       break;
      default: break;
    }
  }
@@ -195,6 +214,7 @@ private:
  * This actor can be reused for multiple solve requests. It receives all 
  * solve parameters as a message and returns the solution vector to the sender.
  */
+template <class T = float>
 class sparse_cg_facade : public event_based_actor {
 public:
   sparse_cg_facade(actor_config& cfg, uint32_t response_id)
@@ -204,10 +224,10 @@ public:
     return {
       // Mode 1: Return mem_ptr handles (GPU memory)
       [this](return_mem_ptr_atom,
-             in<int> rp, in<int> ci, in<float> val,
-             in<float> b_in, in_out<float> x_in,
+             in<int> rp, in<int> ci, in<T> val,
+             in<T> b_in, in_out<T> x_in,
              matrix_format fmt, int n, int nnz,
-             float tol, int max_iter,
+             T tol, int max_iter,
              int device_num, int stream_id) {
 
         auto [x, meta] = solve_core(rp, ci, val, b_in, x_in,
@@ -221,10 +241,10 @@ public:
 
       // Mode 2: Return host data via mappings
       [this](std::vector<output_mapping> mappings,
-             in<int> rp, in<int> ci, in<float> val,
-             in<float> b_in, in_out<float> x_in,
+             in<int> rp, in<int> ci, in<T> val,
+             in<T> b_in, in_out<T> x_in,
              matrix_format fmt, int n, int nnz,
-             float tol, int max_iter,
+             T tol, int max_iter,
              int device_num, int stream_id) {
 
         auto [x, meta] = solve_core(rp, ci, val, b_in, x_in,
@@ -235,10 +255,10 @@ public:
       },
 
       // Mode 3: Default (return vector to sender)
-      [this](in<int> rp, in<int> ci, in<float> val,
-             in<float> b_in, in_out<float> x_in,
+      [this](in<int> rp, in<int> ci, in<T> val,
+             in<T> b_in, in_out<T> x_in,
              matrix_format fmt, int n, int nnz,
-             float tol, int max_iter,
+             T tol, int max_iter,
              int device_num, int stream_id) {
 
         auto [x, meta] = solve_core(rp, ci, val, b_in, x_in,
@@ -251,13 +271,13 @@ public:
   }
 
 protected:
-  virtual std::pair<mem_ptr<float>, solver_result_meta> solve_core(in<int> rp, in<int> ci, in<float> val, in<float> b_in,
-                                                                   in_out<float> x_in,
+  virtual std::pair<mem_ptr<T>, solver_result_meta> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
+                                                                   in_out<T> x_in,
                                                                    matrix_format fmt, int n, int nnz,
-                                                                   float tol, int max_iter,
+                                                                   T tol, int max_iter,
                                                                    int device_num, int stream_id) {
 
-    command_runner<float> runner;
+    command_runner<T> runner;
 
     auto res = runner.transfer_memory(device_num, stream_id,
                                       rp, ci, val, b_in, x_in);
@@ -270,11 +290,11 @@ protected:
 
     auto d_ptr = platform::create()->schedule(stream_id, device_num);
 
-    command_runner<out<float>> work_runner;
-    auto r     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
-    auto p     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
-    auto w     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
-    auto y_tmp = work_runner.transfer_memory(device_num, stream_id, create_out_arg_with_size<float>(1));
+    command_runner<out<T>> work_runner;
+    auto r     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto p     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto w     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto y_tmp = work_runner.transfer_memory(device_num, stream_id, create_out_arg_with_size<T>(1));
 
     mem_ptr<char> spmv_workspace;
     size_t ws_size = 0;
@@ -296,71 +316,81 @@ protected:
                                   out<char>(static_cast<int>(ws_size)));
     }
 
-    auto execute_spmv = [&](mem_ptr<float> input_v, mem_ptr<float> output_v) {
+    auto execute_spmv = [&](mem_ptr<T> input_v, mem_ptr<T> output_v) {
       switch (fmt) {
         case matrix_format::csr:
-          d_ptr->spmv_csr(stream_id, n, n, nnz, 1.0f,
+          d_ptr->spmv_csr(stream_id, n, n, nnz, T{1},
                           A_row_ptr, A_col_ind, A_values,
-                          input_v, 0.0f, output_v, spmv_workspace);
+                          input_v, T{0}, output_v, spmv_workspace);
           break;
 
         case matrix_format::csc:
-          d_ptr->spmv_csc(stream_id, n, n, nnz, 1.0f,
+          d_ptr->spmv_csc(stream_id, n, n, nnz, T{1},
                           A_row_ptr, A_col_ind, A_values,
-                          input_v, 0.0f, output_v, spmv_workspace);
+                          input_v, T{0}, output_v, spmv_workspace);
           break;
 
         case matrix_format::coo:
-          d_ptr->spmv_coo(stream_id, n, n, nnz, 1.0f,
+          d_ptr->spmv_coo(stream_id, n, n, nnz, T{1},
                           A_row_ptr, A_col_ind, A_values,
-                          input_v, 0.0f, output_v, spmv_workspace);
+                          input_v, T{0}, output_v, spmv_workspace);
           break;
 
         default:
           break;
       }
     };
+    auto execute_copy = [&](mem_ptr<T> src, mem_ptr<T> dst) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->dcopy(stream_id, n, src, dst); else d_ptr->scopy(stream_id, n, src, dst);
+    };
+    auto execute_axpy = [&](T alpha, mem_ptr<T> xv, mem_ptr<T> yv) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->daxpy(stream_id, n, alpha, xv, yv); else d_ptr->saxpy(stream_id, n, static_cast<float>(alpha), xv, yv);
+    };
+    auto execute_dot = [&](mem_ptr<T> xv, mem_ptr<T> yv, mem_ptr<T> rv) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->ddot(stream_id, n, xv, yv, rv); else d_ptr->sdot(stream_id, n, xv, yv, rv);
+    };
 
     execute_spmv(x, w);
-    d_ptr->scopy(stream_id, n, b, r);
-    d_ptr->saxpy(stream_id, n, -1.0f, w, r);
-    d_ptr->sdot(stream_id, n, r, r, y_tmp);
+    execute_copy(b, r);
+    execute_axpy(T{-1}, w, r);
+    execute_dot(r, r, y_tmp);
 
-    float rho_val = runner.copy_to_host(y_tmp)[0];
-    float old_rho_val = 0.0f;
+    T rho_val = runner.copy_to_host(y_tmp)[0];
+    T old_rho_val = T{0};
     int iterations = 0;
+    T threshold = tol * tol;
 
-    while (rho_val > (tol * tol) && iterations < max_iter) {
+    while (rho_val > threshold && iterations < max_iter) {
       iterations++;
 
       if (iterations > 1) {
-        float beta_val = rho_val / old_rho_val;
-        d_ptr->scopy(stream_id, n, r, w);
-        d_ptr->saxpy(stream_id, n, beta_val, p, w);
-        d_ptr->scopy(stream_id, n, w, p);
+        T beta_val = rho_val / old_rho_val;
+        execute_copy(r, w);
+        execute_axpy(beta_val, p, w);
+        execute_copy(w, p);
       } else {
-        d_ptr->scopy(stream_id, n, r, p);
+       execute_copy(r, p);
       }
 
       execute_spmv(p, w);
-      d_ptr->sdot(stream_id, n, p, w, y_tmp);
+      execute_dot(p, w, y_tmp);
 
-      float alpha_val =
+      T alpha_val =
         rho_val / runner.copy_to_host(y_tmp)[0];
 
-      d_ptr->saxpy(stream_id, n, alpha_val, p, x);
-      d_ptr->saxpy(stream_id, n, -alpha_val, w, r);
+      execute_axpy(alpha_val, p, x);
+      execute_axpy(-alpha_val, w, r);
 
       old_rho_val = rho_val;
-      d_ptr->sdot(stream_id, n, r, r, y_tmp);
+      execute_dot(r, r, y_tmp);
       rho_val = runner.copy_to_host(y_tmp)[0];
     }
 
-    return {x, solver_result_meta(device_num, stream_id, iterations, rho_val <= (tol * tol))};
+    return {x, solver_result_meta(device_num, stream_id, iterations, rho_val <= threshold)};
   }
 
   void dispatch_result(std::vector<output_mapping> mappings,
-                       mem_ptr<float> x,
+                       mem_ptr<T> x,
                        int n,
                        solver_result_meta meta) {
 
@@ -378,21 +408,21 @@ protected:
       }
     }
 
-    command_runner<float> runner;
+    command_runner<T> runner;
 
     if (custom_dst) {
       runner.copy_to_host_async(
         x,
-        static_cast<float*>(custom_dst),
+        static_cast<T*>(custom_dst),
         custom_count > 0 ? custom_count : (size_t)n,
-        [sender, r_id = reply_id_, meta](float*, size_t) {
+        [sender, r_id = reply_id_, meta](T*, size_t) {
           caf::anon_mail(r_id, 4, meta).send(sender);
         });
 
     } else {
       runner.copy_to_host_async(
         x,
-        [sender, r_id = reply_id_, meta](std::vector<float> data) {
+        [sender, r_id = reply_id_, meta](std::vector<T> data) {
           caf::anon_mail(r_id, 4, std::move(data), meta).send(sender);
         });
     }
@@ -405,10 +435,11 @@ private:
 /**
  * A variant of the CG solver facade that uses Jacobi preconditioning.
  */
-class sparse_cg_jacobi_facade : public sparse_cg_facade {
+template <class T = float>
+class sparse_cg_jacobi_facade : public sparse_cg_facade<T> {
 public:
   sparse_cg_jacobi_facade(actor_config& cfg, uint32_t response_id)
-    : sparse_cg_facade(cfg, response_id) {
+    : sparse_cg_facade<T>(cfg, response_id) {
     // Deduce path to cubin relative to this header file at runtime
     std::string current_file = __FILE__;
     auto pos = current_file.find_last_of('/');
@@ -418,13 +449,13 @@ public:
   }
 
 protected:
-  std::pair<mem_ptr<float>, solver_result_meta> solve_core(in<int> rp, in<int> ci, in<float> val, in<float> b_in,
-                                                           in_out<float> x_in,
+  std::pair<mem_ptr<T>, solver_result_meta> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
+                                                           in_out<T> x_in,
                                                            matrix_format fmt, int n, int nnz,
-                                                           float tol, int max_iter,
+                                                           T tol, int max_iter,
                                                            int device_num, int stream_id) override {
 
-    command_runner<float> runner;
+    command_runner<T> runner;
     auto res = runner.transfer_memory(device_num, stream_id,
                                       rp, ci, val, b_in, x_in);
 
@@ -436,13 +467,13 @@ protected:
 
     auto d_ptr = platform::create()->schedule(stream_id, device_num);
 
-    command_runner<out<float>> work_runner;
-    auto r     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
-    auto p     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
-    auto w     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
-    auto z     = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
-    auto D_inv = work_runner.transfer_memory(device_num, stream_id, out<float>(n));
-    auto y_tmp = work_runner.transfer_memory(device_num, stream_id, create_out_arg_with_size<float>(1));
+    command_runner<out<T>> work_runner;
+    auto r     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto p     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto w     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto z     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto D_inv = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto y_tmp = work_runner.transfer_memory(device_num, stream_id, create_out_arg_with_size<T>(1));
 
     mem_ptr<char> spmv_workspace;
     size_t ws_size = 0;
@@ -464,26 +495,35 @@ protected:
                                   out<char>(static_cast<int>(ws_size)));
     }
 
-    auto execute_spmv = [&](mem_ptr<float> input_v, mem_ptr<float> output_v) {
+    auto execute_spmv = [&](mem_ptr<T> input_v, mem_ptr<T> output_v) {
       switch (fmt) {
         case matrix_format::csr:
-          d_ptr->spmv_csr(stream_id, n, n, nnz, 1.0f,
+          d_ptr->spmv_csr(stream_id, n, n, nnz, T{1},
                           A_row_ptr, A_col_ind, A_values,
-                          input_v, 0.0f, output_v, spmv_workspace);
+                          input_v, T{0}, output_v, spmv_workspace);
           break;
         case matrix_format::csc:
-          d_ptr->spmv_csc(stream_id, n, n, nnz, 1.0f,
+          d_ptr->spmv_csc(stream_id, n, n, nnz, T{1},
                           A_row_ptr, A_col_ind, A_values,
-                          input_v, 0.0f, output_v, spmv_workspace);
+                          input_v, T{0}, output_v, spmv_workspace);
           break;
         case matrix_format::coo:
-          d_ptr->spmv_coo(stream_id, n, n, nnz, 1.0f,
+          d_ptr->spmv_coo(stream_id, n, n, nnz, T{1},
                           A_row_ptr, A_col_ind, A_values,
-                          input_v, 0.0f, output_v, spmv_workspace);
+                          input_v, T{0}, output_v, spmv_workspace);
           break;
         default:
           break;
       }
+    };
+    auto execute_copy = [&](mem_ptr<T> src, mem_ptr<T> dst) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->dcopy(stream_id, n, src, dst); else d_ptr->scopy(stream_id, n, src, dst);
+    };
+    auto execute_axpy = [&](T alpha, mem_ptr<T> xv, mem_ptr<T> yv) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->daxpy(stream_id, n, alpha, xv, yv); else d_ptr->saxpy(stream_id, n, static_cast<float>(alpha), xv, yv);
+    };
+    auto execute_dot = [&](mem_ptr<T> xv, mem_ptr<T> yv, mem_ptr<T> rv) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->ddot(stream_id, n, xv, yv, rv); else d_ptr->sdot(stream_id, n, xv, yv, rv);
     };
 
     // 0. Preconditioning setup: Extract diagonal inverse using custom kernel
@@ -497,47 +537,48 @@ protected:
 
     // 1. Initial Residual: r = b - Ax
     execute_spmv(x, w);
-    d_ptr->scopy(stream_id, n, b, r);
-    d_ptr->saxpy(stream_id, n, -1.0f, w, r);
+    execute_copy(b, r);
+    execute_axpy(T{-1}, w, r);
     
     // 2. Initial Preconditioned Residual: z = D_inv * r
-    d_ptr->s_elementwise_multiply(stream_id, n, D_inv, r, z);
+    if constexpr (std::is_same_v<T, double>) d_ptr->d_elementwise_multiply(stream_id, n, D_inv, r, z); else d_ptr->s_elementwise_multiply(stream_id, n, D_inv, r, z);
     
     // 3. Initial rho = r * z
-    d_ptr->sdot(stream_id, n, r, z, y_tmp);
+    execute_dot(r, z, y_tmp);
 
-    float rho_val = runner.copy_to_host(y_tmp)[0];
-    float old_rho_val = 0.0f;
+    T rho_val = runner.copy_to_host(y_tmp)[0];
+    T old_rho_val = T{0};
     int iterations = 0;
+    T threshold = tol * tol;
 
-    while (rho_val > (tol * tol) && iterations < max_iter) {
+    while (rho_val > threshold && iterations < max_iter) {
       iterations++;
 
       if (iterations > 1) {
-        float beta_val = rho_val / old_rho_val;
+        T beta_val = rho_val / old_rho_val;
         // p = z + beta * p
-        d_ptr->scopy(stream_id, n, z, w);
-        d_ptr->saxpy(stream_id, n, beta_val, p, w);
-        d_ptr->scopy(stream_id, n, w, p);
+        execute_copy(z, w);
+        execute_axpy(beta_val, p, w);
+        execute_copy(w, p);
       } else {
         // p = z
-        d_ptr->scopy(stream_id, n, z, p);
+        execute_copy(z, p);
       }
 
       execute_spmv(p, w);
-      d_ptr->sdot(stream_id, n, p, w, y_tmp);
-      float alpha_val = rho_val / runner.copy_to_host(y_tmp)[0];
+      execute_dot(p, w, y_tmp);
+      T alpha_val = rho_val / runner.copy_to_host(y_tmp)[0];
 
-      d_ptr->saxpy(stream_id, n, alpha_val, p, x);
-      d_ptr->saxpy(stream_id, n, -alpha_val, w, r);
+      execute_axpy(alpha_val, p, x);
+      execute_axpy(-alpha_val, w, r);
 
       old_rho_val = rho_val;
-      d_ptr->s_elementwise_multiply(stream_id, n, D_inv, r, z); // z_new = D_inv * r
-      d_ptr->sdot(stream_id, n, r, z, y_tmp); // rho_new = r * z_new
+      if constexpr (std::is_same_v<T, double>) d_ptr->d_elementwise_multiply(stream_id, n, D_inv, r, z); else d_ptr->s_elementwise_multiply(stream_id, n, D_inv, r, z);
+      execute_dot(r, z, y_tmp); // rho_new = r * z_new
       rho_val = runner.copy_to_host(y_tmp)[0];
     }
 
-    return {x, solver_result_meta(device_num, stream_id, iterations, rho_val <= (tol * tol))};
+    return {x, solver_result_meta(device_num, stream_id, iterations, rho_val <= threshold)};
   }
 
 private:

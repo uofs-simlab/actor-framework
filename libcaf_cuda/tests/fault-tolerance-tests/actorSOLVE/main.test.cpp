@@ -69,8 +69,8 @@ std::vector<T> compute_rhs(const LocalCSR<T>& A, const std::vector<T>& x) {
     return b;
 }
 
-bool is_valid(const std::vector<float>& x) {
-    for (float val : x) {
+bool is_valid(const std::vector<double>& x) {
+    for (double val : x) {
         if (std::isnan(val) || std::isinf(val)) return false;
     }
     return true;
@@ -78,26 +78,38 @@ bool is_valid(const std::vector<float>& x) {
 
 // --- Robust Solver Actor (Facade Orchestrator) ---
 
+enum class solver_strategy { cgs, bicgstab, gmres };
+
 struct robust_solver_state {
-    LocalCSR<float> A;
-    std::vector<float> b;
-    float tol;
+    LocalCSR<double> A;
+    std::vector<double> b;
+    double tol;
     int max_iter;
-    const char* method = "CGS";
+    solver_strategy current_strategy = solver_strategy::cgs;
+    caf::actor requester;
 };
 
 behavior robust_solver(stateful_actor<robust_solver_state>* self, 
-                       LocalCSR<float> A, std::vector<float> b, float tol, int max_iter) {
+                       LocalCSR<double> A, std::vector<double> b, double tol, int max_iter) {
     self->state().A = std::move(A);
     self->state().b = std::move(b);
     self->state().tol = tol;
     self->state().max_iter = max_iter;
 
+    auto get_method_name = [](solver_strategy s) {
+        switch (s) {
+            case solver_strategy::cgs:      return "CGS";
+            case solver_strategy::bicgstab: return "BiCGSTAB";
+            case solver_strategy::gmres:    return "GMRES";
+            default:                        return "Unknown";
+        }
+    };
+
     auto start_cgs = [=] {
         auto& s = self->state();
-        s.method = "CGS";
-        auto facade = self->spawn<sparse_cg_facade>(100);
-        std::vector<float> x(s.A.rows, 0.0f);
+        s.current_strategy = solver_strategy::cgs;
+        auto facade = self->spawn<sparse_cg_facade<double>>(100);
+        std::vector<double> x(s.A.rows, 0.0);
         self->mail(create_in_arg(s.A.row_ptr), create_in_arg(s.A.col_ind), create_in_arg(s.A.values),
                    create_in_arg(s.b), create_in_out_arg(x),
                    matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 0, 0).send(facade);
@@ -105,9 +117,9 @@ behavior robust_solver(stateful_actor<robust_solver_state>* self,
 
     auto start_bicgstab = [=] {
         auto& s = self->state();
-        s.method = "BiCGSTAB";
-        auto facade = self->spawn<sparse_bicgstab_facade<float>>(100);
-        std::vector<float> x(s.A.rows, 0.0f);
+        s.current_strategy = solver_strategy::bicgstab;
+        auto facade = self->spawn<sparse_bicgstab_facade<double>>(100);
+        std::vector<double> x(s.A.rows, 0.0);
         self->mail(create_in_arg(s.A.row_ptr), create_in_arg(s.A.col_ind), create_in_arg(s.A.values),
                    create_in_arg(s.b), create_in_out_arg(x),
                    matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 0, 0).send(facade);
@@ -115,9 +127,9 @@ behavior robust_solver(stateful_actor<robust_solver_state>* self,
 
     auto start_gmres = [=] {
         auto& s = self->state();
-        s.method = "GMRES";
-        auto facade = self->spawn<sparse_gmres_facade<float>>(100);
-        std::vector<float> x(s.A.rows, 0.0f);
+        s.current_strategy = solver_strategy::gmres;
+        auto facade = self->spawn<sparse_gmres_facade<double>>(100);
+        std::vector<double> x(s.A.rows, 0.0);
         self->mail(create_in_arg(s.A.row_ptr), create_in_arg(s.A.col_ind), create_in_arg(s.A.values),
                    create_in_arg(s.b), create_in_out_arg(x),
                    matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 30, 0, 0).send(facade);
@@ -125,23 +137,43 @@ behavior robust_solver(stateful_actor<robust_solver_state>* self,
 
     return {
         [=](start_atom) {
+            self->state().requester = actor_cast<caf::actor>(self->current_sender());
             std::cout << "[INFO] Attempting solve with CGS..." << std::endl;
             start_cgs();
         },
-        [=](uint32_t /*id*/, int /*idx*/, const std::vector<float>& result, solver_result_meta meta) {
+        [=](uint32_t /*id*/, int /*idx*/, const std::vector<double>& result, solver_result_meta meta) {
             auto& s = self->state();
+            const char* method_name = get_method_name(s.current_strategy);
             if (meta.converged && is_valid(result)) {
-                std::cout << "[SUCCESS] " << s.method << " converged. Matrix good." << std::endl;
+                std::cout << "[SUCCESS] " << method_name << " converged. Matrix good." << std::endl;
+                if (s.requester)
+                    self->mail(true).send(s.requester);
                 self->quit();
             } else {
-                std::cout << "[WARNING] " << s.method << " failed or produced NaN. Retrying..." << std::endl;
-                if (std::string(s.method) == "CGS") {
-                    start_bicgstab();
-                } else if (std::string(s.method) == "BiCGSTAB") {
-                    start_gmres();
-                } else {
-                    std::cout << "[ERROR] All facade solvers failed." << std::endl;
-                    self->quit();
+                std::cout << "[WARNING] " << method_name;
+                if (!meta.converged) {
+                    std::cout << " failed to converge.";
+                }
+                if (!is_valid(result)) {
+                    if (!meta.converged) {
+                        std::cout << " and";
+                    }
+                    std::cout << " produced NaN/Inf values.";
+                }
+                std::cout << " Retrying..." << std::endl;
+                switch (s.current_strategy) {
+                    case solver_strategy::cgs:
+                        start_bicgstab();
+                        break;
+                    case solver_strategy::bicgstab:
+                        start_gmres();
+                        break;
+                    default:
+                        std::cout << "[ERROR] All facade solvers failed." << std::endl;
+                        if (s.requester)
+                            self->mail(std::string("All facade solvers failed")).send(s.requester);
+                        self->quit();
+                        break;
                 }
             }
         }
@@ -152,19 +184,20 @@ void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true)); 
     scoped_actor self{sys};
 
-    std::string path = "/scratch/nqr159/matrix-collection/matrices/unsymmetric/lnsp3937.bin";
+    std::string path = "/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/unsymmetric/sherman5.bin";
     std::cout << "[INFO] Loading real-world matrix: " << path << std::endl;
 
     try {
-        LocalCSR<float> A = load_binary_matrix<float>(path);
-        std::vector<float> x_target(A.rows, 1.0f);
-        std::vector<float> b = compute_rhs(A, x_target);
+        LocalCSR<double> A = load_binary_matrix<double>(path);
+        std::vector<double> x_target(A.rows, 1.0);
+        std::vector<double> b = compute_rhs(A, x_target);
 
-        auto robust = sys.spawn(robust_solver, std::move(A), std::move(b), 1e-5f, 5000);
+        auto robust = sys.spawn(robust_solver, std::move(A), std::move(b), 1e-10, 5000);
         self->mail(start_atom_v).send(robust);
         
         self->receive(
-            [] { std::cout << "[INFO] Robust solver test complete." << std::endl; }
+            [](bool) { std::cout << "[INFO] Robust solver converged successfully." << std::endl; },
+            [](std::string err) { std::cout << "[INFO] Robust solver aborted: " << err << std::endl; }
         );
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] " << e.what() << std::endl;

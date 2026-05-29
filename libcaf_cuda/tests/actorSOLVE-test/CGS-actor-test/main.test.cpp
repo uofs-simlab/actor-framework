@@ -21,8 +21,9 @@
 using namespace caf;
 using namespace caf::cuda;
 
-void verify_solution(const std::string& test_name, const std::vector<float>& actual, 
-                     const std::vector<float>& expected, float tol = 1e-3) {
+template <class T = float>
+void verify_solution(const std::string& test_name, const std::vector<T>& actual, 
+                     const std::vector<T>& expected, T tol = static_cast<T>(1e-3)) {
     if (actual.size() != expected.size()) {
         std::cout << "[ERROR] " << test_name << " failed: Size mismatch (got " 
                   << actual.size() << ", expected " << expected.size() << ")" << std::endl;
@@ -30,7 +31,7 @@ void verify_solution(const std::string& test_name, const std::vector<float>& act
     }
     bool all_correct = true;
     for (size_t i = 0; i < actual.size(); ++i) {
-        if (std::abs(actual[i] - expected[i]) > tol) {
+        if (std::isnan(actual[i]) || std::isinf(actual[i]) || std::abs(actual[i] - expected[i]) > tol) {
             all_correct = false;
             std::cout << "[ERROR] " << test_name << " mismatch at index " << i 
                       << ": Expected " << expected[i] 
@@ -65,7 +66,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto solver = sys.spawn<sparse_cg_actor>(
+        auto solver = sys.spawn<sparse_cg_actor<float>>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(h_b), create_in_out_arg(h_x),
             matrix_format::csr, n, nnz, tolerance, max_iter, 0, 0, actor_cast<actor>(self));
@@ -87,7 +88,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto solver = sys.spawn<sparse_cg_actor>(
+        auto solver = sys.spawn<sparse_cg_actor<float>>(
             create_in_arg(col_ptr), create_in_arg(row_ind), create_in_arg(values),
             create_in_arg(h_b), create_in_out_arg(h_x),
             matrix_format::csc, n, nnz, tolerance, max_iter, 0, 1, actor_cast<actor>(self));
@@ -120,7 +121,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> x_large(N_large, 0.0f);
         
         auto start = std::chrono::high_resolution_clock::now();
-        auto stress_solver = sys.spawn<sparse_cg_actor>(
+        auto stress_solver = sys.spawn<sparse_cg_actor<float>>(
             create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
             create_in_arg(b_large), create_in_out_arg(x_large),
             matrix_format::csr, N_large, (int)values.size(), 1e-4f, 20000, 0, 2, actor_cast<actor>(self));
@@ -147,7 +148,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto facade = sys.spawn<sparse_cg_facade>(100);
+        auto facade = sys.spawn<sparse_cg_facade<float>>(100);
 
         self->mail(std::vector<output_mapping>{},
                    create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
@@ -170,7 +171,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         output_mapping m{4, custom_x.data(), (size_t)n};
         
-        auto facade = sys.spawn<sparse_cg_facade>(100);
+        auto facade = sys.spawn<sparse_cg_facade<float>>(100);
         self->mail(std::vector<output_mapping>{m},
                    create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
                    create_in_arg(h_b), create_in_out_arg(custom_x),
@@ -192,7 +193,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto facade = sys.spawn<sparse_cg_facade>(100);
+        auto facade = sys.spawn<sparse_cg_facade<float>>(100);
 
         self->mail(return_mem_ptr_atom_v,
                    create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
@@ -215,7 +216,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto facade = sys.spawn<sparse_cg_facade>(100);
+        auto facade = sys.spawn<sparse_cg_facade<float>>(100);
 
         self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
                    create_in_arg(h_b), create_in_out_arg(h_x),
@@ -236,7 +237,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto facade = sys.spawn<sparse_cg_facade>(100);
+        auto facade = sys.spawn<sparse_cg_facade<float>>(100);
 
         self->mail(std::vector<output_mapping>{},
                    create_in_arg(col_ptr), create_in_arg(row_ind), create_in_arg(values),
@@ -258,7 +259,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+        auto facade = sys.spawn<sparse_cg_jacobi_facade<float>>(200);
 
         self->mail(std::vector<output_mapping>{},
                    create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
@@ -281,7 +282,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         output_mapping m{4, custom_x.data(), (size_t)n};
         
-        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+        auto facade = sys.spawn<sparse_cg_jacobi_facade<float>>(200);
         self->mail(std::vector<output_mapping>{m},
                    create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
                    create_in_arg(h_b), create_in_out_arg(custom_x),
@@ -303,7 +304,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+        auto facade = sys.spawn<sparse_cg_jacobi_facade<float>>(200);
 
         self->mail(return_mem_ptr_atom_v,
                    create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
@@ -326,7 +327,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+        auto facade = sys.spawn<sparse_cg_jacobi_facade<float>>(200);
 
         self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
                    create_in_arg(h_b), create_in_out_arg(h_x),
@@ -347,7 +348,7 @@ void caf_main(actor_system& sys) {
         std::vector<float> values = {4.0f, 3.0f, 2.0f};
         std::vector<float> h_x(n, 0.0f);
 
-        auto facade = sys.spawn<sparse_cg_jacobi_facade>(200);
+        auto facade = sys.spawn<sparse_cg_jacobi_facade<float>>(200);
 
         self->mail(std::vector<output_mapping>{},
                    create_in_arg(col_ptr), create_in_arg(row_ind), create_in_arg(values),
@@ -357,6 +358,115 @@ void caf_main(actor_system& sys) {
         self->receive(
             [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x, solver_result_meta meta) {
                 verify_solution("Jacobi Facade CSC Simple", result_x, expected);
+            }
+        );
+    }
+
+    // Test 14: Double Precision CSR Simple
+    {
+        std::cout << "\n[INFO] Test 14: Double precision CSR format..." << std::endl;
+        int n_d = 3, nnz_d = 3;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<double> values = {4.0, 3.0, 2.0};
+        std::vector<double> h_b_d = {8.0, 9.0, 2.0};
+        std::vector<double> expected_d = {2.0, 3.0, 1.0};
+        std::vector<double> h_x(n_d, 0.0);
+
+        auto solver = sys.spawn<sparse_cg_actor<double>>(
+            create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+            create_in_arg(h_b_d), create_in_out_arg(h_x),
+            matrix_format::csr, n_d, nnz_d, 1e-10, 100, 0, 13, actor_cast<actor>(self));
+
+        self->mail(start_atom_v).send(solver);
+        self->receive(
+            [&](std::vector<double> result_x, solver_result_meta meta) {
+                std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << std::boolalpha << meta.converged << std::endl;
+                verify_solution<double>("Double CSR Simple", result_x, expected_d, 1e-8);
+            }
+        );
+    }
+
+    // Test 15: Double Precision Facade CSR
+    {
+        std::cout << "\n[INFO] Test 15: Double precision facade CSR..." << std::endl;
+        int n_d = 3, nnz_d = 3;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<double> values = {4.0, 3.0, 2.0};
+        std::vector<double> h_b_d = {8.0, 9.0, 2.0};
+        std::vector<double> expected_d = {2.0, 3.0, 1.0};
+        std::vector<double> h_x(n_d, 0.0);
+
+        auto facade = sys.spawn<sparse_cg_facade<double>>(100);
+
+        self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b_d), create_in_out_arg(h_x),
+                   matrix_format::csr, n_d, nnz_d, 1e-10, 100, 0, 14).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<double>& result_x, solver_result_meta meta) {
+                verify_solution<double>("Double Facade CSR", result_x, expected_d, 1e-8);
+            }
+        );
+    }
+
+    // Test 16: Double Precision Jacobi Facade CSR
+    {
+        std::cout << "\n[INFO] Test 16: Double precision Jacobi facade CSR..." << std::endl;
+        int n_d = 3, nnz_d = 3;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<double> values = {4.0, 3.0, 2.0};
+        std::vector<double> h_b_d = {8.0, 9.0, 2.0};
+        std::vector<double> expected_d = {2.0, 3.0, 1.0};
+        std::vector<double> h_x(n_d, 0.0);
+
+        auto facade = sys.spawn<sparse_cg_jacobi_facade<double>>(200);
+
+        self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b_d), create_in_out_arg(h_x),
+                   matrix_format::csr, n_d, nnz_d, 1e-10, 100, 0, 15).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<double>& result_x, solver_result_meta meta) {
+                verify_solution<double>("Double Jacobi Facade CSR", result_x, expected_d, 1e-8);
+            }
+        );
+    }
+
+    // Test 17: Double Precision Stress Test (N=5000)
+    {
+        int N_st = 5000;
+        std::cout << "\n[INFO] Test 17: Double precision Stress Test (N=" << N_st << ")..." << std::endl;
+        
+        std::vector<int> row_ptr;
+        std::vector<int> col_ind;
+        std::vector<double> values;
+        row_ptr.push_back(0);
+        for(int i=0; i<N_st; ++i) {
+            if(i > 0) { col_ind.push_back(i-1); values.push_back(-1.0); }
+            col_ind.push_back(i); values.push_back(2.0);
+            if(i < N_st-1) { col_ind.push_back(i+1); values.push_back(-1.0); }
+            row_ptr.push_back(col_ind.size());
+        }
+
+        std::vector<double> b_large(N_st, 1.0);
+        std::vector<double> x_large(N_st, 0.0);
+        
+        auto start = std::chrono::high_resolution_clock::now();
+        auto stress_solver = sys.spawn<sparse_cg_actor<double>>(
+            create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+            create_in_arg(b_large), create_in_out_arg(x_large),
+            matrix_format::csr, N_st, (int)values.size(), 1e-12, 10000, 0, 16, actor_cast<actor>(self));
+
+        self->mail(start_atom_v).send(stress_solver);
+        self->receive(
+            [&](std::vector<double> result, solver_result_meta meta) {
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> elapsed = end - start;
+                std::cout << "[SUCCESS] Double Stress Test completed in " << elapsed.count() << " seconds." << std::endl;
+                std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << std::boolalpha << meta.converged << std::endl;
             }
         );
     }
