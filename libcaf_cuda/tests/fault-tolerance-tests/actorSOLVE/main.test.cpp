@@ -98,6 +98,7 @@ struct robust_solver_state {
     std::vector<double> x;
     double tol;
     int max_iter;
+    std::vector<caf::actor> facades;
     solver_strategy current_strategy = solver_strategy::cgs;
     caf::actor requester;
 };
@@ -109,6 +110,10 @@ behavior robust_solver(stateful_actor<robust_solver_state>* self,
     self->state().tol = tol;
     self->state().x.assign(self->state().A.rows, 0.0);
     self->state().max_iter = max_iter;
+
+    self->state().facades.push_back(self->spawn<sparse_cg_facade<double>>(100));
+    self->state().facades.push_back(self->spawn<sparse_bicgstab_facade<double>>(100));
+    self->state().facades.push_back(self->spawn<sparse_gmres_facade<double>>(100));
 
     auto get_method_name = [](solver_strategy s) {
         switch (s) {
@@ -122,28 +127,25 @@ behavior robust_solver(stateful_actor<robust_solver_state>* self,
     auto start_cgs = [=] {
         auto& s = self->state();
         s.current_strategy = solver_strategy::cgs;
-        auto facade = self->spawn<sparse_cg_facade<double>>(100);
         self->mail(create_in_arg(s.A.row_ptr), create_in_arg(s.A.col_ind), create_in_arg(s.A.values),
                    create_in_arg(s.b), create_in_out_arg(s.x),
-                   matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 0, 0).send(facade);
+                   matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 0, 0).send(s.facades[0]);
     };
 
     auto start_bicgstab = [=] {
         auto& s = self->state();
         s.current_strategy = solver_strategy::bicgstab;
-        auto facade = self->spawn<sparse_bicgstab_facade<double>>(100);
         self->mail(create_in_arg(s.A.row_ptr), create_in_arg(s.A.col_ind), create_in_arg(s.A.values),
                    create_in_arg(s.b), create_in_out_arg(s.x),
-                   matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 0, 0).send(facade);
+                   matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 0, 0).send(s.facades[1]);
     };
 
     auto start_gmres = [=] {
         auto& s = self->state();
         s.current_strategy = solver_strategy::gmres;
-        auto facade = self->spawn<sparse_gmres_facade<double>>(100);
         self->mail(create_in_arg(s.A.row_ptr), create_in_arg(s.A.col_ind), create_in_arg(s.A.values),
                    create_in_arg(s.b), create_in_out_arg(s.x),
-                   matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 30, 0, 0).send(facade);
+                   matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 30, 0, 0).send(s.facades[2]);
     };
 
     return {
