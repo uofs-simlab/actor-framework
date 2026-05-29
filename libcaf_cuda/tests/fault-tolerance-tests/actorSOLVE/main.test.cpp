@@ -54,6 +54,18 @@ LocalCSR<T> load_binary_matrix(const std::string& path) {
         csr.col_ind[dest] = cols_coo[i];
         csr.values[dest] = static_cast<T>(vals_coo[i]);
     }
+
+    std::cout << "rows=" << csr.rows
+              << " cols=" << csr.cols
+              << " nnz=" << csr.nnz
+              << " row_ptr.back()=" << csr.row_ptr.back()
+              << std::endl;
+
+    for (int i = 0; i < csr.nnz; ++i) {
+        if (csr.col_ind[i] < 0 || csr.col_ind[i] >= csr.cols)
+            throw std::runtime_error("bad col index");
+    }
+
     return csr;
 }
 
@@ -83,6 +95,7 @@ enum class solver_strategy { cgs, bicgstab, gmres };
 struct robust_solver_state {
     LocalCSR<double> A;
     std::vector<double> b;
+    std::vector<double> x;
     double tol;
     int max_iter;
     solver_strategy current_strategy = solver_strategy::cgs;
@@ -94,6 +107,7 @@ behavior robust_solver(stateful_actor<robust_solver_state>* self,
     self->state().A = std::move(A);
     self->state().b = std::move(b);
     self->state().tol = tol;
+    self->state().x.assign(self->state().A.rows, 0.0);
     self->state().max_iter = max_iter;
 
     auto get_method_name = [](solver_strategy s) {
@@ -109,9 +123,8 @@ behavior robust_solver(stateful_actor<robust_solver_state>* self,
         auto& s = self->state();
         s.current_strategy = solver_strategy::cgs;
         auto facade = self->spawn<sparse_cg_facade<double>>(100);
-        std::vector<double> x(s.A.rows, 0.0);
         self->mail(create_in_arg(s.A.row_ptr), create_in_arg(s.A.col_ind), create_in_arg(s.A.values),
-                   create_in_arg(s.b), create_in_out_arg(x),
+                   create_in_arg(s.b), create_in_out_arg(s.x),
                    matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 0, 0).send(facade);
     };
 
@@ -119,9 +132,8 @@ behavior robust_solver(stateful_actor<robust_solver_state>* self,
         auto& s = self->state();
         s.current_strategy = solver_strategy::bicgstab;
         auto facade = self->spawn<sparse_bicgstab_facade<double>>(100);
-        std::vector<double> x(s.A.rows, 0.0);
         self->mail(create_in_arg(s.A.row_ptr), create_in_arg(s.A.col_ind), create_in_arg(s.A.values),
-                   create_in_arg(s.b), create_in_out_arg(x),
+                   create_in_arg(s.b), create_in_out_arg(s.x),
                    matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 0, 0).send(facade);
     };
 
@@ -129,9 +141,8 @@ behavior robust_solver(stateful_actor<robust_solver_state>* self,
         auto& s = self->state();
         s.current_strategy = solver_strategy::gmres;
         auto facade = self->spawn<sparse_gmres_facade<double>>(100);
-        std::vector<double> x(s.A.rows, 0.0);
         self->mail(create_in_arg(s.A.row_ptr), create_in_arg(s.A.col_ind), create_in_arg(s.A.values),
-                   create_in_arg(s.b), create_in_out_arg(x),
+                   create_in_arg(s.b), create_in_out_arg(s.x),
                    matrix_format::csr, s.A.rows, s.A.nnz, s.tol, s.max_iter, 30, 0, 0).send(facade);
     };
 
@@ -184,7 +195,7 @@ void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true)); 
     scoped_actor self{sys};
 
-    std::string path = "/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/unsymmetric/sherman5.bin";
+    std::string path = "/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/unsymmetric/jpwh_991.bin";
     std::cout << "[INFO] Loading real-world matrix: " << path << std::endl;
 
     try {
