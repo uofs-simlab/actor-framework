@@ -47,3 +47,15 @@ target_link_libraries(test
     CUDA::cublas
     CUDA::cusparse
 )
+
+add_executable(suitesparse_test suitesparse.test.cpp)
+target_compile_definitions(suitesparse_test PRIVATE CAF_ENABLE_LOGGING)
+target_link_libraries(suitesparse_test
+  PRIVATE
+    "${CAF_BUILD}/libcaf_core/libcaf_core.so"
+    "${CAF_BUILD}/libcaf_io/libcaf_io.so"
+    "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
+    CUDA::nvrtc
+    CUDA::cublas
+    CUDA::cusparse
+)
