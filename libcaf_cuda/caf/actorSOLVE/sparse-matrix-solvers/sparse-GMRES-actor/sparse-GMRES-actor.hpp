@@ -96,33 +96,33 @@ public:
       [this](return_mem_ptr_atom, in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
              matrix_format fmt, int n, int nnz, T tol, int max_iter, int m,
              int device_num, int stream_id) {
-        auto x = solve_core(rp, ci, val, b_in, x_in, fmt, n, nnz, tol, max_iter, m, device_num, stream_id);
+        auto [x, meta] = solve_core(rp, ci, val, b_in, x_in, fmt, n, nnz, tol, max_iter, m, device_num, stream_id);
         if (auto sender = actor_cast<actor>(this->current_sender()))
-          caf::anon_mail(reply_id_, std::move(x)).send(sender);
+          caf::anon_mail(reply_id_, std::move(x), meta).send(sender);
       },
 
       // Mode 2: Return host data via mappings
       [this](std::vector<output_mapping> mappings, in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
              matrix_format fmt, int n, int nnz, T tol, int max_iter, int m,
              int device_num, int stream_id) {
-        auto x = solve_core(rp, ci, val, b_in, x_in, fmt, n, nnz, tol, max_iter, m, device_num, stream_id);
-        dispatch_result(std::move(mappings), std::move(x), n);
+        auto [x, meta] = solve_core(rp, ci, val, b_in, x_in, fmt, n, nnz, tol, max_iter, m, device_num, stream_id);
+        dispatch_result(std::move(mappings), std::move(x), n, meta);
       },
 
       // Mode 3: Default (return vector to sender)
       [this](in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
              matrix_format fmt, int n, int nnz, T tol, int max_iter, int m,
              int device_num, int stream_id) {
-        auto x = solve_core(rp, ci, val, b_in, x_in, fmt, n, nnz, tol, max_iter, m, device_num, stream_id);
-        dispatch_result({}, std::move(x), n);
+        auto [x, meta] = solve_core(rp, ci, val, b_in, x_in, fmt, n, nnz, tol, max_iter, m, device_num, stream_id);
+        dispatch_result({}, std::move(x), n, meta);
       }
     };
   }
 
 protected:
-  virtual mem_ptr<T> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
-                                matrix_format fmt, int n, int nnz, T tol, int max_iter, int m,
-                                int device_num, int stream_id) {
+  virtual std::pair<mem_ptr<T>, solver_result_meta> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
+                                                               matrix_format fmt, int n, int nnz, T tol, int max_iter, int m,
+                                                               int device_num, int stream_id) {
     command_runner<T> runner;
     auto res = runner.transfer_memory(device_num, stream_id, rp, ci, val, b_in, x_in);
     auto A_row_ptr = std::get<0>(res), A_col_ind = std::get<1>(res), A_values = std::get<2>(res);
@@ -183,7 +183,7 @@ protected:
       execute_nrm2(V[0], y_tmp);
       T beta = runner.copy_to_host(y_tmp)[0];
       residual_norm = beta;
-      if (beta < tol) break;
+      if (beta <= tol) break;
 
       // v1 = r / beta
       T inv_beta = T{1} / beta;
@@ -234,7 +234,7 @@ protected:
         g[k] = temp_g;
 
         residual_norm = std::abs(g[k + 1]);
-        if (residual_norm < tol) { k++; break; }
+        if (residual_norm <= tol) { k++; break; }
       }
 
       // Solve Hy = g (Upper Triangular)
@@ -250,10 +250,11 @@ protected:
         execute_axpy(y_vec[i], V[i], x);
       }
     }
-    return x;
+    solver_result_meta meta(device_num, stream_id, total_iters, residual_norm <= tol);
+    return {x, meta};
   }
 
-  void dispatch_result(std::vector<output_mapping> mappings, mem_ptr<T> x, int n) {
+  void dispatch_result(std::vector<output_mapping> mappings, mem_ptr<T> x, int n, solver_result_meta meta) {
     auto sender = actor_cast<actor>(this->current_sender());
     if (!sender) return;
     void* custom_dst = nullptr;
@@ -269,12 +270,12 @@ protected:
     command_runner<T> runner;
     if (custom_dst) {
       runner.copy_to_host_async(x, static_cast<T*>(custom_dst), custom_count > 0 ? custom_count : (size_t)n,
-        [sender, r_id = reply_id_](T*, size_t) {
-          caf::anon_mail(r_id, 4).send(sender);
+        [sender, r_id = reply_id_, meta](T*, size_t) {
+          caf::anon_mail(r_id, 4, meta).send(sender);
         });
     } else {
-      runner.copy_to_host_async(x, [sender, r_id = reply_id_](std::vector<T> data) {
-        caf::anon_mail(r_id, 4, std::move(data)).send(sender);
+      runner.copy_to_host_async(x, [sender, r_id = reply_id_, meta](std::vector<T> data) {
+        caf::anon_mail(r_id, 4, std::move(data), meta).send(sender);
       });
     }
   }

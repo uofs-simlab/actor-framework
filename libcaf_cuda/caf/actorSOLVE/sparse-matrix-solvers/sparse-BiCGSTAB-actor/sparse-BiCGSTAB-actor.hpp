@@ -2,6 +2,7 @@
 
 #include <caf/all.hpp>
 #include <vector>
+#include <utility>
 #include "caf/cuda/all.hpp"
 #include "caf/actorBLAS/dot-actor/dot-actor.hpp"
 #include "caf/actorSPARSE/spmv-actor/spmv-actor.hpp"
@@ -75,10 +76,10 @@ public:
           s.supervisor = actor_cast<caf::actor>(this->current_sender());
         start_solve();
       },
-      [this](gpu_done_atom, std::vector<T>& solution) {
+      [this](gpu_done_atom, std::vector<T>& solution, solver_result_meta meta) {
         auto& s = this->state();
         if (s.supervisor)
-          this->mail(std::move(solution)).send(s.supervisor);
+          this->mail(std::move(solution), meta).send(s.supervisor);
         this->quit();
       }
     };
@@ -206,8 +207,9 @@ private:
     }
 
     auto self = actor_cast<actor>(this);
-    runner.copy_to_host_async(s.x, [self](std::vector<T> solution) {
-      anon_mail(gpu_done_atom_v, std::move(solution)).send(self);
+    solver_result_meta meta(s.device_num, s.stream_id, s.iterations, norm_sq <= (s.tol * s.tol));
+    runner.copy_to_host_async(s.x, [self, meta](std::vector<T> solution) {
+      anon_mail(gpu_done_atom_v, std::move(solution), meta).send(self);
     });
   }
 
@@ -280,12 +282,12 @@ public:
              T tol, int max_iter,
              int device_num, int stream_id) {
 
-        auto x = solve_core(rp, ci, val, b_in, x_in,
-                            fmt, n, nnz, tol, max_iter,
-                            device_num, stream_id);
+        auto [x, meta] = solve_core(rp, ci, val, b_in, x_in,
+                                    fmt, n, nnz, tol, max_iter,
+                                    device_num, stream_id);
 
         if (auto sender = actor_cast<actor>(this->current_sender())) {
-          caf::anon_mail(reply_id_, std::move(x)).send(sender);
+          caf::anon_mail(reply_id_, std::move(x), meta).send(sender);
         }
       },
 
@@ -297,11 +299,11 @@ public:
              T tol, int max_iter,
              int device_num, int stream_id) {
 
-        auto x = solve_core(rp, ci, val, b_in, x_in,
-                            fmt, n, nnz, tol, max_iter,
-                            device_num, stream_id);
+        auto [x, meta] = solve_core(rp, ci, val, b_in, x_in,
+                                    fmt, n, nnz, tol, max_iter,
+                                    device_num, stream_id);
 
-        dispatch_result(std::move(mappings), std::move(x), n);
+        dispatch_result(std::move(mappings), std::move(x), n, meta);
       },
 
       // Mode 3: Default (return vector to sender)
@@ -309,20 +311,20 @@ public:
              matrix_format fmt, int n, int nnz, T tol, int max_iter,
              int device_num, int stream_id) {
 
-        auto x = solve_core(rp, ci, val, b_in, x_in,
-                            fmt, n, nnz, tol, max_iter,
-                            device_num, stream_id);
+        auto [x, meta] = solve_core(rp, ci, val, b_in, x_in,
+                                    fmt, n, nnz, tol, max_iter,
+                                    device_num, stream_id);
 
-        dispatch_result({}, std::move(x), n);
+        dispatch_result({}, std::move(x), n, meta);
       }
     };
   }
 
 protected:
-  virtual mem_ptr<T> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
-                                in_out<T> x_in, matrix_format fmt, int n,
-                                int nnz, T tol, int max_iter,
-                                int device_num, int stream_id) {
+  virtual std::pair<mem_ptr<T>, solver_result_meta> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
+                                                               in_out<T> x_in, matrix_format fmt, int n,
+                                                               int nnz, T tol, int max_iter,
+                                                               int device_num, int stream_id) {
     command_runner<T> runner;
     auto res = runner.transfer_memory(device_num, stream_id,
                                       rp, ci, val, b_in, x_in);
@@ -423,12 +425,13 @@ protected:
       execute_dot(r, r, y_tmp);
       norm_sq = runner.copy_to_host(y_tmp)[0];
     }
-    return x;
+    return {x, solver_result_meta(device_num, stream_id, iterations, norm_sq <= (tol * tol))};
   }
 
   void dispatch_result(std::vector<output_mapping> mappings,
                        mem_ptr<T> x,
-                       int n) {
+                       int n,
+                       solver_result_meta meta) {
 
     auto sender = actor_cast<actor>(this->current_sender());
     if (!sender) return;
@@ -451,15 +454,15 @@ protected:
         x,
         static_cast<T*>(custom_dst),
         custom_count > 0 ? custom_count : (size_t)n,
-        [sender, r_id = reply_id_](T*, size_t) {
-          caf::anon_mail(r_id, 4).send(sender);
+        [sender, r_id = reply_id_, meta](T*, size_t) {
+          caf::anon_mail(r_id, 4, meta).send(sender);
         });
 
     } else {
       runner.copy_to_host_async(
         x,
-        [sender, r_id = reply_id_](std::vector<T> data) {
-          caf::anon_mail(r_id, 4, std::move(data)).send(sender);
+        [sender, r_id = reply_id_, meta](std::vector<T> data) {
+          caf::anon_mail(r_id, 4, std::move(data), meta).send(sender);
         });
     }
   }
@@ -484,11 +487,11 @@ public:
   }
 
 protected:
-  mem_ptr<T> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
-                        in_out<T> x_in,
-                        matrix_format fmt, int n, int nnz,
-                        T tol, int max_iter,
-                        int device_num, int stream_id) override {
+  std::pair<mem_ptr<T>, solver_result_meta> solve_core(in<int> rp, in<int> ci, in<T> val, in<T> b_in,
+                                                       in_out<T> x_in,
+                                                       matrix_format fmt, int n, int nnz,
+                                                       T tol, int max_iter,
+                                                       int device_num, int stream_id) override {
 
     command_runner<T> runner;
     auto res = runner.transfer_memory(device_num, stream_id,
@@ -600,9 +603,10 @@ protected:
       
       // Convergence check: Exit if the solution is reached after the alpha update
       execute_dot(s_vec, s_vec, y_tmp);
-      if (runner.copy_to_host(y_tmp)[0] < (tol * tol)) {
+      T s_norm_sq = runner.copy_to_host(y_tmp)[0];
+      if (s_norm_sq <= (tol * tol)) {
         execute_axpy(alpha_val, p_hat, x);
-        return x;
+        return {x, solver_result_meta(device_num, stream_id, iterations, true)};
       }
 
       // Apply Preconditioner: s_hat = D_inv * s
@@ -624,7 +628,7 @@ protected:
       execute_dot(r, r, y_tmp);
       norm_sq = runner.copy_to_host(y_tmp)[0];
     }
-    return x;
+    return {x, solver_result_meta(device_num, stream_id, iterations, norm_sq <= (tol * tol))};
   }
 private:
   program_ptr diag_prog_;

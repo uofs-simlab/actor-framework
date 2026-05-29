@@ -158,6 +158,16 @@ bool inspect(Inspector& f, buffer_variant& x) {
   return f.apply(x);
 }
 
+// Serialization support for solver_result_meta
+template <class Inspector>
+bool inspect(Inspector& f, caf::cuda::solver_result_meta& x) {
+  return f.object(x).fields(f.field("device_num", x.device_num),
+                            f.field("stream_id", x.stream_id),
+                            f.field("iterations", x.iterations),
+                            f.field("converged", x.converged),
+                            f.field("error_code", x.error_code));
+}
+
 namespace caf::cuda {
 
 // Serialization support for matrix_format
@@ -221,6 +231,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<double>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<char>))  
   CAF_ADD_TYPE_ID(cuda, (caf::cuda::matrix_format))
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::solver_result_meta))
   
   //atoms 
   CAF_ADD_ATOM(cuda, kernel_done_atom)
@@ -250,3 +261,4 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::program_ptr)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(output_mapping)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<output_mapping>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::matrix_format)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::solver_result_meta)

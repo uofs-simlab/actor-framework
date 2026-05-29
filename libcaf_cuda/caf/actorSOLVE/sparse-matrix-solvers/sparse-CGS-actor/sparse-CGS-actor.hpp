@@ -78,9 +78,9 @@ public:
          s.supervisor = actor_cast<caf::actor>(this->current_sender());
        start_solve();
      },
-     [this](gpu_done_atom, std::vector<float>& solution) {
+     [this](gpu_done_atom, std::vector<float>& solution, solver_result_meta meta) {
        if (state().supervisor)
-         this->mail(std::move(solution)).send(state().supervisor);
+         this->mail(std::move(solution), meta).send(state().supervisor);
        this->quit();
      }
    };
@@ -173,8 +173,9 @@ private:
 
    // Exit the loop and return the result via the standard async path
    auto self = actor_cast<actor>(this);
-   runner.copy_to_host_async(s.x, [self](std::vector<float> solution) {
-     anon_mail(gpu_done_atom_v, std::move(solution)).send(self);
+   solver_result_meta meta(s.device_num, s.stream_id, s.iterations, s.rho_val <= (s.tol * s.tol));
+   runner.copy_to_host_async(s.x, [self, meta](std::vector<float> solution) {
+     anon_mail(gpu_done_atom_v, std::move(solution), meta).send(self);
    });
  }
 
@@ -209,12 +210,12 @@ public:
              float tol, int max_iter,
              int device_num, int stream_id) {
 
-        auto x = solve_core(rp, ci, val, b_in, x_in,
-                            fmt, n, nnz, tol, max_iter,
-                            device_num, stream_id);
+        auto [x, meta] = solve_core(rp, ci, val, b_in, x_in,
+                                    fmt, n, nnz, tol, max_iter,
+                                    device_num, stream_id);
 
         if (auto sender = actor_cast<actor>(this->current_sender())) {
-          caf::anon_mail(reply_id_, std::move(x)).send(sender);
+          caf::anon_mail(reply_id_, std::move(x), meta).send(sender);
         }
       },
 
@@ -226,11 +227,11 @@ public:
              float tol, int max_iter,
              int device_num, int stream_id) {
 
-        auto x = solve_core(rp, ci, val, b_in, x_in,
-                            fmt, n, nnz, tol, max_iter,
-                            device_num, stream_id);
+        auto [x, meta] = solve_core(rp, ci, val, b_in, x_in,
+                                    fmt, n, nnz, tol, max_iter,
+                                    device_num, stream_id);
 
-        dispatch_result(std::move(mappings), std::move(x), n);
+        dispatch_result(std::move(mappings), std::move(x), n, meta);
       },
 
       // Mode 3: Default (return vector to sender)
@@ -240,21 +241,21 @@ public:
              float tol, int max_iter,
              int device_num, int stream_id) {
 
-        auto x = solve_core(rp, ci, val, b_in, x_in,
-                            fmt, n, nnz, tol, max_iter,
-                            device_num, stream_id);
+        auto [x, meta] = solve_core(rp, ci, val, b_in, x_in,
+                                    fmt, n, nnz, tol, max_iter,
+                                    device_num, stream_id);
 
-        dispatch_result({}, std::move(x), n);
+        dispatch_result({}, std::move(x), n, meta);
       }
     };
   }
 
 protected:
-  virtual mem_ptr<float> solve_core(in<int> rp, in<int> ci, in<float> val, in<float> b_in,
-                                    in_out<float> x_in,
-                                    matrix_format fmt, int n, int nnz,
-                                    float tol, int max_iter,
-                                    int device_num, int stream_id) {
+  virtual std::pair<mem_ptr<float>, solver_result_meta> solve_core(in<int> rp, in<int> ci, in<float> val, in<float> b_in,
+                                                                   in_out<float> x_in,
+                                                                   matrix_format fmt, int n, int nnz,
+                                                                   float tol, int max_iter,
+                                                                   int device_num, int stream_id) {
 
     command_runner<float> runner;
 
@@ -355,12 +356,13 @@ protected:
       rho_val = runner.copy_to_host(y_tmp)[0];
     }
 
-    return x;
+    return {x, solver_result_meta(device_num, stream_id, iterations, rho_val <= (tol * tol))};
   }
 
   void dispatch_result(std::vector<output_mapping> mappings,
                        mem_ptr<float> x,
-                       int n) {
+                       int n,
+                       solver_result_meta meta) {
 
     auto sender = actor_cast<actor>(this->current_sender());
     if (!sender) return;
@@ -383,15 +385,15 @@ protected:
         x,
         static_cast<float*>(custom_dst),
         custom_count > 0 ? custom_count : (size_t)n,
-        [sender, r_id = reply_id_](float*, size_t) {
-          caf::anon_mail(r_id, 4).send(sender);
+        [sender, r_id = reply_id_, meta](float*, size_t) {
+          caf::anon_mail(r_id, 4, meta).send(sender);
         });
 
     } else {
       runner.copy_to_host_async(
         x,
-        [sender, r_id = reply_id_](std::vector<float> data) {
-          caf::anon_mail(r_id, 4, std::move(data)).send(sender);
+        [sender, r_id = reply_id_, meta](std::vector<float> data) {
+          caf::anon_mail(r_id, 4, std::move(data), meta).send(sender);
         });
     }
   }
@@ -416,11 +418,11 @@ public:
   }
 
 protected:
-  mem_ptr<float> solve_core(in<int> rp, in<int> ci, in<float> val, in<float> b_in,
-                            in_out<float> x_in,
-                            matrix_format fmt, int n, int nnz,
-                            float tol, int max_iter,
-                            int device_num, int stream_id) override {
+  std::pair<mem_ptr<float>, solver_result_meta> solve_core(in<int> rp, in<int> ci, in<float> val, in<float> b_in,
+                                                           in_out<float> x_in,
+                                                           matrix_format fmt, int n, int nnz,
+                                                           float tol, int max_iter,
+                                                           int device_num, int stream_id) override {
 
     command_runner<float> runner;
     auto res = runner.transfer_memory(device_num, stream_id,
@@ -535,7 +537,7 @@ protected:
       rho_val = runner.copy_to_host(y_tmp)[0];
     }
 
-    return x;
+    return {x, solver_result_meta(device_num, stream_id, iterations, rho_val <= (tol * tol))};
   }
 
 private:

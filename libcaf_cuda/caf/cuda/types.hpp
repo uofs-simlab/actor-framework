@@ -59,6 +59,18 @@ enum class matrix_format {
   coo
 };
 
+struct solver_result_meta {
+  int device_num;
+  int stream_id;
+  int iterations;
+  bool converged;
+  int error_code;
+
+  solver_result_meta() : device_num(-1), stream_id(-1), iterations(0), converged(false), error_code(0) {}
+  solver_result_meta(int dev, int stream, int iters, bool conv, int err = 0)
+    : device_num(dev), stream_id(stream), iterations(iters), converged(conv), error_code(err) {}
+};
+
 } // namespace caf::cuda
 
 // Structure for mapping kernel output indices to specific host memory buffers
