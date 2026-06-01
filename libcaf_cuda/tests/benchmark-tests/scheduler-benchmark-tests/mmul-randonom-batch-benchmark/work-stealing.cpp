@@ -53,14 +53,14 @@ CAF_BEGIN_TYPE_ID_BLOCK(mmul_benchmark, caf::id_block::cuda::end)
     CAF_ADD_ATOM(mmul_benchmark, get_work_atom)
     CAF_ADD_ATOM(mmul_benchmark, task_done_atom)
     CAF_ADD_ATOM(mmul_benchmark, release_memory_atom)
-    CAF_ADD_ATOM(mmul_benchmark, request_work_atom)
-    CAF_ADD_ATOM(mmul_benchmark, worker_done_atom)
+   CAF_ADD_ATOM(mmul_benchmark, request_work_atom) // Renamed to avoid conflict with caf::request_work_atom
+    CAF_ADD_ATOM(mmul_benchmark, worker_done_atom) // Renamed to avoid conflict with caf::worker_done_atom
     CAF_ADD_TYPE_ID(mmul_benchmark, (TaskType))
     CAF_ADD_TYPE_ID(mmul_benchmark, (Task))
     CAF_ADD_TYPE_ID(mmul_benchmark, (std::vector<Task>))
     CAF_ADD_ATOM(mmul_benchmark, refill_buffer_atom)
     CAF_ADD_ATOM(mmul_benchmark, produce_atom)
-    CAF_ADD_ATOM(mmul_benchmark, tick_atom)
+    CAF_ADD_ATOM(mmul_benchmark, producer_tick_atom) // Renamed to avoid conflict with caf::tick_atom
     CAF_ADD_ATOM(mmul_benchmark, production_finished_atom)
 CAF_END_TYPE_ID_BLOCK(mmul_benchmark)
 
@@ -113,8 +113,8 @@ MatrixPool create_matrix_pool_random(
 struct task_pool_state {
     std::deque<Task> tasks;
     size_t next_task_idx = 0;
-    bool production_finished = false;
-    std::vector<std::pair<size_t, response_promise>> pending;
+    bool production_finished = false; // Changed response_promise to typed_response_promise<std::vector<Task>>
+    std::vector<std::pair<size_t, typed_response_promise<std::vector<Task>>>> pending;
 };
 
 caf::behavior global_task_pool(caf::stateful_actor<task_pool_state>* self) {
@@ -292,10 +292,10 @@ caf::behavior task_producer(caf::stateful_actor<producer_state>* self,
     self->state().Ns = std::move(Ns);
     self->state().batches_remaining = num_batches;
 
-    self->mail(tick_atom_v).send(self);
+    self->mail(producer_tick_atom_v).send(self); // Updated atom name
 
     return {
-        [=](tick_atom) {
+        [=](producer_tick_atom) { // Updated atom name
             auto& st = self->state();
             if (st.batches_remaining-- <= 0) {
                 self->mail(production_finished_atom_v).send(st.pool);
@@ -318,7 +318,7 @@ caf::behavior task_producer(caf::stateful_actor<producer_state>* self,
 
             self->mail(produce_atom_v, count).send(st.supervisor);
             
-            self->delayed_mail(tick_atom_v).delay(std::chrono::milliseconds(dist_sleep(rng))).send(self);
+            self->mail(producer_tick_atom_v).delay(std::chrono::milliseconds(dist_sleep(rng))).send(self); // Updated atom name
             // Send work to the pool actor
             self->mail(batch).send(st.pool);
         }
