@@ -10,44 +10,30 @@
 #include <numeric>
 #include <random>
 #include "caf/actor_registry.hpp"
-#include <random>
+#include <deque>
+#include <unordered_map>
 #include <unordered_set>
 //#include <caf/atoms.hpp>
-
-
 
 using namespace caf;
 using namespace std::chrono_literals;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Atoms
+// ─────────────────────────────────────────────────────────────────────────────
+CAF_BEGIN_TYPE_ID_BLOCK(mmul_benchmark, caf::id_block::cuda::end)
+    CAF_ADD_ATOM(mmul_benchmark, get_work_atom)
+    CAF_ADD_ATOM(mmul_benchmark, task_done_atom)
+    CAF_ADD_ATOM(mmul_benchmark, release_memory_atom)
+    CAF_ADD_ATOM(mmul_benchmark, request_work_atom)
+    CAF_ADD_ATOM(mmul_benchmark, worker_done_atom)
+    CAF_ADD_ATOM(mmul_benchmark, refill_buffer_atom)
+CAF_END_TYPE_ID_BLOCK(mmul_benchmark)
 
-void serial_matrix_multiply(const std::vector<int>& a,
-                            const std::vector<int>& b,
-                            std::vector<int>& c,
-                            int N) {
-  
-
- for (int i = 0; i < N; ++i) {
-    for (int j = 0; j < N; ++j) {
-      int sum = 0;
-      for (int k = 0; k < N; ++k) {
-        sum += a[i * N + k] * b[k * N + j];
-      }
-      c[i * N + j] = sum;
-    }
-  }
-}
-
-using command =
-  caf::cuda::command_runner<>;
-
-command mmul_command;
-caf::cuda::command_runner<caf::cuda::mem_ptr<int>, caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int>,caf::cuda::mem_ptr<int >> mmul;
-using async_command = caf::cuda::mmul_async_command<int>;
-async_command async_mmul;
-
-
-
-
+// Command runners for GPU operations
+caf::cuda::command_runner<> mmul_command;
+using mmul_kernel_t = caf::cuda::command_runner<caf::cuda::mem_ptr<int>, caf::cuda::mem_ptr<int>, out<int>, in<int>>;
+mmul_kernel_t mmul_kernel;
 
 struct MatrixPool {
     std::unordered_map<int, std::vector<int>> A;
@@ -80,553 +66,281 @@ MatrixPool create_matrix_pool_random(
     return pool;
 }
 
-
-
-
-
-
-struct mmul_state {
-
-	caf::cuda::program_ptr mmul_kernel;
-
+// ---------------------------- GLOBAL TASK POOL ----------------------------
+// The central source of truth for work. Implements a pull-based model.
+struct task_pool_state {
+    std::vector<int> tasks;
+    size_t next_task_idx = 0;
 };
 
-
-
-caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_state>* self,
-		caf::actor exit_actor,
-		caf::cuda::program_ptr program,
-		caf::cuda::nd_range dims,
-		int stream,
-		int N,
-		const in<int> matrixA,
-		const in<int> matrixB
-		) {
-
-
-	int device = stream % caf::cuda::manager::get().get_num_devices();
-	self->mail(N).send(self);
-
-	return {
-
-		[=](int N) {
-
-			auto total_start = std::chrono::steady_clock::now();
-
-
-//			std::cout << "device=" << device <<  "\n";
-//			std::cout << "N=" << N <<  "\n";
-			// ---------------- H2D ----------------
-			auto h2d_start = std::chrono::steady_clock::now();
-
-			auto arg1 = mmul_command.transfer_memory(device, stream, std::move(matrixA));
-			auto arg2 = mmul_command.transfer_memory(device, stream, std::move(matrixB));
-
-
-			// ---------------- Kernel ----------------
-			out<int> arg3 = caf::cuda::create_out_arg<int>(N * N);
-			in<int>  arg4 = caf::cuda::create_in_arg<int>(N);
-
-			auto h2d_end = std::chrono::steady_clock::now();
-			auto kernel_start = std::chrono::steady_clock::now();
-
-			auto result = async_mmul.run_async(
-					program, dims, stream, 0, device,
-					arg1, arg2, arg3, arg4);
-
-			//std::get<2>(result)->synchronize();
-
-			auto kernel_end = std::chrono::steady_clock::now();
-
-			// ---------------- D2H ----------------
-			auto d2h_start = std::chrono::steady_clock::now();
-
-			std::get<2>(result)->copy_to_host();
-
-			auto d2h_end = std::chrono::steady_clock::now();
-
-			auto total_end = std::chrono::steady_clock::now();
-
-			/*
-			// ---------------- COMPUTE ----------------
-			auto h2d = std::chrono::duration<double>(h2d_end - h2d_start).count();
-			auto kernel = std::chrono::duration<double>(kernel_end - kernel_start).count();
-			auto d2h = std::chrono::duration<double>(d2h_end - d2h_start).count();
-			auto total = std::chrono::duration<double>(total_end - total_start).count();
-
-			// ---------------- PRINT ----------------
-			
-			std::cout << "\n[NO SCHEDULER] N=" << N << "\n";
-			std::cout << "H2D:    " << h2d * 1000 << " ms\n";
-			std::cout << "Kernel: " << kernel * 1000 << " ms\n";
-			std::cout << "D2H:    " << d2h * 1000 << " ms\n";
-			std::cout << "TOTAL:  " << total * 1000 << " ms\n";
-			std::cout << "SUM:    " << (h2d + kernel + d2h) * 1000 << " ms\n";
-
-			*/
-			self->mail(1).send(exit_actor);
-			self->quit();
-		}
-	};
+caf::behavior global_task_pool(caf::stateful_actor<task_pool_state>* self, std::vector<int> tasks) {
+    self->state().tasks = std::move(tasks);
+    return {
+        [=](get_work_atom, size_t batch_size) -> result<std::vector<int>> {
+            auto& st = self->state();
+            if (st.next_task_idx >= st.tasks.size())
+                return sec::end_of_stream;
+            size_t count = std::min(batch_size, st.tasks.size() - st.next_task_idx);
+            std::vector<int> batch(st.tasks.begin() + st.next_task_idx, 
+                                   st.tasks.begin() + st.next_task_idx + count);
+            st.next_task_idx += count;
+            return batch;
+        }
+    };
 }
 
-
-
-struct mmul_actor_with_scheduler_state {
-  static inline const char* name = "my_actor";
-};
-
-
-// Stateful actor behavior
-caf::behavior mmul_actor_fun_scheduler(
-    caf::stateful_actor<mmul_actor_with_scheduler_state>* self,
-    caf::actor exit_actor,
-    int N,
-    caf::cuda::program_ptr program,
-    caf::cuda::nd_range dims,
-    const in<int> matrixA,
-    const in<int> matrixB)
-{
-
-
-
-        caf::cuda::manager& mgr = caf::cuda::manager::get();
-
-        caf::actor scheduler = mgr.get_scheduler_actor();
-
-        //send a launch token
-        caf::cuda::token_ptr launch_token = caf::cuda::make_launch_token(
-                        program,
-                        dims,
-                        0,
-                        "hello",
-                        self
-                        );
-        mgr.send_scheduler_actor_message(launch_token);
-
-	return {
-
-		// 1. Handle response token
-		[=](caf::cuda::response_token_ptr res_token) {
-			//        std::cout << "Got response\n";
-
-			if (res_token->getType() == LAUNCH_RESPONSE) {
-				self->mail(res_token, N).send(self);
-
-			} else {
-				//          std::cout << "Got a memory response token\n";
-			}
-		},
-
-			// 2. Handle memory buffers -> GPU
-			[=](const caf::cuda::response_token_ptr& res_token, int N) {
-
-				auto total_start = std::chrono::steady_clock::now();
-
-				// ---------------- H2D ----------------
-				auto h2d_start = std::chrono::steady_clock::now();
-
-				auto arg1 = mmul.transfer_memory(res_token -> getDeviceNumber(),res_token -> getStreamId(), std::move(matrixA));
-				auto arg2 = mmul.transfer_memory(res_token -> getDeviceNumber(), res_token -> getStreamId(), std::move(matrixB));
-				//auto arg3 = mmul.transfer_memory(res_token, caf::cuda::create_out_arg(N*N));
-				//auto arg4 = mmul.transfer_memory(res_token, caf::cuda::create_in_arg(N));
-
-				std::cout << "res_token did = " << res_token -> getDeviceNumber() << "\n";
-				std::cout << "N = " << N << "\n";
-				 out<int> arg3 = caf::cuda::create_out_arg<int>(N * N);
-	 			 in<int>  arg4 = caf::cuda::create_in_arg<int>(N);
-
-				auto h2d_end = std::chrono::steady_clock::now();
-
-				// ---------------- Kernel ----------------
-				auto kernel_start = std::chrono::steady_clock::now();
-
-
-
-				auto tempC = async_mmul.run_async(program, dims, res_token, arg1, arg2, arg3, arg4);
-				auto bufferC = std::get<2>(tempC);
-
-				//bufferC->synchronize();
-
-				auto kernel_end = std::chrono::steady_clock::now();
-
-				// ---------------- D2H ----------------
-				auto d2h_start = std::chrono::steady_clock::now();
-
-				bufferC->copy_to_host();
-
-				auto d2h_end = std::chrono::steady_clock::now();
-
-				res_token->release();
-
-				auto total_end = std::chrono::steady_clock::now();
-
-				// ---------------- COMPUTE ----------------
-				/*
-				auto h2d = std::chrono::duration<double>(h2d_end - h2d_start).count();
-				auto kernel = std::chrono::duration<double>(kernel_end - kernel_start).count();
-				auto d2h = std::chrono::duration<double>(d2h_end - d2h_start).count();
-				auto total = std::chrono::duration<double>(total_end - total_start).count();
-
-				std::cout << "H2D:    " << h2d * 1000 << " ms\n";
-				std::cout << "Kernel: " << kernel * 1000 << " ms\n";
-				std::cout << "D2H:    " << d2h * 1000 << " ms\n";
-				std::cout << "TOTAL:  " << total * 1000 << " ms\n";
-				std::cout << "SUM:    " << (h2d + kernel + d2h) * 1000 << " ms\n\n";
-				*/
-
-				self->mail(1).send(exit_actor);
-				self->quit();
-			}
-
-
-       };
-
-}
-
-
-
-
-
-caf::behavior mmul_actor_fun_scheduler2(caf::stateful_actor<mmul_state>* self,
-		caf::actor exit_actor,
-		caf::actor scheduler_actor,
-		caf::cuda::program_ptr program,
-		caf::cuda::nd_range dims,
-		int stream,
-		int N,
-		const in<int> matrixA,
-		const in<int> matrixB
-		) {
-
-
-	int device = stream % caf::cuda::manager::get().get_num_devices();
-
-	//self->mail("subscribe",self).send(scheduler_actor);
-
-	self->mail(N).send(self);
-
-	return {
-
-		//message from the new scheduler actor 
-		[=](std::vector<int> costs) {
-			//do nothing this is an overhead test 
-		
-			//std::cout << "N=" << N <<  "\n";
-		
-		},
-		[=](int N) {
-
-			auto total_start = std::chrono::steady_clock::now();
-
-			//int device = rand() % caf::cuda::manager::get().get_num_devices();
-			//int stream = rand();
-
-			//std::cout << "device=" << device <<  "\n";
-			//std::cout << "N=" << N <<  "\n";
-
-
-
-			//declare the cost of doing work to the scheduler actor, for now we can impose
-			//a heuristic of just N, the size of the matrix
-			self->mail("add",device,N).send(scheduler_actor);
-
-
-			// ---------------- H2D ----------------
-			auto h2d_start = std::chrono::steady_clock::now();
-
-
-			auto arg1 = mmul_command.transfer_memory(device, stream, std::move(matrixA));
-			auto arg2 = mmul_command.transfer_memory(device, stream, std::move(matrixB));
-
-
-			// ---------------- Kernel ----------------
-			out<int> arg3 = caf::cuda::create_out_arg<int>(N * N);
-			in<int>  arg4 = caf::cuda::create_in_arg<int>(N);
-
-			auto h2d_end = std::chrono::steady_clock::now();
-			auto kernel_start = std::chrono::steady_clock::now();
-
-			auto result = async_mmul.run_async(
-					program, dims, stream, 0, device,
-					arg1, arg2, arg3, arg4);
-
-			//std::get<2>(result)->synchronize();
-
-			auto kernel_end = std::chrono::steady_clock::now();
-
-			// ---------------- D2H ----------------
-			auto d2h_start = std::chrono::steady_clock::now();
-
-			std::get<2>(result)->copy_to_host();
-
-
-
-			//likewise tell the scheduler we are done doing work
-			self->mail("subtract",device,N).send(scheduler_actor);
-
-			auto d2h_end = std::chrono::steady_clock::now();
-
-			auto total_end = std::chrono::steady_clock::now();
-
-			/*
-			// ---------------- COMPUTE ----------------
-			auto h2d = std::chrono::duration<double>(h2d_end - h2d_start).count();
-			auto kernel = std::chrono::duration<double>(kernel_end - kernel_start).count();
-			auto d2h = std::chrono::duration<double>(d2h_end - d2h_start).count();
-			auto total = std::chrono::duration<double>(total_end - total_start).count();
-
-			// ---------------- PRINT ----------------
-			
-			std::cout << "\n[NO SCHEDULER] N=" << N << "\n";
-			std::cout << "H2D:    " << h2d * 1000 << " ms\n";
-			std::cout << "Kernel: " << kernel * 1000 << " ms\n";
-			std::cout << "D2H:    " << d2h * 1000 << " ms\n";
-			std::cout << "TOTAL:  " << total * 1000 << " ms\n";
-			std::cout << "SUM:    " << (h2d + kernel + d2h) * 1000 << " ms\n";
-
-			*/
-			self->mail(1).send(exit_actor);
-			self->mail("unsubscribe",self).send(scheduler_actor);
-			self->quit();
-		}
-	};
-}
-
-
-
-
-
-
-struct scheduler_actor_state {
-
-	std::vector<caf::actor> subscribers;
-	int num_devices;
-	std::vector<int> costs;
-};
-
-
-
-caf::behavior scheduler_actor_fun(caf::stateful_actor<scheduler_actor_state>* self) {
-
-	self->state().num_devices = caf::cuda::manager::get().get_num_devices();
-	self->state().costs.resize(self->state().num_devices);
-
-	int time = 50;
-
-	self->mail("publish").urgent().delay(std::chrono::milliseconds(time)).send(self);
-
-	return {
-
-		[=](std::string command,int device, int cost) {
-
-			if (command == "add") {
-
-				self->state().costs[device] +=cost;
-
-			}
-			else if (command == "subtract") {
-
-				int value = std::min(self->state().costs[device] - cost,0);
-				self->state().costs[device] = value;	
-			}
-
-
-		},
-			[=](std::string command, caf::actor actor) {
-
-				auto& subs = self->state().subscribers;
-
-				if (command == "subscribe") {
-					//std::cout << "Thank you for subscribing\n";
-					// avoid duplicates
-					if (std::find(subs.begin(), subs.end(), actor) == subs.end()) {
-						subs.push_back(actor);
-						//self->monitor(actor); // track lifecycle
-					}
-				}
-
-				else if (command == "unsubscribe") {
-					subs.erase(
-							std::remove(subs.begin(), subs.end(), actor),
-							subs.end()
-						  );
-					//self->demonitor(actor);
-				}
-			},
-
-			[=](std::string command) {
-				if (command == "publish") {
-					//std::cout << "size = " << self->state().subscribers.size() << "\n";
-					for (caf::actor a : self->state().subscribers) {
-
-						self -> mail(self->state().costs).urgent().send(a);
-
-					}
-					self->mail("publish").urgent().delay(std::chrono::milliseconds(time)).send(self);
-				}
-
-			}	
-
-	};
-}
-
-
-
-// ---------------------------- SUPERVISOR ACTOR ----------------------------
-struct supervisor_actor_state {
-    int num_actors;
-    int num_waves;
-    int completed;
-    int max_waves;
-
+// ---------------------------- DEVICE/GPU ACTOR ----------------------------
+// Manages memory for a specific GPU and steals (pulls) work from the Global Pool.
+struct device_actor_state {
     MatrixPool pool;
-
-    // Precomputed sequence of N values
-    std::vector<int> Ns;
-    int next_task;
-
-    // Timing
-    std::chrono::steady_clock::time_point start_time;
-    std::chrono::steady_clock::time_point wave_start_time;
+    caf::actor global_pool;
+    std::deque<int> local_tasks; // Local buffer to keep GPU busy
+    size_t total_device_memory_bytes = 0;
+    size_t current_allocated_memory_bytes = 0;
+    int active_workers = 0;
+    int device_id = -1;
+    size_t batch_size = 0;
+    size_t low_water_mark = 0;
+    bool fetching = false;
 };
 
-caf::behavior supervisor_actor_fun(
-    caf::stateful_actor<supervisor_actor_state>* self,
-    int num_actors,
-    int max_waves,
-    MatrixPool pool,
-    const std::vector<int>& Ns,      // deterministic task sizes 
-    bool use_scheduler
-    ) {
-    // Initialize state
-    self->state().num_actors = num_actors;
-    self->state().completed = 0;
-    self->state().max_waves = max_waves;
-    self->state().num_waves = 0;
+caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
+                               MatrixPool pool, caf::actor global_pool, int num_workers, int dev_id, int max_in_flight) {
     self->state().pool = std::move(pool);
+    self->state().global_pool = global_pool;
+    self->state().device_id = dev_id;
+    self->state().active_workers = num_workers;
 
-    self->state().Ns = Ns;
-    self->state().next_task = 0;
-
+    // Dynamically calculate prefetch markers based on the total pipeline capacity
+    self->state().low_water_mark = static_cast<size_t>(num_workers * max_in_flight);
+    self->state().batch_size = self->state().low_water_mark * 2;
 
     caf::cuda::manager& mgr = caf::cuda::manager::get();
-    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+    caf::cuda::device_ptr dev_obj = mgr.find_device(dev_id);
+    if (dev_obj) {
+        self->state().total_device_memory_bytes = dev_obj->total_memory_bytes();
+    }
 
-    // Kick off first wave
-    self->mail("spawn").send(self);
+    // Helper to refill the local task buffer from the global pool
+    auto refill = [=]() {
+        auto& st = self->state();
+        if (st.fetching || st.local_tasks.size() >= st.low_water_mark + st.batch_size)
+            return;
 
-    caf::actor scheduler_actor = self->spawn(scheduler_actor_fun);
-
-    // Start timing
-    self->state().start_time = std::chrono::steady_clock::now();
-    return {
-        // -------------------- SPAWN WAVE --------------------
-        [=](std::string cmd) {
-            if (cmd != "spawn") return;
-
-	     std::chrono::steady_clock::time_point cmd_start_time = std::chrono::steady_clock::now();
-	    
-
-            self->state().completed = 0;
-            self->state().wave_start_time = std::chrono::steady_clock::now();
-
-            for (int i = 0; i < self->state().num_actors; ++i) {
-                if (self->state().next_task >= self->state().Ns.size())
-                    break;
-
-                int N = self->state().Ns[self->state().next_task++];
-
-
-                const auto& A = self->state().pool.A[N];
-                const auto& B = self->state().pool.B[N];
-
-                const int THREADS = 32;
-                const int BLOCKS = (N + THREADS - 1) / THREADS;
-
-                caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
-
-		if (use_scheduler) {
-			caf::actor a = 	self->spawn(mmul_actor_fun_scheduler2, 
-					self,
-					scheduler_actor,
-				       	program, 
-					dims,
-					i,
-					N,
-                            caf::cuda::create_in_arg(A),
-                            caf::cuda::create_in_arg(B));
-
-
-		 self->mail("subscribe",a).send(scheduler_actor);
-		}
-		else {
-			self->spawn(mmul_actor_fun, self, program, dims,i,N,
-                            caf::cuda::create_in_arg(A),
-                            caf::cuda::create_in_arg(B));
-		}
+        st.fetching = true;
+        self->mail(get_work_atom_v, (size_t)st.batch_size).request(st.global_pool, infinite).then(
+            [=](std::vector<int>& batch) {
+                auto& st_inner = self->state();
+                for (int N : batch)
+                    st_inner.local_tasks.push_back(N);
+                st_inner.fetching = false;
+                if (st_inner.local_tasks.size() < st_inner.low_water_mark)
+                    self->mail(refill_buffer_atom_v).send(self);
+            },
+            [=](error& err) {
+                self->state().fetching = false;
             }
-        
-	
+        );
+    };
 
-    std::chrono::steady_clock::time_point cmd_end_time = std::chrono::steady_clock::now();
+    return {
+        [=](refill_buffer_atom) {
+            refill();
+        },
+        [=](get_work_atom) -> caf::result<int, in<int>, in<int>> {
+            auto& st = self->state();
 
-      std::chrono::duration<double> total_time =
-                        cmd_end_time - cmd_start_time;
+            // If we have tasks locally, satisfy the request immediately
+            if (!st.local_tasks.empty()) {
+                int N = st.local_tasks.front();
+                size_t memory_needed = (size_t)N * N * sizeof(int) * 3;
+                if (st.current_allocated_memory_bytes + memory_needed > st.total_device_memory_bytes)
+                    return make_error(sec::runtime_error, "Device Actor: Not enough memory");
+                
+                st.local_tasks.pop_front();
+                st.current_allocated_memory_bytes += memory_needed;
+                
+                // Proactively steal more work if the buffer is getting low
+                if (st.local_tasks.size() < st.low_water_mark)
+                    refill();
 
-                    std::cout << "\n===== SUPERVISOR TOTAL TIME spawn =====\n";
-                    std::cout << "Total runtime: "
-                              << total_time.count() << " s\n";
+                return {N, caf::cuda::create_in_arg(st.pool.A[N]), 
+                           caf::cuda::create_in_arg(st.pool.B[N])};
+            }
 
-
-	
-	},
-
-        // -------------------- COMPLETION TRACKING --------------------
-        [=](int done) {
-            self->state().completed += done;
-
-            if (self->state().completed >= self->state().num_actors) {
-                auto wave_end = std::chrono::steady_clock::now();
-                std::chrono::duration<double> wave_time =
-                    wave_end - self->state().wave_start_time;
-
-                self->state().num_waves++;
-                //std::cout << "Wave "
-                  //        << self->state().num_waves
-                    //      << " completed in "
-                      //    << wave_time.count() << " s\n";
-
-                if (self->state().num_waves >= self->state().max_waves) {
-                    auto end_time = std::chrono::steady_clock::now();
-                    std::chrono::duration<double> total_time =
-                        end_time - self->state().start_time;
-
-                    std::cout << "\n===== SUPERVISOR TOTAL TIME =====\n";
-                    std::cout << "Total runtime: "
-                              << total_time.count() << " s\n";
-
-
-		    anon_send_exit(
-				    scheduler_actor,
-				    caf::exit_reason::user_shutdown
-				  );
-		    caf::cuda::manager::shutdown();
-                    self->quit();
-                } else {
-                    self->mail("spawn").send(self);
-                }
+            // Buffer empty: must fetch from global pool reactively
+            auto promise = self->make_response_promise<int, in<int>, in<int>>();
+            self->mail(get_work_atom_v, (size_t)st.batch_size).request(st.global_pool, infinite).then(
+                [=](std::vector<int>& batch) mutable {
+                    auto& st_inner = self->state();
+                    int N = batch.front();
+                    for(size_t i = 1; i < batch.size(); ++i) st_inner.local_tasks.push_back(batch[i]);
+                    
+                    size_t needed = (size_t)N * N * sizeof(int) * 3;
+                    st_inner.current_allocated_memory_bytes += needed;
+                    promise.deliver(N, caf::cuda::create_in_arg(st_inner.pool.A[N]), 
+                                       caf::cuda::create_in_arg(st_inner.pool.B[N]));
+                },
+                [=](error& err) mutable { promise.deliver(err); }
+            );
+            return promise;
+        },
+        [=](release_memory_atom, int N_completed) {
+            auto& st = self->state();
+            size_t memory_released = (size_t)N_completed * N_completed * sizeof(int) * 3;
+            st.current_allocated_memory_bytes -= memory_released;
+            refill(); // Try to get more work now that memory is free
+        },
+        [=](worker_done_atom) {
+            auto& st = self->state();
+            if (--st.active_workers <= 0) {
+                self->quit();
             }
         }
     };
 }
 
+// ---------------------------- WORKER ACTOR ----------------------------
+// Manages 1 stream and pulls work from the Device Actor.
+struct worker_state {
+    int device_id;
+    int stream_id;
+    caf::cuda::program_ptr program;
+    caf::actor device_actor;
+    caf::actor supervisor;
+    int max_in_flight_tasks;
+    int in_flight_tasks_count = 0;
+    bool draining = false;
+};
 
+caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
+                              caf::actor supervisor, caf::actor device_actor, caf::cuda::program_ptr program,
+                              int dev_id, int stream_id, int max_in_flight_tasks) {
+    self->state().supervisor = supervisor;
+    self->state().device_actor = device_actor;
+    self->state().program = program;
+    self->state().device_id = dev_id;
+    self->state().stream_id = stream_id;
+    self->state().max_in_flight_tasks = max_in_flight_tasks;
 
+    // Trigger initial work requests up to max_in_flight_tasks
+    for (int i = 0; i < max_in_flight_tasks; ++i) {
+        self->mail(request_work_atom_v).send(self);
+    }
 
+    return {
+        [=](request_work_atom) {
+            auto& st = self->state();
+            if (st.in_flight_tasks_count >= st.max_in_flight_tasks || st.draining) {
+                return; // Already at max capacity, don't request more yet
+            }
 
+            st.in_flight_tasks_count++; // Mark as pending immediately
+            self->mail(get_work_atom_v).request(st.device_actor, infinite).then(
+                [=](int N, in<int> matrixA, in<int> matrixB) {
+                    // GPU Pipeline: Transfer -> Kernel -> Copyback
+                    auto arg1 = mmul_command.transfer_memory(st.device_id, st.stream_id, std::move(matrixA));
+                    auto arg2 = mmul_command.transfer_memory(st.device_id, st.stream_id, std::move(matrixB));
 
+                    const int THREADS = 32;
+                    const int BLOCKS = (N + THREADS - 1) / THREADS;
+                    caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
+                    auto result = mmul_kernel.run_async(st.program, dims, st.stream_id, 0, st.device_id,
+                                                       arg1, arg2,
+                                                       caf::cuda::create_out_arg<int>(N * N),
+                                                       caf::cuda::create_in_arg<int>(N));
+
+                    auto bufferC = std::get<2>(result);
+                    auto self_hdl = caf::actor_cast<caf::actor>(self);
+
+                    mmul_command.copy_to_host_async(bufferC, [self_hdl, N_task = N](std::vector<int>&&) {
+                        caf::anon_mail(task_done_atom_v, N_task).send(self_hdl); // Pass N back to self
+                    });
+                },
+                [=](error& err) {
+                    auto& st = self->state();
+                    st.in_flight_tasks_count--; // Revert pending status on failure
+                    if (err == sec::runtime_error) {
+                        // Not enough memory, retry after a delay
+                        self->println("Worker {}: Not enough memory, retrying for work...", st.stream_id);
+                        self->delayed_anon_send(self, 100ms, request_work_atom_v);
+                    } else if (err == sec::end_of_stream) {
+                        st.draining = true; // Mark as draining, let in-flight finish
+                        if (st.in_flight_tasks_count == 0) {
+                            self->mail(worker_done_atom_v).send(st.device_actor);
+                            mmul_command.release_stream_for_actor(st.stream_id);
+                            self->quit();
+                        }
+                    }
+                }
+            );
+        },
+        [=](task_done_atom, int N_completed) {
+            auto& st = self->state();
+            st.in_flight_tasks_count--; // Decrement count
+            self->mail(1).send(st.supervisor); // Notify supervisor
+            self->mail(release_memory_atom_v, N_completed).send(st.device_actor); // Release memory
+            
+            if (st.draining && st.in_flight_tasks_count == 0) {
+                self->mail(worker_done_atom_v).send(st.device_actor);
+                mmul_command.release_stream_for_actor(st.stream_id);
+                self->quit();
+            } else if (!st.draining) {
+                self->mail(request_work_atom_v).send(self); // Request next task if capacity allows
+            }
+        }
+    };
+}
+
+// ---------------------------- SUPERVISOR ACTOR ----------------------------
+struct supervisor_actor_state {
+    int total_tasks;
+    int completed = 0;
+    std::chrono::steady_clock::time_point start_time;
+};
+
+caf::behavior supervisor_actor_fun(
+    caf::stateful_actor<supervisor_actor_state>* self,
+    int total_tasks,
+    int workers_per_gpu,
+    int max_in_flight_tasks_per_worker,
+    MatrixPool pool,
+    std::vector<int> Ns
+    ) {
+    self->state().total_tasks = total_tasks;
+    self->state().start_time = std::chrono::steady_clock::now();
+
+    auto pool_actor = self->spawn(global_task_pool, std::move(Ns));
+
+    caf::cuda::manager& mgr = caf::cuda::manager::get();
+    int num_gpus = mgr.get_num_devices();
+    auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+
+    for (int i = 0; i < num_gpus; ++i) {
+        auto broker = self->spawn(gpu_device_actor, pool, pool_actor, workers_per_gpu, i, max_in_flight_tasks_per_worker);
+        
+        for (int j = 0; j < workers_per_gpu; ++j)
+            self->spawn(mmul_worker_fun, self, broker, program, i, (i * 1000) + j, max_in_flight_tasks_per_worker);
+    }
+
+    return {
+        [=](int done) {
+            self->state().completed += done;
+            if (self->state().completed >= self->state().total_tasks) {
+                auto end_time = std::chrono::steady_clock::now();
+                std::chrono::duration<double> total_time = end_time - self->state().start_time;
+
+                std::cout << "\n===== BENCHMARK COMPLETE =====\n";
+                std::cout << "Tasks: " << self->state().total_tasks << "\n";
+                std::cout << "Runtime: " << total_time.count() << " s\n";
+                
+                caf::cuda::manager::shutdown();
+                self->quit();
+            }
+        }
+    };
+}
 
 template <class Fn>
 double time_run(Fn&& fn) {
@@ -637,8 +351,6 @@ double time_run(Fn&& fn) {
   return elapsed.count();
 }
 
-
-
 void run_mmul_random_scaling_tests(caf::actor_system& sys,
                                   caf::cuda::manager_config man_config) {
 
@@ -646,202 +358,61 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_N = 2048;
     const int num_sizes = 10;
 
-    const int max_waves = 1;
+    const int workers_per_gpu = 8; // Admission control: only 16 concurrent tasks per GPU
+    const int max_in_flight_tasks_per_worker = 3; // Each worker keeps 2 tasks in flight
 
     const std::vector<int> actor_counts = {
-	  30000,40000,50000
+	  1,30000,40000,50000
     };
 
+    // Generate deterministic random pool once
+    MatrixPool pool = create_matrix_pool_random(
+        num_sizes,
+        min_N,
+        max_N,
+        42  // fixed seed
+    );
 
-    int num_actors = actor_counts[actor_counts.size()-1];
-
-        // Generate deterministic random pool
-        MatrixPool pool = create_matrix_pool_random(
-            num_sizes,
-            min_N,
-            max_N,
-            42  // fixed seed
-        );
-
-    // Precompute all task Ns (total_tasks = num_actors * max_waves)
-    std::vector<int> sizes;
-    for (const auto& [N, _] : pool.A) sizes.push_back(N);
-
-    int total_tasks = num_actors * max_waves;
-    std::vector<int> Ns;
-    Ns.reserve(total_tasks);
-
-    std::mt19937 rng(42);
-    std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
-    for (int i = 0; i < total_tasks; ++i)
-	    Ns.push_back(sizes[dist(rng)]);
-
-
-   
     //scheduler
-    for (int num_actors : actor_counts) {
-
-    
+    caf::cuda::manager_config scheduler_off(false);
+    for (int num_tasks_for_this_run : actor_counts) {
 	    // Initialize CUDA manager
-	    caf::cuda::manager::init(sys);
-  std::cout << "=====================================\n";
-        std::cout << "Random Scaling WITH scheduler | actors=" << num_actors << "\n";
+	    caf::cuda::manager::init(sys, scheduler_off);
+        std::cout << "=====================================\n";
+        std::cout << "Random Scaling | actors=" << num_tasks_for_this_run << "\n";
 
+        // Precompute all task Ns for this run
+        std::vector<int> sizes;
+        for (const auto& [N, _] : pool.A) sizes.push_back(N);
 
+        std::vector<int> Ns_for_this_run;
+        Ns_for_this_run.reserve(num_tasks_for_this_run);
+
+        std::mt19937 rng(42);
+        std::uniform_int_distribution<size_t> dist(0, sizes.size() - 1);
+        for (int i = 0; i < num_tasks_for_this_run; ++i)
+	        Ns_for_this_run.push_back(sizes[dist(rng)]);
+
+        // Execute the supervisor which manages the asynchronous workload
         double elapsed = time_run([&]() {
 
             auto sup = sys.spawn(
                 supervisor_actor_fun,
-                num_actors,
-                max_waves,
+                (int)Ns_for_this_run.size(), // total_tasks
+                workers_per_gpu,
+                max_in_flight_tasks_per_worker,
                 pool,
-		Ns,
-		true
-            );
-
-        
-	      sys.await_all_actors_done();
-	    
-	    });
-
-    
-	caf::cuda::manager::shutdown();
-    }
-    
-    //no scheduler
-    for (int num_actors : actor_counts) {
-
-    
-	    // Initialize CUDA manager
-	    caf::cuda::manager::init(sys);
-	    std::cout << "=====================================\n";
-	    std::cout << "Random Scaling NO scheduler | actors=" << num_actors << "\n";      
-	    double elapsed = time_run([&]() {
-
-            auto sup = sys.spawn(
-                supervisor_actor_fun,
-                num_actors,
-                max_waves,
-                pool,
-		Ns,
-		false
+		Ns_for_this_run
             );
 
 	      sys.await_all_actors_done();
-	    
 	    });
 
-    
-	caf::cuda::manager::shutdown();
-    }
-
-
-
-
-    caf::cuda::manager::shutdown();
-}
-
-void run_mmul_uniform_scaling_tests(caf::actor_system& sys,
-                                   caf::cuda::manager_config man_config) {
-
-    const int max_waves = 1;
-
-    // Matrix sizes: 1,2,4,...,2048
-    std::vector<int> matrix_sizes;
-    for (int n = 1; n <= 2048; n *= 2)
-        matrix_sizes.push_back(n);
-
-    // Actor counts: 10 → 1000
-    std::vector<int> actor_counts;
-    for (int a = 10; a <= 1000; a += 10)
-        actor_counts.push_back(a);
-
-    for (int N : matrix_sizes) {
-        for (int num_actors : actor_counts) {
-
-            // Create uniform pool (single size)
-            MatrixPool pool = create_matrix_pool_random(
-                1,
-                N,
-                N,
-                42
-            );
-
-            int total_tasks = num_actors * max_waves;
-
-            std::vector<int> Ns(total_tasks, N);
-
-            // ========================
-            // WITH SCHEDULER
-            // ========================
-            caf::cuda::manager::init(sys);
-            std::cout << "=====================================\n";
-            std::cout << "Uniform WITH scheduler | N=" << N
-                      << " actors=" << num_actors << "\n";
-
-            time_run([&]() {
-                auto sup = sys.spawn(
-                    supervisor_actor_fun,
-                    num_actors,
-                    max_waves,
-                    pool,
-                    Ns,
-                    true
-                );
-                sys.await_all_actors_done();
-            });
-
-            caf::cuda::manager::shutdown();
-
-            // ========================
-            // WITHOUT SCHEDULER
-            // ========================
-            caf::cuda::manager::init(sys);
-            std::cout << "=====================================\n";
-            std::cout << "Uniform NO scheduler | N=" << N
-                      << " actors=" << num_actors << "\n";
-
-            time_run([&]() {
-                auto sup = sys.spawn(
-                    supervisor_actor_fun,
-                    num_actors,
-                    max_waves,
-                    pool,
-                    Ns,
-                    false
-                );
-                sys.await_all_actors_done();
-            });
-
-            caf::cuda::manager::shutdown();
-        }
+        caf::cuda::manager::shutdown();
     }
 }
-
-
-
-
-
-
-
-
-
-
 void caf_main(caf::actor_system& sys) {
-  
-
-  caf::cuda::manager_config man_config(true);
-  //caf::cuda::manager::init(sys,man_config);
-
-
-  run_mmul_random_scaling_tests(sys,man_config);
-  //run_mmul_uniform_scaling_tests(sys,man_config);
-
-
-
+  caf::cuda::manager_config man_config(false);
+  run_mmul_random_scaling_tests(sys, man_config);
 }
-
-
-
-
-CAF_MAIN()
+CAF_MAIN(id_block::mmul_benchmark)
