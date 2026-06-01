@@ -586,22 +586,6 @@ private:
 };
 
 /**
- * Context for asynchronous CG iterations.
- */
-template <class T>
-struct sparse_cg_solve_context {
-  mem_ptr<int> A_rp, A_ci;
-  mem_ptr<T> A_val, b, x, r, p, w, rho, old_rho, dot_pw;
-  mem_ptr<char> spmv_ws;
-  T threshold;
-  int n, nnz, max_iter, iterations = 0;
-  int device_num, stream_id;
-  actor requester;
-  std::vector<output_mapping> mappings;
-  bool return_mem_ptr = false;
-};
-
-/**
  * Optimized CG Facade.
  * - No host recurrence: alpha/beta updates happen on GPU.
  * - Message-based iteration: Solves every 10 iterations via self-callbacks.
@@ -622,8 +606,8 @@ public:
     std::string p_name = std::is_same_v<T, double> ? "update_p_double" : "update_p_float";
     std::string xr_name = std::is_same_v<T, double> ? "update_x_r_double" : "update_x_r_float";
 
-    update_p_prog_ = mgr.create_program_from_cubin(dir + "cg_solver_kernels.cubin", p_name);
-    update_xr_prog_ = mgr.create_program_from_cubin(dir + "cg_solver_kernels.cubin", xr_name);
+    update_p_prog_ = mgr.create_program_from_cubin(dir + "cg_solver_kernels.cubin", p_name.c_str());
+    update_xr_prog_ = mgr.create_program_from_cubin(dir + "cg_solver_kernels.cubin", xr_name.c_str());
   }
 
   behavior make_behavior() override {
@@ -702,7 +686,7 @@ protected:
     for (int k = 0; k < batch_size; ++k) {
       // p = r + beta * p
       d_ptr->launch_kernel_mem_ref(p_kernel, range, 
-                                   std::make_tuple(ctx->n, ctx->r, ctx->p, ctx->rho, ctx->old_rho, in<int>(ctx->iterations)), 
+                                   std::make_tuple(in<int>(ctx->n), ctx->r, ctx->p, ctx->rho, ctx->old_rho, in<int>(ctx->iterations)), 
                                    ctx->stream_id);
       // w = Ap
       execute_spmv(ctx, ctx->p, ctx->w);
@@ -710,7 +694,7 @@ protected:
       execute_dot(ctx, ctx->p, ctx->w, ctx->dot_pw);
       // x += alpha * p, r -= alpha * w
       d_ptr->launch_kernel_mem_ref(xr_kernel, range,
-                                   std::make_tuple(ctx->n, ctx->x, ctx->r, ctx->p, ctx->w, ctx->rho, ctx->dot_pw),
+                                   std::make_tuple(in<int>(ctx->n), ctx->x, ctx->r, ctx->p, ctx->w, ctx->rho, ctx->dot_pw),
                                    ctx->stream_id);
       // old_rho = rho, rho = r * r
       if constexpr (std::is_same_v<T, double>) d_ptr->dcopy(ctx->stream_id, 1, ctx->rho, ctx->old_rho); 
