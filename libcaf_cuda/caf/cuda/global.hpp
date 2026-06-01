@@ -7,6 +7,7 @@
 #include <caf/logger.hpp>
 #include <cuda.h>
 #include "caf/cuda/types.hpp" //be sure to include any caf-cuda headers after this one
+#include <memory>
 #include "caf/cuda/nd_range.hpp"
 #include "caf/cuda/helpers.hpp"
 #include <nvrtc.h>
@@ -109,6 +110,33 @@ bool inspect(Inspector& f, in_out<T>& x) {
 template <class Inspector>
 bool inspect(Inspector& f, output_buffer& x) {
   return f.object(x).fields(f.field("data", x.data));
+}
+
+// Serialization support for sparse_cg_solve_context
+template <class Inspector, class T>
+bool inspect(Inspector& f, caf::cuda::sparse_cg_solve_context<T>& x) {
+  return f.object(x).fields(f.field("A_rp", x.A_rp),
+                            f.field("A_ci", x.A_ci),
+                            f.field("A_val", x.A_val),
+                            f.field("b", x.b),
+                            f.field("x", x.x),
+                            f.field("r", x.r),
+                            f.field("p", x.p),
+                            f.field("w", x.w),
+                            f.field("rho", x.rho),
+                            f.field("old_rho", x.old_rho),
+                            f.field("dot_pw", x.dot_pw),
+                            f.field("spmv_ws", x.spmv_ws),
+                            f.field("threshold", x.threshold),
+                            f.field("n", x.n),
+                            f.field("nnz", x.nnz),
+                            f.field("max_iter", x.max_iter),
+                            f.field("iterations", x.iterations),
+                            f.field("device_num", x.device_num),
+                            f.field("stream_id", x.stream_id),
+                            f.field("requester", x.requester),
+                            f.field("mappings", x.mappings),
+                            f.field("return_mem_ptr", x.return_mem_ptr));
 }
 
 // Serialization support for std::vector<output_buffer> (global namespace)
@@ -232,6 +260,10 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<char>))  
   CAF_ADD_TYPE_ID(cuda, (caf::cuda::matrix_format))
   CAF_ADD_TYPE_ID(cuda, (caf::cuda::solver_result_meta))
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::sparse_cg_solve_context<float>))
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::sparse_cg_solve_context<double>))
+  CAF_ADD_TYPE_ID(cuda, (std::shared_ptr<caf::cuda::sparse_cg_solve_context<float>>))
+  CAF_ADD_TYPE_ID(cuda, (std::shared_ptr<caf::cuda::sparse_cg_solve_context<double>>))
   
   //atoms 
   CAF_ADD_ATOM(cuda, kernel_done_atom)
@@ -247,6 +279,8 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   CAF_ADD_ATOM(cuda, coo_atom)  
   CAF_ADD_ATOM(cuda, start_atom)
   CAF_ADD_ATOM(cuda, cg_next_step_atom)
+  CAF_ADD_ATOM(cuda, next_batch_atom)
+
 
 CAF_END_TYPE_ID_BLOCK(cuda)
 
@@ -262,3 +296,7 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(output_mapping)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<output_mapping>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::matrix_format)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::solver_result_meta)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::sparse_cg_solve_context<float>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::sparse_cg_solve_context<double>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<caf::cuda::sparse_cg_solve_context<float>>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<caf::cuda::sparse_cg_solve_context<double>>)

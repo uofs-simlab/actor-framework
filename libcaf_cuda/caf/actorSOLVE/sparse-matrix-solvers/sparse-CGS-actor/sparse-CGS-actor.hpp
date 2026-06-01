@@ -12,7 +12,7 @@
 
 namespace caf::cuda {
 
-// Reply IDs used to distinguish which actor type is replying
+
 constexpr int id_dot = 100;
 constexpr int id_spmv = 200;
 constexpr int id_axpy = 300;
@@ -583,6 +583,167 @@ protected:
 
 private:
   program_ptr diag_prog_;
+};
+
+/**
+ * Context for asynchronous CG iterations.
+ */
+template <class T>
+struct sparse_cg_solve_context {
+  mem_ptr<int> A_rp, A_ci;
+  mem_ptr<T> A_val, b, x, r, p, w, rho, old_rho, dot_pw;
+  mem_ptr<char> spmv_ws;
+  T threshold;
+  int n, nnz, max_iter, iterations = 0;
+  int device_num, stream_id;
+  actor requester;
+  std::vector<output_mapping> mappings;
+  bool return_mem_ptr = false;
+};
+
+/**
+ * Optimized CG Facade.
+ * - No host recurrence: alpha/beta updates happen on GPU.
+ * - Message-based iteration: Solves every 10 iterations via self-callbacks.
+ * - Fully asynchronous: Does not block CAF worker threads.
+ */
+template <class T = float>
+class sparse_cg_facade_optimized : public sparse_cg_facade<T> {
+public:
+  using solve_context = sparse_cg_solve_context<T>;
+
+  sparse_cg_facade_optimized(actor_config& cfg, uint32_t response_id)
+    : sparse_cg_facade<T>(cfg, response_id) {
+    auto& mgr = manager::get();
+    std::string current_file = __FILE__;
+    auto pos = current_file.find_last_of('/');
+    std::string dir = (pos == std::string::npos) ? "" : current_file.substr(0, pos + 1);
+    
+    std::string p_name = std::is_same_v<T, double> ? "update_p_double" : "update_p_float";
+    std::string xr_name = std::is_same_v<T, double> ? "update_x_r_double" : "update_x_r_float";
+
+    update_p_prog_ = mgr.create_program_from_cubin(dir + "cg_solver_kernels.cubin", p_name);
+    update_xr_prog_ = mgr.create_program_from_cubin(dir + "cg_solver_kernels.cubin", xr_name);
+  }
+
+  behavior make_behavior() override {
+    return {
+      [this](return_mem_ptr_atom, in<int> rp, in<int> ci, in<T> val, in<T> b, in_out<T> x,
+             matrix_format fmt, int n, int nnz, T tol, int max_iter, int dev, int stream) {
+        auto ctx = setup_solve(rp, ci, val, b, x, fmt, n, nnz, tol, max_iter, dev, stream);
+        ctx->return_mem_ptr = true;
+        launch_iterations(ctx);
+      },
+
+      [this](std::vector<output_mapping> mappings, in<int> rp, in<int> ci, in<T> val, in<T> b, in_out<T> x,
+             matrix_format fmt, int n, int nnz, T tol, int max_iter, int dev, int stream) {
+        auto ctx = setup_solve(rp, ci, val, b, x, fmt, n, nnz, tol, max_iter, dev, stream);
+        ctx->mappings = std::move(mappings);
+        launch_iterations(ctx);
+      },
+
+      [this](next_batch_atom, std::shared_ptr<solve_context> ctx, T current_rho) {
+        if (current_rho <= ctx->threshold || ctx->iterations >= ctx->max_iter) {
+          this->dispatch_result(std::move(ctx->mappings), ctx->x, ctx->n, 
+                                solver_result_meta(ctx->device_num, ctx->stream_id, ctx->iterations, current_rho <= ctx->threshold));
+        } else {
+          launch_iterations(ctx);
+        }
+      }
+    };
+  }
+
+protected:
+  std::shared_ptr<solve_context> setup_solve(in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
+                                            matrix_format fmt, int n, int nnz, T tol, int max_iter,
+                                            int dev, int stream) {
+    auto ctx = std::make_shared<solve_context>();
+    ctx->requester = actor_cast<actor>(this->current_sender());
+    ctx->n = n; ctx->nnz = nnz; ctx->max_iter = max_iter; ctx->threshold = tol * tol;
+    ctx->device_num = dev; ctx->stream_id = stream;
+
+    command_runner<T> runner;
+    auto res = runner.transfer_memory(dev, stream, rp, ci, val, b_in, x_in);
+    ctx->A_rp = std::get<0>(res); ctx->A_ci = std::get<1>(res); ctx->A_val = std::get<2>(res);
+    ctx->b = std::get<3>(res); ctx->x = std::get<4>(res);
+
+    command_runner<out<T>> work_runner;
+    ctx->r = work_runner.transfer_memory(dev, stream, out<T>(n));
+    ctx->p = work_runner.transfer_memory(dev, stream, out<T>(n));
+    ctx->w = work_runner.transfer_memory(dev, stream, out<T>(n));
+    ctx->rho = work_runner.transfer_memory(dev, stream, create_out_arg_with_size<T>(1));
+    ctx->old_rho = work_runner.transfer_memory(dev, stream, create_out_arg_with_size<T>(1));
+    ctx->dot_pw = work_runner.transfer_memory(dev, stream, create_out_arg_with_size<T>(1));
+
+    auto d_ptr = platform::create()->schedule(stream, dev);
+    size_t ws_size = d_ptr->spmv_csr_buffer_size(stream, n, n, nnz, ctx->A_rp, ctx->A_ci, ctx->A_val, ctx->x, ctx->w);
+    if (ws_size > 0) {
+      command_runner<out<char>> ws_runner;
+      ctx->spmv_ws = ws_runner.transfer_memory(dev, stream, out<char>(static_cast<int>(ws_size)));
+    }
+
+    // Initial r = b - Ax
+    execute_spmv(ctx, ctx->x, ctx->w);
+    if constexpr (std::is_same_v<T, double>) d_ptr->dcopy(stream, n, ctx->b, ctx->r); else d_ptr->scopy(stream, n, ctx->b, ctx->r);
+    if constexpr (std::is_same_v<T, double>) d_ptr->daxpy(stream, n, -1.0, ctx->w, ctx->r); else d_ptr->saxpy(stream, n, -1.0f, ctx->w, ctx->r);
+    execute_dot(ctx, ctx->r, ctx->r, ctx->rho);
+
+    return ctx;
+  }
+
+  void launch_iterations(std::shared_ptr<solve_context> ctx) {
+    auto d_ptr = platform::create()->schedule(ctx->stream_id, ctx->device_num);
+    nd_range range((ctx->n + 255) / 256, 1, 1, 256, 1, 1);
+    
+    auto p_kernel = update_p_prog_->get_kernel(d_ptr->getId());
+    auto xr_kernel = update_xr_prog_->get_kernel(d_ptr->getId());
+
+    int batch_size = std::min(10, ctx->max_iter - ctx->iterations);
+    for (int k = 0; k < batch_size; ++k) {
+      // p = r + beta * p
+      d_ptr->launch_kernel_mem_ref(p_kernel, range, 
+                                   std::make_tuple(ctx->n, ctx->r, ctx->p, ctx->rho, ctx->old_rho, in<int>(ctx->iterations)), 
+                                   ctx->stream_id);
+      // w = Ap
+      execute_spmv(ctx, ctx->p, ctx->w);
+      // dot_pw = p * w
+      execute_dot(ctx, ctx->p, ctx->w, ctx->dot_pw);
+      // x += alpha * p, r -= alpha * w
+      d_ptr->launch_kernel_mem_ref(xr_kernel, range,
+                                   std::make_tuple(ctx->n, ctx->x, ctx->r, ctx->p, ctx->w, ctx->rho, ctx->dot_pw),
+                                   ctx->stream_id);
+      // old_rho = rho, rho = r * r
+      if constexpr (std::is_same_v<T, double>) d_ptr->dcopy(ctx->stream_id, 1, ctx->rho, ctx->old_rho); 
+      else d_ptr->scopy(ctx->stream_id, 1, ctx->rho, ctx->old_rho);
+      
+      execute_dot(ctx, ctx->r, ctx->r, ctx->rho);
+      ctx->iterations++;
+    }
+
+    // Asynchronous notification instead of blocking copy_to_host
+    auto self = actor_cast<actor>(this);
+    command_runner<T> runner;
+    runner.copy_to_host_async(ctx->rho, [self, ctx](std::vector<T> res) {
+      anon_mail(next_batch_atom_v, ctx, res[0]).send(self);
+    });
+  }
+
+  void execute_spmv(std::shared_ptr<solve_context> ctx, mem_ptr<T> in_v, mem_ptr<T> out_v) {
+    auto d_ptr = platform::create()->schedule(ctx->stream_id, ctx->device_num);
+    // Defaulting to CSR for this optimized version as per logic, can be extended
+    d_ptr->spmv_csr(ctx->stream_id, ctx->n, ctx->n, ctx->nnz, T{1}, 
+                    ctx->A_rp, ctx->A_ci, ctx->A_val, in_v, T{0}, out_v, ctx->spmv_ws);
+  }
+
+  void execute_dot(std::shared_ptr<solve_context> ctx, mem_ptr<T> xv, mem_ptr<T> yv, mem_ptr<T> rv) {
+    auto d_ptr = platform::create()->schedule(ctx->stream_id, ctx->device_num);
+    if constexpr (std::is_same_v<T, double>) d_ptr->ddot(ctx->stream_id, ctx->n, xv, yv, rv); 
+    else d_ptr->sdot(ctx->stream_id, ctx->n, xv, yv, rv);
+  }
+
+private:
+  program_ptr update_p_prog_;
+  program_ptr update_xr_prog_;
 };
 
 } // namespace caf::cuda

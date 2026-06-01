@@ -4,6 +4,7 @@
 
 
 #include <caf/intrusive_ptr.hpp>
+#include <caf/actor.hpp>
 #include <variant>
 #include <vector>
 #include <stdexcept>
@@ -330,3 +331,23 @@ struct raw_type<caf::cuda::mem_ptr<T>> {
 
 template <typename T>
 using raw_t = typename raw_type<T>::type;
+
+namespace caf::cuda {
+
+/**
+ * Context for asynchronous CG iterations.
+ */
+template <class T>
+struct sparse_cg_solve_context {
+  mem_ptr<int> A_rp, A_ci;
+  mem_ptr<T> A_val, b, x, r, p, w, rho, old_rho, dot_pw;
+  mem_ptr<char> spmv_ws;
+  T threshold;
+  int n, nnz, max_iter, iterations = 0;
+  int device_num, stream_id;
+  actor requester;
+  std::vector<output_mapping> mappings;
+  bool return_mem_ptr = false;
+};
+
+} // namespace caf::cuda
