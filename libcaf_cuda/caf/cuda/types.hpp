@@ -343,6 +343,7 @@ struct sparse_cg_solve_context {
   mem_ptr<T> A_val, b, x, r, p, w, rho, old_rho, dot_pw;
   mem_ptr<char> spmv_ws;
   T threshold;
+  matrix_format format;
   int n, nnz, max_iter, iterations = 0;
   int device_num, stream_id;
   actor requester;

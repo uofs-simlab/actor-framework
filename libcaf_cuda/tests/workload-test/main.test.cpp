@@ -301,7 +301,7 @@ void caf_main(actor_system& sys) {
     };
 
     scan("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
-    scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
+    //scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
 
     std::cout << "[INFO] Pre-loading " << tasks->size() << " matrices into memory...\n";
     for (auto& t : *tasks) {

@@ -657,7 +657,7 @@ protected:
     auto ctx = std::make_shared<solve_context>();
     ctx->requester = actor_cast<actor>(this->current_sender());
     ctx->n = n; ctx->nnz = nnz; ctx->max_iter = max_iter; ctx->threshold = tol * tol;
-    ctx->device_num = dev; ctx->stream_id = stream;
+    ctx->device_num = dev; ctx->stream_id = stream; ctx->format = fmt;
 
     command_runner<T> runner;
     auto res = runner.transfer_memory(dev, stream, rp, ci, val, b_in, x_in);
@@ -673,7 +673,15 @@ protected:
     ctx->dot_pw = work_runner.transfer_memory(dev, stream, create_out_arg_with_size<T>(1));
 
     auto d_ptr = platform::create()->schedule(stream, dev);
-    size_t ws_size = d_ptr->spmv_csr_buffer_size(stream, n, n, nnz, ctx->A_rp, ctx->A_ci, ctx->A_val, ctx->x, ctx->w);
+
+    size_t ws_size = 0;
+    if (fmt == matrix_format::csr)
+      ws_size = d_ptr->spmv_csr_buffer_size(stream, n, n, nnz, ctx->A_rp, ctx->A_ci, ctx->A_val, ctx->x, ctx->w);
+    else if (fmt == matrix_format::csc)
+      ws_size = d_ptr->spmv_csc_buffer_size(stream, n, n, nnz, ctx->A_rp, ctx->A_ci, ctx->A_val, ctx->x, ctx->w);
+    else if (fmt == matrix_format::coo)
+      ws_size = d_ptr->spmv_coo_buffer_size(stream, n, n, nnz, ctx->A_rp, ctx->A_ci, ctx->A_val, ctx->x, ctx->w);
+
     if (ws_size > 0) {
       command_runner<out<char>> ws_runner;
       ctx->spmv_ws = ws_runner.transfer_memory(dev, stream, out<char>(static_cast<int>(ws_size)));
@@ -699,7 +707,7 @@ protected:
     for (int k = 0; k < batch_size; ++k) {
       // p = r + beta * p
       d_ptr->launch_kernel_mem_ref(p_kernel, range, 
-                                   std::make_tuple(in<int>(ctx->n), ctx->r, ctx->p, ctx->rho, ctx->old_rho, in<int>(ctx->iterations)), 
+                                   std::make_tuple(in<int>(ctx->n), ctx->r, ctx->p, ctx->rho, ctx->old_rho, in<int>(ctx->iterations), in<T>(ctx->threshold)), 
                                    ctx->stream_id);
       // w = Ap
       execute_spmv(ctx, ctx->p, ctx->w);
@@ -707,7 +715,7 @@ protected:
       execute_dot(ctx, ctx->p, ctx->w, ctx->dot_pw);
       // x += alpha * p, r -= alpha * w
       d_ptr->launch_kernel_mem_ref(xr_kernel, range,
-                                   std::make_tuple(in<int>(ctx->n), ctx->x, ctx->r, ctx->p, ctx->w, ctx->rho, ctx->dot_pw),
+                                   std::make_tuple(in<int>(ctx->n), ctx->x, ctx->r, ctx->p, ctx->w, ctx->rho, ctx->dot_pw, in<T>(ctx->threshold)),
                                    ctx->stream_id);
       // old_rho = rho, rho = r * r
       if constexpr (std::is_same_v<T, double>) d_ptr->dcopy(ctx->stream_id, 1, ctx->rho, ctx->old_rho); 
@@ -727,9 +735,25 @@ protected:
 
   void execute_spmv(std::shared_ptr<solve_context> ctx, mem_ptr<T> in_v, mem_ptr<T> out_v) {
     auto d_ptr = platform::create()->schedule(ctx->stream_id, ctx->device_num);
-    // Defaulting to CSR for this optimized version as per logic, can be extended
-    d_ptr->spmv_csr(ctx->stream_id, ctx->n, ctx->n, ctx->nnz, T{1}, 
-                    ctx->A_rp, ctx->A_ci, ctx->A_val, in_v, T{0}, out_v, ctx->spmv_ws);
+    switch (ctx->format) {
+      case matrix_format::csr:
+        d_ptr->spmv_csr(ctx->stream_id, ctx->n, ctx->n, ctx->nnz, T{1}, 
+                        ctx->A_rp, ctx->A_ci, ctx->A_val, in_v, T{0}, out_v, ctx->spmv_ws);
+        break;
+
+      case matrix_format::csc:
+        d_ptr->spmv_csc(ctx->stream_id, ctx->n, ctx->n, ctx->nnz, T{1}, 
+                        ctx->A_rp, ctx->A_ci, ctx->A_val, in_v, T{0}, out_v, ctx->spmv_ws);
+        break;
+
+      case matrix_format::coo:
+        d_ptr->spmv_coo(ctx->stream_id, ctx->n, ctx->n, ctx->nnz, T{1}, 
+                        ctx->A_rp, ctx->A_ci, ctx->A_val, in_v, T{0}, out_v, ctx->spmv_ws);
+        break;
+
+      default:
+        break;
+    }
   }
 
   void execute_dot(std::shared_ptr<solve_context> ctx, mem_ptr<T> xv, mem_ptr<T> yv, mem_ptr<T> rv) {

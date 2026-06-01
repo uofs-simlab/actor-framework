@@ -555,6 +555,50 @@ void caf_main(actor_system& sys) {
         );
     }
 
+    // Test 21: Optimized Facade CSC Simple
+    {
+        std::cout << "\n[INFO] Test 21: Optimized Facade actor CSC simple matrix..." << std::endl;
+        std::vector<int> col_ptr = {0, 1, 2, 3};
+        std::vector<int> row_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        auto facade = sys.spawn<sparse_cg_facade_optimized<float>>(302);
+
+        self->mail(create_in_arg(col_ptr), create_in_arg(row_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::csc, n, nnz, tolerance, max_iter, 0, 20).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x, solver_result_meta meta) {
+                std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << meta.converged << std::endl;
+                verify_solution("Optimized Facade CSC Simple", result_x, expected);
+            }
+        );
+    }
+
+    // Test 22: Optimized Facade COO Simple
+    {
+        std::cout << "\n[INFO] Test 22: Optimized Facade actor COO simple matrix..." << std::endl;
+        std::vector<int> row_ind = {0, 1, 2};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        auto facade = sys.spawn<sparse_cg_facade_optimized<float>>(303);
+
+        self->mail(create_in_arg(row_ind), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::coo, n, nnz, tolerance, max_iter, 0, 21).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x, solver_result_meta meta) {
+                std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << meta.converged << std::endl;
+                verify_solution("Optimized Facade COO Simple", result_x, expected);
+            }
+        );
+    }
+
     manager::shutdown();
 }
 

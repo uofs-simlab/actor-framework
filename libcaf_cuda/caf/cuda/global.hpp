@@ -128,6 +128,7 @@ bool inspect(Inspector& f, caf::cuda::sparse_cg_solve_context<T>& x) {
                             f.field("dot_pw", x.dot_pw),
                             f.field("spmv_ws", x.spmv_ws),
                             f.field("threshold", x.threshold),
+                            f.field("format", x.format),
                             f.field("n", x.n),
                             f.field("nnz", x.nnz),
                             f.field("max_iter", x.max_iter),
