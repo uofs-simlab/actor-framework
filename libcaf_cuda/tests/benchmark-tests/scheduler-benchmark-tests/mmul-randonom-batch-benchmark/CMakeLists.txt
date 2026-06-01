@@ -44,7 +44,9 @@ target_link_libraries(test
     "${CAF_BUILD}/libcaf_core/libcaf_core.so"
     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
-    CUDA::nvrtc
+    CUDA::nvrtc 
+    CUDA::cublas
+    CUDA::cusparse
 )
 
 target_link_libraries(work-stealing
@@ -53,4 +55,6 @@ target_link_libraries(work-stealing
     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
     CUDA::nvrtc
+    CUDA::cublas
+    CUDA::cusparse
 )
