@@ -149,7 +149,6 @@ int main() {
     }
 
     const int streams_per_gpu = 8;
-    std::vector<int> task_counts = {50000,100000};
 
     int num_gpus;
     cuDeviceGetCount(&num_gpus);
@@ -178,13 +177,8 @@ int main() {
         return 1;
     }
 
-    for (int total_tasks : task_counts) {
     std::cout << "=====================================" << std::endl;
-    std::cout << "Task count: " << total_tasks << " (Irregular Workload)" << std::endl;
-
-    std::vector<Task> all_tasks;
-    std::mt19937 rng_tasks(42); // Fixed seed for task distribution
-    std::uniform_int_distribution<size_t> dist_N_idx(0, available_Ns.size() - 1);
+    std::cout << "Dynamic Workload Generation (CUDA Baseline)" << std::endl;
 
     std::vector<CUcontext> contexts(num_gpus);
     std::vector<CUfunction> mmul_funcs(num_gpus);
@@ -298,40 +292,54 @@ int main() {
         conv_funcs[i] = conv_funcs[0];
     }
 
-    std::uniform_int_distribution<int> dist_type(0, 2);
-    for (int i = 0; i < total_tasks; ++i) {
-        int N_for_task = available_Ns[dist_N_idx(rng_tasks)];
-        TaskType t_type = static_cast<TaskType>(dist_type(rng_tasks));
-        all_tasks.push_back({N_for_task, t_type});
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Static Round-Robin Partitioning
-    // ─────────────────────────────────────────────────────────────────────────
-    std::vector<std::vector<Task>> partitions(num_gpus);
-    for (int i = 0; i < total_tasks; ++i) {
-        partitions[i % num_gpus].push_back(all_tasks[i]);
-    }
-
-    // Preallocate a single large host buffer for DTOH transfers to save RAM and keep things fair.
     std::vector<int> shared_dtoh_buffer((size_t)max_N_val * max_N_val);
+    std::mt19937 rng_prod(42); 
+    std::uniform_int_distribution<size_t> dist_N_idx(0, available_Ns.size() - 1);
+    std::uniform_int_distribution<int> dist_type(0, 2);
+    std::uniform_int_distribution<int> dist_batch_size(5000, 15000);
+    std::uniform_int_distribution<int> dist_sleep(500, 2000);
 
+    int num_batches = 5;
     auto start = std::chrono::steady_clock::now();
 
-    std::vector<std::thread> threads;
-    for (int i = 0; i < num_gpus; ++i) { // Pass context and kernel function to each worker
-        threads.emplace_back(gpu_worker, i, std::ref(partitions[i]), streams_per_gpu, contexts[i], mmul_funcs[i], vadd_funcs[i], conv_funcs[i],
-         std::ref(global_host_matrix_pool), shared_dtoh_buffer.data());
-    }
+    for (int b = 0; b < num_batches; ++b) {
+        // Sleep timer (random time)
+        int sleep_ms = dist_sleep(rng_prod);
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
 
-    for (auto& t : threads) {
-        t.join();
+        // Generate random sized partition (batch)
+        int current_batch_size = dist_batch_size(rng_prod);
+        std::vector<Task> batch_tasks;
+        for (int i = 0; i < current_batch_size; ++i) {
+            int N_for_task = available_Ns[dist_N_idx(rng_prod)];
+            TaskType t_type = static_cast<TaskType>(dist_type(rng_prod));
+            batch_tasks.push_back({N_for_task, t_type});
+        }
+
+        std::cout << "Dispatching Batch " << b + 1 << "/" << num_batches 
+                  << " with " << current_batch_size << " tasks..." << std::endl;
+
+        // Static Round-Robin Partitioning for this batch
+        std::vector<std::vector<Task>> partitions(num_gpus);
+        for (int i = 0; i < current_batch_size; ++i) {
+            partitions[i % num_gpus].push_back(batch_tasks[i]);
+        }
+
+        std::vector<std::thread> threads;
+        for (int i = 0; i < num_gpus; ++i) {
+            threads.emplace_back(gpu_worker, i, std::ref(partitions[i]), streams_per_gpu, contexts[i], mmul_funcs[i], vadd_funcs[i], conv_funcs[i],
+             std::ref(global_host_matrix_pool), shared_dtoh_buffer.data());
+        }
+
+        for (auto& t : threads) {
+            t.join();
+        }
     }
 
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = end - start;
+    std::cout << "Total Makespan: " << elapsed.count() << "s" << std::endl;
 
-    std::cout << "Makespan: " << elapsed.count() << "s" << std::endl;
 
     // Cleanup contexts and module
     for (int i = 0; i < num_gpus; ++i) {
@@ -340,7 +348,6 @@ int main() {
     cuModuleUnload(mmul_mod);
     cuModuleUnload(vadd_mod);
     cuModuleUnload(conv_mod);
-    }
 
     return 0;
 }

@@ -59,6 +59,9 @@ CAF_BEGIN_TYPE_ID_BLOCK(mmul_benchmark, caf::id_block::cuda::end)
     CAF_ADD_TYPE_ID(mmul_benchmark, (Task))
     CAF_ADD_TYPE_ID(mmul_benchmark, (std::vector<Task>))
     CAF_ADD_ATOM(mmul_benchmark, refill_buffer_atom)
+    CAF_ADD_ATOM(mmul_benchmark, produce_atom)
+    CAF_ADD_ATOM(mmul_benchmark, tick_atom)
+    CAF_ADD_ATOM(mmul_benchmark, production_finished_atom)
 CAF_END_TYPE_ID_BLOCK(mmul_benchmark)
 
 
@@ -108,22 +111,49 @@ MatrixPool create_matrix_pool_random(
 // ---------------------------- GLOBAL TASK POOL ----------------------------
 // The central source of truth for work. Implements a pull-based model.
 struct task_pool_state {
-    std::vector<Task> tasks;
+    std::deque<Task> tasks;
     size_t next_task_idx = 0;
+    bool production_finished = false;
+    std::vector<std::pair<size_t, response_promise>> pending;
 };
 
-caf::behavior global_task_pool(caf::stateful_actor<task_pool_state>* self, std::vector<Task> tasks) {
-    self->state().tasks = std::move(tasks);
+caf::behavior global_task_pool(caf::stateful_actor<task_pool_state>* self) {
     return {
         [=](get_work_atom, size_t batch_size) -> result<std::vector<Task>> {
             auto& st = self->state();
-            if (st.next_task_idx >= st.tasks.size())
+            if (!st.tasks.empty()) {
+                size_t count = std::min(batch_size, st.tasks.size());
+                std::vector<Task> batch;
+                for (size_t i = 0; i < count; ++i) {
+                    batch.push_back(st.tasks.front());
+                    st.tasks.pop_front();
+                }
+                return batch;
+            }
+            if (st.production_finished)
                 return sec::end_of_stream;
-            size_t count = std::min(batch_size, st.tasks.size() - st.next_task_idx);
-            std::vector<Task> batch(st.tasks.begin() + st.next_task_idx, 
-                                    st.tasks.begin() + st.next_task_idx + count);
-            st.next_task_idx += count;
-            return batch;
+            
+            auto promise = self->make_response_promise<std::vector<Task>>();
+            st.pending.emplace_back(batch_size, promise);
+            return promise;
+        },
+        [=](std::vector<Task>& batch) {
+            auto& st = self->state();
+            for (auto& t : batch) st.tasks.push_back(t);
+            while (!st.pending.empty() && !st.tasks.empty()) {
+                auto [req_size, promise] = st.pending.front();
+                st.pending.erase(st.pending.begin());
+                size_t count = std::min(req_size, st.tasks.size());
+                std::vector<Task> out_batch;
+                for (size_t i = 0; i < count; ++i) { out_batch.push_back(st.tasks.front()); st.tasks.pop_front(); }
+                promise.deliver(out_batch);
+            }
+        },
+        [=](production_finished_atom) {
+            auto& st = self->state();
+            st.production_finished = true;
+            for (auto& p : st.pending) p.second.deliver(sec::end_of_stream);
+            st.pending.clear();
         }
     };
 }
@@ -247,6 +277,54 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
     };
 }
 
+// ---------------------------- TASK PRODUCER ----------------------------
+struct producer_state {
+    caf::actor pool;
+    caf::actor supervisor;
+    std::vector<int> Ns;
+    int batches_remaining;
+};
+
+caf::behavior task_producer(caf::stateful_actor<producer_state>* self,
+                            caf::actor pool, caf::actor supervisor, int num_batches, std::vector<int> Ns) {
+    self->state().pool = pool;
+    self->state().supervisor = supervisor;
+    self->state().Ns = std::move(Ns);
+    self->state().batches_remaining = num_batches;
+
+    self->mail(tick_atom_v).send(self);
+
+    return {
+        [=](tick_atom) {
+            auto& st = self->state();
+            if (st.batches_remaining-- <= 0) {
+                self->mail(production_finished_atom_v).send(st.pool);
+                self->mail(production_finished_atom_v).send(st.supervisor);
+                self->quit();
+                return;
+            }
+
+            std::random_device rd;
+            std::mt19937 rng(rd());
+            std::uniform_int_distribution<int> dist_sleep(500, 2000);
+            std::uniform_int_distribution<int> dist_batch(5000, 15000);
+            std::uniform_int_distribution<size_t> dist_N(0, st.Ns.size() - 1);
+            std::uniform_int_distribution<int> dist_type(0, 2);
+
+            int count = dist_batch(rng);
+            std::vector<Task> batch;
+            for (int i = 0; i < count; ++i)
+                batch.push_back({st.Ns[dist_N(rng)], static_cast<TaskType>(dist_type(rng))});
+
+            self->mail(produce_atom_v, count).send(st.supervisor);
+            
+            self->delayed_mail(tick_atom_v).delay(std::chrono::milliseconds(dist_sleep(rng))).send(self);
+            // Send work to the pool actor
+            self->mail(batch).send(st.pool);
+        }
+    };
+}
+
 // ---------------------------- WORKER ACTOR ----------------------------
 // Manages 1 stream and pulls work from the Device Actor.
 struct worker_state {
@@ -361,23 +439,25 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
 // ---------------------------- SUPERVISOR ACTOR ----------------------------
 struct supervisor_actor_state {
     int total_tasks;
+    bool production_finished = false;
     int completed = 0;
     std::chrono::steady_clock::time_point start_time;
 };
 
 caf::behavior supervisor_actor_fun(
     caf::stateful_actor<supervisor_actor_state>* self,
-    int total_tasks,
     int workers_per_gpu,
     int max_in_flight_tasks_per_worker,
     MatrixPool pool,
-    std::vector<Task> tasks,
-    int* shared_dtoh_ptr
+    std::vector<int> available_Ns,
+    int* shared_dtoh_ptr,
+    int num_batches
     ) {
-    self->state().total_tasks = total_tasks;
+    self->state().total_tasks = 0;
     self->state().start_time = std::chrono::steady_clock::now();
 
-    auto pool_actor = self->spawn(global_task_pool, std::move(tasks));
+    auto pool_actor = self->spawn(global_task_pool);
+    self->spawn(task_producer, pool_actor, self, num_batches, std::move(available_Ns));
 
     caf::cuda::manager& mgr = caf::cuda::manager::get();
     int num_gpus = mgr.get_num_devices();
@@ -394,9 +474,15 @@ caf::behavior supervisor_actor_fun(
     }
 
     return {
+        [=](produce_atom, int count) {
+            self->state().total_tasks += count;
+        },
+        [=](production_finished_atom) {
+            self->state().production_finished = true;
+        },
         [=](int done) {
             self->state().completed += done;
-            if (self->state().completed >= self->state().total_tasks) {
+            if (self->state().production_finished && self->state().completed >= self->state().total_tasks) {
                 auto end_time = std::chrono::steady_clock::now();
                 std::chrono::duration<double> total_time = end_time - self->state().start_time;
 
@@ -455,32 +541,19 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
         for (const auto& [N, _] : pool.A) sizes.push_back(N);
         std::sort(sizes.begin(), sizes.end());
 
-        std::vector<Task> tasks_for_this_run;
-        tasks_for_this_run.reserve(num_tasks_for_this_run);
-
-        std::mt19937 rng(42);
-        std::uniform_int_distribution<size_t> dist_size(0, sizes.size() - 1);
-        std::uniform_int_distribution<int> dist_type(0, 2);
-        for (int i = 0; i < num_tasks_for_this_run; ++i) {
-            int N = sizes[dist_size(rng)];
-            TaskType type = static_cast<TaskType>(dist_type(rng));
-            tasks_for_this_run.push_back({N, type});
-        }
-
         // Preallocate a single large host buffer for DTOH transfers to save RAM and keep things fair.
         std::vector<int> shared_dtoh_buffer((size_t)max_N * max_N);
 
         // Execute the supervisor which manages the asynchronous workload
         double elapsed = time_run([&]() {
-
             auto sup = sys.spawn(
                 supervisor_actor_fun,
-                (int)tasks_for_this_run.size(), // total_tasks
                 workers_per_gpu,
                 max_in_flight_tasks_per_worker,
                 pool,
-                tasks_for_this_run,
-                    shared_dtoh_buffer.data()
+                sizes,
+                shared_dtoh_buffer.data(),
+                5 // num_batches
             );
 
 	      sys.await_all_actors_done();
