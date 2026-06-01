@@ -3,10 +3,23 @@
 #include <iostream>
 #include <vector>
 #include <chrono>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
-#include <random>
+#include <cmath>
+#include <atomic>
+#include <thread>
 
-static const unsigned int RANDOM_SEED = 42;
+struct TimingState {
+    std::chrono::steady_clock::time_point end_time;
+    std::atomic<bool> ready{false};
+};
+
+void completion_callback(void* userData) {
+    auto* state = static_cast<TimingState*>(userData);
+    state->end_time = std::chrono::steady_clock::now();
+    state->ready = true;
+}
 
 static void checkCU(CUresult r, const char* where) {
     if (r != CUDA_SUCCESS) {
@@ -18,8 +31,17 @@ static void checkCU(CUresult r, const char* where) {
     }
 }
 
-// runMatrixMul: executes the kernel and returns the total duration in milliseconds
-double runMatrixMul(CUmodule module, CUfunction kernel, int N) {
+std::string readFile(const std::string &path) {
+    std::ifstream in(path, std::ios::in | std::ios::binary);
+    if (!in) throw std::runtime_error("Failed to open " + path);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+std::vector<int> h_c; // Declared globally
+
+void runMatrixMul(CUmodule module, CUfunction kernel, int N, CUstream stream) {
     using clock = std::chrono::steady_clock;
     using ms = std::chrono::duration<double, std::milli>;
 
@@ -28,41 +50,48 @@ double runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     size_t elements = (size_t)N * (size_t)N;
     size_t bytes = elements * sizeof(int);
 
-    std::mt19937 rng(RANDOM_SEED);
-    std::uniform_int_distribution<int> dist(1, 10);
-
-    std::vector<int> h_a(elements);
-    std::vector<int> h_b(elements);
-    std::vector<int> h_c(elements);
-
-    for (auto& v : h_a) v = dist(rng);
-    for (auto& v : h_b) v = dist(rng);
+    std::vector<int> h_a(elements, 1); // These remain local as they are initialized with N
+    std::vector<int> h_b(elements, 1); // These remain local as they are initialized with N
+    h_c.resize(elements); // Resize the global h_c for the current N
 
     CUdeviceptr d_a, d_b, d_c;
-    CUstream stream;
-
-    // ----------------------------------
-    // Create Stream
-    // ----------------------------------
-    checkCU(cuStreamCreate(&stream, CU_STREAM_DEFAULT), "cuStreamCreate");
 
     auto t_total_start = clock::now();
 
     // ----------------------------------
     // Device Allocation
     // ----------------------------------
-    checkCU(cuMemAlloc(&d_a, bytes), "cuMemAlloc d_a");
-    checkCU(cuMemAlloc(&d_b, bytes), "cuMemAlloc d_b");
-    checkCU(cuMemAlloc(&d_c, bytes), "cuMemAlloc d_c");
+    auto t_alloc_start = clock::now();
+
+    checkCU(cuMemAllocAsync(&d_a, bytes, stream), "cuMemAllocAsync d_a");
+    checkCU(cuMemAllocAsync(&d_b, bytes, stream), "cuMemAllocAsync d_b");
+    checkCU(cuMemAllocAsync(&d_c, bytes, stream), "cuMemAllocAsync d_c");
+
+    auto t_alloc_end = clock::now();
 
     // ----------------------------------
-    // H2D copies (async, pipelined with kernel)
+    // H2D copy A
     // ----------------------------------
+    auto t_h2d_a_start = clock::now();
+
     checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), bytes, stream), "cuMemcpyHtoDAsync A");
-    checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), bytes, stream), "cuMemcpyHtoDAsync B");
+    std::cout << "  (Transfer size: " << bytes << " bytes)\n";
+
+    auto t_h2d_a_end = clock::now();
 
     // ----------------------------------
-    // Kernel launch
+    // H2D copy B
+    // ----------------------------------
+    auto t_h2d_b_start = clock::now();
+
+    checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), bytes, stream), "cuMemcpyHtoDAsync B");
+    //checkCU(cuStreamSynchronize(stream), "sync B");
+    std::cout << "  (Transfer size: " << bytes << " bytes)\n";
+
+    auto t_h2d_b_end = clock::now();
+
+    // ----------------------------------
+    // Kernel launch + execution
     // ----------------------------------
     const unsigned int blockX = 32;
     const unsigned int blockY = 32;
@@ -70,6 +99,8 @@ double runMatrixMul(CUmodule module, CUfunction kernel, int N) {
     unsigned int gridY = (N + blockY - 1) / blockY;
 
     void* kernelParams[] = { &d_a, &d_b, &d_c, &N };
+
+    auto t_kernel_start = clock::now();
 
     checkCU(cuLaunchKernel(kernel,
                            gridX, gridY, 1,
@@ -80,42 +111,86 @@ double runMatrixMul(CUmodule module, CUfunction kernel, int N) {
                            nullptr),
             "cuLaunchKernel");
 
-    // ----------------------------------
-    // D2H copy + synchronize all pending GPU work
-    // ----------------------------------
-    cuMemcpyDtoHAsync(h_c.data(), d_c, bytes, stream);
-    cuStreamSynchronize(stream);
+   // checkCU(cuStreamSynchronize(stream), "kernel sync");
 
+    auto t_kernel_end = clock::now();
+
+    // ----------------------------------
+    // D2H copy
+    // ----------------------------------
+    auto t_d2h_start = clock::now();
+    TimingState t_state;
+
+    cuMemcpyDtoHAsync(h_c.data(), d_c, bytes, stream);
+
+    // Enqueue the host function to capture timing when the copy finishes
+    checkCU(cuLaunchHostFunc(stream, completion_callback, &t_state), "cuLaunchHostFunc");
+
+    // In a real actor, we would not wait here. 
+    // For this benchmark driver, we wait for the callback to fire.
+    while (!t_state.ready) {
+        std::this_thread::yield();
+    }
+
+    std::cout << "  (Transfer size: " << bytes << " bytes)\n";
+    
+    auto t_d2h_end = t_state.end_time;
+    auto t_total_end = t_state.end_time;
+
+    
     // ----------------------------------
     // Free device memory
     // ----------------------------------
-    checkCU(cuMemFree(d_a), "cuMemFree A");
-    checkCU(cuMemFree(d_b), "cuMemFree B");
-    checkCU(cuMemFree(d_c), "cuMemFree C");
+    auto t_free_start = clock::now();
 
-    auto t_total_end = clock::now();
+    checkCU(cuMemFreeAsync(d_a, stream), "cuMemFreeAsync A");
+    checkCU(cuMemFreeAsync(d_b, stream), "cuMemFreeAsync B");
+    checkCU(cuMemFreeAsync(d_c, stream), "cuMemFreeAsync C");
 
-    // ----------------------------------
-    // Destroy stream
-    // ----------------------------------
-    checkCU(cuStreamDestroy(stream), "cuStreamDestroy");
+    auto t_free_end = clock::now();
+
+
+
 
     // ----------------------------------
     // Print Results
-    // (Sub-timings omitted: intermediate async ops have no sync point
-    //  so CPU-side timestamps do not reflect actual GPU phase durations.)
     // ----------------------------------
-    double total_ms = ms(t_total_end - t_total_start).count();
 
-    std::cout << "TOTAL: " << total_ms << " ms\n";
+    std::cout << "Device allocation: "
+              << ms(t_alloc_end - t_alloc_start).count()
+              << " ms\n";
+
+    std::cout << "H2D copy A: "
+              << ms(t_h2d_a_end - t_h2d_a_start).count()
+              << " ms\n";
+
+    std::cout << "H2D copy B: "
+              << ms(t_h2d_b_end - t_h2d_b_start).count()
+              << " ms\n";
+
+    std::cout << "Kernel execution: "
+              << ms(t_kernel_end - t_kernel_start).count()
+              << " ms\n";
+
+    std::cout << "D2H copy: "
+              << ms(t_d2h_end - t_d2h_start).count()
+              << " ms\n";
+
+    std::cout << "Device free: "
+              << ms(t_free_end - t_free_start).count()
+              << " ms\n";
+
+    std::cout << "TOTAL: "
+              << ms(t_total_end - t_total_start).count()
+              << " ms\n";
+
     std::cout << "=============================================\n";
-
-    return total_ms;
 }
 
 int main(int argc, char** argv) {
-    std::vector<int> sizes = {1000, 2000, 4000, 8000, 16000};
+  std::vector<int> sizes = {1000, 4000, 8000, 12000};
     
+//   std::vector<int> sizes = {12000};	
    if (argc > 1) {
         sizes.clear();
         for (int i = 1; i < argc; ++i) sizes.push_back(std::stoi(argv[i]));
@@ -127,36 +202,41 @@ int main(int argc, char** argv) {
     checkCU(cuDeviceGet(&dev, 0), "cuDeviceGet(0)");
 
     CUcontext ctx;
-    checkCU(cuCtxCreate(&ctx, 0, dev), "cuCtxCreate");
+    checkCU(cuCtxCreate(&ctx, CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, dev), "cuCtxCreate");
+
+    const std::string cubinPath = "../mmul.cubin";
+    std::string cubin;
+
+    try {
+        cubin = readFile(cubinPath);
+    } catch (const std::exception &e) {
+        std::cerr << "Failed to read CUBIN file '" << cubinPath << "': " << e.what() << "\n";
+        return EXIT_FAILURE;
+    }
 
     CUmodule module;
-    checkCU(cuModuleLoad(&module, "mmul.cubin"), "cuModuleLoad mmul.cubin");
+    checkCU(cuModuleLoadDataEx(&module, cubin.data(), 0, nullptr, nullptr), "cuModuleLoadDataEx");
 
     CUfunction kernel;
     checkCU(cuModuleGetFunction(&kernel, module, "matrixMul"), "cuModuleGetFunction matrixMul");
 
-    // Warmup: small run to prime CUDA lazy-init / cubin load before timed tests
-    runMatrixMul(module, kernel, 64);
-    std::cout << "--- warmup complete ---\n";
-
-    std::vector<std::pair<int,double>> results;
+    CUstream stream;
+    checkCU(cuStreamCreate(&stream, CU_STREAM_DEFAULT), "cuStreamCreate");
 
     for (int N : sizes) {
         try {
-            double t = runMatrixMul(module, kernel, N);
-            results.emplace_back(N, t);
+            runMatrixMul(module, kernel, N, stream);
+            
+            // Ensure stream is completely empty before starting the next size
+            checkCU(cuStreamSynchronize(stream), "cuStreamSynchronize between sizes");
+            
         } catch (const std::exception &e) {
             std::cerr << "Exception while running N=" << N << ": " << e.what() << "\n";
         }
         std::cout << "----------------------------------------\n";
     }
 
-    // Print summary of results
-    std::cout << "\nMatrix size : time (ms)\n";
-    for (auto &p : results) {
-        std::cout << p.first << " : " << p.second << " ms\n";
-    }
-
+    checkCU(cuStreamDestroy(stream), "cuStreamDestroy");
     checkCU(cuModuleUnload(module), "cuModuleUnload");
     checkCU(cuCtxDestroy(ctx), "cuCtxDestroy");
 

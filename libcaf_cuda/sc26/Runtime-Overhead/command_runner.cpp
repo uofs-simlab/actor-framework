@@ -10,11 +10,33 @@
 #include <numeric>
 #include <random>
 #include "caf/actor_registry.hpp"
+//#include <caf/atoms.hpp>
+
+
 
 using namespace caf;
 using namespace std::chrono_literals;
 
-using command = caf::cuda::command_runner<>;
+
+void serial_matrix_multiply(const std::vector<int>& a,
+                            const std::vector<int>& b,
+                            std::vector<int>& c,
+                            int N) {
+  
+
+ for (int i = 0; i < N; ++i) {
+    for (int j = 0; j < N; ++j) {
+      int sum = 0;
+      for (int k = 0; k < N; ++k) {
+        sum += a[i * N + k] * b[k * N + j];
+      }
+      c[i * N + j] = sum;
+    }
+  }
+}
+
+using command =
+  caf::cuda::command_runner<>;
 
 command mmul_command;
 
@@ -26,17 +48,22 @@ struct mmul_state {
 //so its only fair that we do not either 
 std::vector<int> matrixC;
 
-static const unsigned int RANDOM_SEED = 42;
 
-caf::behavior mmul_actor(caf::stateful_actor<mmul_state>* self) {
+
+
+caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
   return {
 
     [=](const std::vector<int>& matrixA,
         const std::vector<int>& matrixB,
         int N) {
-      
+
       using clock = std::chrono::steady_clock;
       using ms = std::chrono::duration<double, std::milli>;
+
+      size_t bytes_a = matrixA.size() * sizeof(int);
+      size_t bytes_b = matrixB.size() * sizeof(int);
+      size_t bytes_c = matrixC.size() * sizeof(int);
 
 
       caf::cuda::manager& mgr = caf::cuda::manager::get();
@@ -44,7 +71,7 @@ caf::behavior mmul_actor(caf::stateful_actor<mmul_state>* self) {
       int stream = 1;
 
       auto program =
-        mgr.create_program_from_cubin("mmul.cubin", "matrixMul");
+        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
 
       auto t_total_start = clock::now();
       // -------------------------
@@ -65,6 +92,7 @@ caf::behavior mmul_actor(caf::stateful_actor<mmul_state>* self) {
           device,
           stream,
           std::move(inA));
+
 
       auto t_a_transfer_end = clock::now();
 
@@ -117,9 +145,8 @@ caf::behavior mmul_actor(caf::stateful_actor<mmul_state>* self) {
 
 	    caf::cuda::mem_ptr<int> dC = std::get<2>(output);
 
-            //std::vector<int> matrixC = dC->copy_to_host();
-
-	    dC->copy_to_host(matrixC.data(),N*N);
+            mmul_command.copy_to_host_async(dC, matrixC.data(), N * N);
+            dC->synchronize();
 
             auto t_copy_end = clock::now();
             auto t_total_end = clock::now();
@@ -129,6 +156,9 @@ caf::behavior mmul_actor(caf::stateful_actor<mmul_state>* self) {
             // -------------------------
 
             std::cout << "\n===== BENCHMARK RESULTS (N=" << N << ") =====\n";
+            std::cout << "  Transfer size A: " << bytes_a << " bytes\n";
+            std::cout << "  Transfer size B: " << bytes_b << " bytes\n";
+            std::cout << "  Transfer size C: " << bytes_c << " bytes\n";
 
             std::cout << "create_in_arg A: "
                       << ms(t_a_inarg_end - t_a_inarg_start).count()
@@ -168,32 +198,31 @@ caf::behavior mmul_actor(caf::stateful_actor<mmul_state>* self) {
 
 
 void run_mmul_test(caf::actor_system& sys, int matrix_size) {
-  // F5: manager::init/shutdown moved to caf_main — called once for all sizes
 
+
+  caf::cuda::manager::init(sys);
   // ------------------------------------
   // Start timing
   // ------------------------------------
   auto start = std::chrono::steady_clock::now();
 
-  // F4: use mt19937(42) to match cuda_native data initialisation
-  std::mt19937 rng(RANDOM_SEED);
-  std::uniform_int_distribution<int> dist(1, 10);
-  std::vector<int> matrixA(matrix_size * matrix_size);
-  std::vector<int> matrixB(matrix_size * matrix_size);
-  for (auto& v : matrixA) v = dist(rng);
-  for (auto& v : matrixB) v = dist(rng);
+  // Spawn num_actors actors running the mmul behavior
+  std::vector<int> matrixA(matrix_size * matrix_size,2);
+  std::vector<int> matrixB(matrix_size * matrix_size,3);
 
   matrixC.resize(matrix_size*matrix_size);
 
-  using clock = std::chrono::steady_clock;
+ using clock = std::chrono::steady_clock;
 
-  auto t_start = clock::now();
+auto t_start = clock::now();
 
-  caf::actor a =sys.spawn(mmul_actor);
+caf::actor a =sys.spawn(mmul_actor_fun_2);
 
-  anon_mail(matrixA,matrixB,matrix_size).send(a);
+anon_mail(matrixA,matrixB,matrix_size).send(a);
 
-  auto t_end = clock::now();
+auto t_end = clock::now();
+
+
 
   // Wait for all actors to finish
   sys.await_all_actors_done();
@@ -207,35 +236,48 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size) {
 
   std::cout << "[MMUL TEST] matrix_size=" << matrix_size
             << ", time=" << duration_ms << " ms\n";
-}
 
-class config : public actor_system_config {
-public:
-  config() {
-      set("caf.scheduler.max-threads", 1u);
-  }
-};
+  caf::cuda::manager::shutdown();
 
-
-void caf_main(caf::actor_system& sys, const config& cfg) {
-  caf::cuda::manager::init(sys);  // F5: init once before all sizes
-
-  // F2: warmup run to prime CUDA context, JIT, and CAF infrastructure
-  std::cout << "--- warmup starting ---\n";
-  run_mmul_test(sys, 64);
-  std::cout << "--- warmup complete ---\n";
-
-  // F1: unified sizes matching cuda_native: {1000, 2000, 4000, 8000, 16000}
-  run_mmul_test(sys,1000);
-  run_mmul_test(sys,2000);
-  run_mmul_test(sys,4000);
-  run_mmul_test(sys,8000);
-  run_mmul_test(sys,16000);
-
-  caf::cuda::manager::shutdown();  // F5: shutdown once after all sizes
 }
 
 
+void caf_main(caf::actor_system& sys) {
+    run_mmul_test(sys, 1000);
+    run_mmul_test(sys, 4000);
+    run_mmul_test(sys, 8000);
+    run_mmul_test(sys, 12000);
+}
 
+int main(int argc, char** argv) {
+  // Initialize user defined types and messages if needed.
+  //init_global_meta_objects<custom_types_1>();
+  
+  // Initialize the global type information.
+  core::init_global_meta_objects();
 
-CAF_MAIN()
+  // Create the config.
+  actor_system_config cfg;
+
+  // --- SINGLE THREAD CONFIGURATION ---
+  cfg.set("caf.scheduler.max-threads", 1);
+  cfg.set("caf.scheduler.policy", "sharing"); 
+  // ------------------------------------
+
+  // Read CLI options. (Note: CLI flags like --caf.scheduler.max-threads=4 
+  // will override the hardcoded '1' above if provided by the user).
+  auto err = cfg.parse(argc, argv);
+  if (err)
+    return EXIT_FAILURE;
+
+  if (cfg.helptext_printed())
+    return 0;
+
+  // Create the actor system (the scheduler starts here).
+  actor_system sys{cfg};
+
+  // Run user-defined code.
+  caf_main(sys);
+  
+  return 0;
+}
