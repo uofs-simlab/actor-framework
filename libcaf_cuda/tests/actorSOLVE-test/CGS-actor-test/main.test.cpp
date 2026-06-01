@@ -471,6 +471,90 @@ void caf_main(actor_system& sys) {
         );
     }
 
+    // Test 18: Optimized Facade CSR Simple
+    {
+        std::cout << "\n[INFO] Test 18: Optimized Facade actor CSR simple matrix..." << std::endl;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<float> values = {4.0f, 3.0f, 2.0f};
+        std::vector<float> h_x(n, 0.0f);
+
+        // Spawn the optimized facade subclass
+        auto facade = sys.spawn<sparse_cg_facade_optimized<float>>(300);
+
+        self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b), create_in_out_arg(h_x),
+                   matrix_format::csr, n, nnz, tolerance, max_iter, 0, 17).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result_x, solver_result_meta meta) {
+                std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << meta.converged << std::endl;
+                verify_solution("Optimized Facade CSR Simple", result_x, expected);
+            }
+        );
+    }
+
+    // Test 19: Optimized Facade Stress Test (N=10000)
+    {
+        int N_large = 10000;
+        std::cout << "\n[INFO] Test 19: Optimized Facade Stress Test - 1D Laplacian (N=" << N_large << ")..." << std::endl;
+        
+        std::vector<int> row_ptr;
+        std::vector<int> col_ind;
+        std::vector<float> values;
+        row_ptr.push_back(0);
+        for(int i=0; i<N_large; ++i) {
+            if(i > 0) { col_ind.push_back(i-1); values.push_back(-1.0f); }
+            col_ind.push_back(i); values.push_back(2.0f);
+            if(i < N_large-1) { col_ind.push_back(i+1); values.push_back(-1.0f); }
+            row_ptr.push_back(col_ind.size());
+        }
+
+        std::vector<float> b_large(N_large, 1.0f);
+        std::vector<float> x_large(N_large, 0.0f);
+        
+        auto facade = sys.spawn<sparse_cg_facade_optimized<float>>(301);
+        auto start = std::chrono::high_resolution_clock::now();
+
+        self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(b_large), create_in_out_arg(x_large),
+                   matrix_format::csr, N_large, (int)values.size(), 1e-4f, 20000, 0, 18).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<float>& result, solver_result_meta meta) {
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> elapsed = end - start;
+                std::cout << "[SUCCESS] Optimized Stress Test completed in " << elapsed.count() << " seconds." << std::endl;
+                std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << meta.converged << std::endl;
+            }
+        );
+    }
+
+    // Test 20: Optimized Double Precision Facade CSR
+    {
+        std::cout << "\n[INFO] Test 20: Optimized Double precision facade CSR..." << std::endl;
+        int n_d = 3, nnz_d = 3;
+        std::vector<int> row_ptr = {0, 1, 2, 3};
+        std::vector<int> col_ind = {0, 1, 2};
+        std::vector<double> values = {4.0, 3.0, 2.0};
+        std::vector<double> h_b_d = {8.0, 9.0, 2.0};
+        std::vector<double> expected_d = {2.0, 3.0, 1.0};
+        std::vector<double> h_x(n_d, 0.0);
+
+        auto facade = sys.spawn<sparse_cg_facade_optimized<double>>(400);
+
+        self->mail(create_in_arg(row_ptr), create_in_arg(col_ind), create_in_arg(values),
+                   create_in_arg(h_b_d), create_in_out_arg(h_x),
+                   matrix_format::csr, n_d, nnz_d, 1e-10, 100, 0, 19).send(facade);
+
+        self->receive(
+            [&](uint32_t /*resp_id*/, int /*idx*/, const std::vector<double>& result_x, solver_result_meta meta) {
+                std::cout << "[INFO] Iterations: " << meta.iterations << ", Converged: " << meta.converged << std::endl;
+                verify_solution<double>("Optimized Double Facade CSR", result_x, expected_d, 1e-8);
+            }
+        );
+    }
+
     manager::shutdown();
 }
 
