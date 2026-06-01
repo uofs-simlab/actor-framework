@@ -283,44 +283,59 @@ struct producer_state {
     caf::actor supervisor;
     std::vector<int> Ns;
     int batches_remaining;
+    int total_batches;
+    std::mt19937 rng;
+    std::uniform_int_distribution<int> dist_sleep{500, 2000};
+    std::uniform_int_distribution<int> dist_batch{5000, 15000};
+    std::uniform_int_distribution<int> dist_type{0, 2};
+    std::uniform_int_distribution<size_t> dist_N;
 };
 
 caf::behavior task_producer(caf::stateful_actor<producer_state>* self,
                             caf::actor pool, caf::actor supervisor, int num_batches, std::vector<int> Ns) {
-    self->state().pool = pool;
-    self->state().supervisor = supervisor;
-    self->state().Ns = std::move(Ns);
-    self->state().batches_remaining = num_batches;
+    auto& st = self->state();
+    st.pool = pool;
+    st.supervisor = supervisor;
+    st.Ns = std::move(Ns);
+    st.batches_remaining = num_batches;
+    st.total_batches = num_batches;
+    st.rng.seed(42);
+    st.dist_N = std::uniform_int_distribution<size_t>(0, st.Ns.size() - 1);
 
-    self->mail(producer_tick_atom_v).send(self); // Updated atom name
+    // Kick off the first batch with a delay to match CUDA baseline's loop structure
+    int sleep_ms = st.dist_sleep(st.rng);
+    self->mail(producer_tick_atom_v).delay(std::chrono::milliseconds(sleep_ms)).send(self);
 
     return {
         [=](producer_tick_atom) { // Updated atom name
             auto& st = self->state();
-            if (st.batches_remaining-- <= 0) {
+            if (st.batches_remaining <= 0) {
                 self->mail(production_finished_atom_v).send(st.pool);
                 self->mail(production_finished_atom_v).send(st.supervisor);
                 self->quit();
                 return;
             }
+            st.batches_remaining--;
 
-            std::random_device rd;
-            std::mt19937 rng(rd());
-            std::uniform_int_distribution<int> dist_sleep(500, 2000);
-            std::uniform_int_distribution<int> dist_batch(5000, 15000);
-            std::uniform_int_distribution<size_t> dist_N(0, st.Ns.size() - 1);
-            std::uniform_int_distribution<int> dist_type(0, 2);
+            int count = st.dist_batch(st.rng);
+            self->println("Producer: Dispatching Batch {}/{} with {} tasks...", 
+                          st.total_batches - st.batches_remaining, st.total_batches, count);
 
-            int count = dist_batch(rng);
             std::vector<Task> batch;
             for (int i = 0; i < count; ++i)
-                batch.push_back({st.Ns[dist_N(rng)], static_cast<TaskType>(dist_type(rng))});
+                batch.push_back({st.Ns[st.dist_N(st.rng)], static_cast<TaskType>(st.dist_type(st.rng))});
 
             self->mail(produce_atom_v, count).send(st.supervisor);
-            
-            self->mail(producer_tick_atom_v).delay(std::chrono::milliseconds(dist_sleep(rng))).send(self); // Updated atom name
             // Send work to the pool actor
             self->mail(batch).send(st.pool);
+
+            if (st.batches_remaining > 0) {
+                int next_sleep = st.dist_sleep(st.rng);
+                self->mail(producer_tick_atom_v).delay(std::chrono::milliseconds(next_sleep)).send(self);
+            } else {
+                // Last batch produced, final tick to handle termination
+                self->mail(producer_tick_atom_v).send(self);
+            }
         }
     };
 }

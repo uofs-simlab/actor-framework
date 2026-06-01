@@ -316,7 +316,7 @@ int main() {
             batch_tasks.push_back({N_for_task, t_type});
         }
 
-        std::cout << "Dispatching Batch " << b + 1 << "/" << num_batches 
+        std::cout << "Producer: Dispatching Batch " << b + 1 << "/" << num_batches 
                   << " with " << current_batch_size << " tasks..." << std::endl;
 
         // Static Round-Robin Partitioning for this batch
