@@ -45,7 +45,7 @@ bool inspect(Inspector& f, SolverType& x) {
     return false;
 }
 
-CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cg_actor::end)
+CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_ATOM(workload_test, get_work_atom)
     CAF_ADD_ATOM(workload_test, release_memory_atom)
     CAF_ADD_ATOM(workload_test, request_work_atom)
@@ -207,22 +207,20 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
                     self->state().task_start = std::chrono::steady_clock::now();
                     auto start_spawn = std::chrono::steady_clock::now();
                     self->state().current_data = data;
-                    actor solver;
                     if (type == CGS_SOLVER) {
-                        solver = self->spawn<sparse_cg_actor>(
-                            std::move(rp), std::move(ci), std::move(val),
-                            std::move(b), std::move(x),
-                            matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id, actor_cast<actor>(self));
+                        // Use the optimized CG facade. It responds with (r_id, index, solution, meta)
+                        auto facade = self->spawn<sparse_cg_facade_optimized<float>>(0);
+                        self->mail(std::move(rp), std::move(ci), std::move(val),
+                                   std::move(b), std::move(x),
+                                   matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id).send(facade);
                     } else {
-                        solver = self->spawn<sparse_bicgstab_actor<float>>(
+                        // BiCGSTAB still uses the standard stateful actor. It responds with (solution, meta)
+                        auto solver = self->spawn<sparse_bicgstab_actor<float>>(
                             std::move(rp), std::move(ci), std::move(val),
                             std::move(b), std::move(x),
                             matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id, actor_cast<actor>(self));
+                        self->mail(start_atom_v).send(solver);
                     }
-                    auto end_spawn = std::chrono::steady_clock::now();
-                    std::chrono::duration<double> spawn_duration = end_spawn - start_spawn;
-                    // self->println("Worker {}: Solver actor spawned in {} s", self->state().stream_id, spawn_duration.count());
-                    self->mail(start_atom_v).send(solver);
                 },
                 [=](error& err) {
                     if (err == sec::end_of_stream) {
@@ -232,16 +230,22 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
                 }
             );
         },
-        [=](std::vector<float>& solution) {
+        // Result handler for standard stateful actors (e.g., BiCGSTAB)
+        [=](std::vector<float>& solution, solver_result_meta meta) {
             auto task_end = std::chrono::steady_clock::now();
             std::chrono::duration<double> task_duration = task_end - self->state().task_start;
-            std::string solver_type_str;
-            if (self->state().current_solver_type == CGS_SOLVER) {
-                solver_type_str = "CGS_SOLVER";
-            } else {
-                solver_type_str = "BICSTAB_SOLVER";
-            }
-            self->println("Worker {}: Round-trip time (Spawn to Result) for {} ({}) took {} s", self->state().stream_id, self->state().current_matrix_path, solver_type_str, task_duration.count());
+            self->println("Worker {}: Round-trip time (Spawn to Result) for {} (BICSTAB_SOLVER) took {} s (Iters: {})", 
+                          self->state().stream_id, self->state().current_matrix_path, task_duration.count(), meta.iterations);
+            self->mail(1).send(self->state().supervisor);
+            self->state().current_data.reset();
+            self->mail(request_work_atom_v).send(self);
+        },
+        // Result handler for the optimized facade actor
+        [=](uint32_t /*r_id*/, int /*index*/, std::vector<float>& solution, solver_result_meta meta) {
+            auto task_end = std::chrono::steady_clock::now();
+            std::chrono::duration<double> task_duration = task_end - self->state().task_start;
+            self->println("Worker {}: Round-trip time (Spawn to Result) for {} (CGS_SOLVER_OPTIMIZED) took {} s (Iters: {})", 
+                          self->state().stream_id, self->state().current_matrix_path, task_duration.count(), meta.iterations);
             self->mail(1).send(self->state().supervisor);
             self->state().current_data.reset();
             self->mail(request_work_atom_v).send(self);
@@ -336,4 +340,4 @@ void caf_main(actor_system& sys) {
 
     manager::shutdown();
 }
-CAF_MAIN(id_block::cuda, id_block::cg_actor,id_block::workload_test)
+CAF_MAIN(id_block::cuda,id_block::workload_test)
