@@ -531,9 +531,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int workers_per_gpu = 4; // Admission control: only 16 concurrent tasks per GPU
     const int max_in_flight_tasks_per_worker = 5; // Each worker keeps 2 tasks in flight
 
-    const std::vector<int> actor_counts = {
-	  50000,100000
-    };
+    const std::vector<int> batch_configs = {5, 10};
 
     // Generate deterministic random pool once
     MatrixPool pool = create_matrix_pool_random(
@@ -545,11 +543,11 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
 
     //scheduler
     caf::cuda::manager_config scheduler_off(false);
-    for (int num_tasks_for_this_run : actor_counts) {
+    for (int num_batches : batch_configs) {
 	    // Initialize CUDA manager
 	    caf::cuda::manager::init(sys, scheduler_off);
         std::cout << "=====================================\n";
-        std::cout << "Random Scaling | actors=" << num_tasks_for_this_run << "\n";
+        std::cout << "Random Scaling | batches=" << num_batches << "\n";
 
         // Precompute all task Ns for this run
         std::vector<int> sizes;
@@ -568,7 +566,7 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
                 pool,
                 sizes,
                 shared_dtoh_buffer.data(),
-                5 // num_batches
+                num_batches
             );
 
 	      sys.await_all_actors_done();
