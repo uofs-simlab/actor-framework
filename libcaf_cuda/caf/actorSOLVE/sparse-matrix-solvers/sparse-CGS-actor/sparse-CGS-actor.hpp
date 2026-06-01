@@ -251,7 +251,7 @@ public:
                                     fmt, n, nnz, tol, max_iter,
                                     device_num, stream_id);
 
-        dispatch_result(std::move(mappings), std::move(x), n, meta);
+        dispatch_result(actor_cast<caf::actor>(this->current_sender()), std::move(mappings), std::move(x), n, meta);
       },
 
       // Mode 3: Default (return vector to sender)
@@ -265,7 +265,7 @@ public:
                                     fmt, n, nnz, tol, max_iter,
                                     device_num, stream_id);
 
-        dispatch_result({}, std::move(x), n, meta);
+        dispatch_result(actor_cast<caf::actor>(this->current_sender()), {}, std::move(x), n, meta);
       }
     };
   }
@@ -389,13 +389,12 @@ protected:
     return {x, solver_result_meta(device_num, stream_id, iterations, rho_val <= threshold)};
   }
 
-  void dispatch_result(std::vector<output_mapping> mappings,
+  void dispatch_result(caf::actor target,
+                       std::vector<output_mapping> mappings,
                        mem_ptr<T> x,
                        int n,
                        solver_result_meta meta) {
-
-    auto sender = actor_cast<actor>(this->current_sender());
-    if (!sender) return;
+    if (!target) return;
 
     void* custom_dst = nullptr;
     size_t custom_count = 0;
@@ -415,20 +414,20 @@ protected:
         x,
         static_cast<T*>(custom_dst),
         custom_count > 0 ? custom_count : (size_t)n,
-        [sender, r_id = reply_id_, meta](T*, size_t) {
-          caf::anon_mail(r_id, 4, meta).send(sender);
+        [target, r_id = reply_id_, meta](T*, size_t) {
+          caf::anon_mail(r_id, 4, meta).send(target);
         });
 
     } else {
       runner.copy_to_host_async(
         x,
-        [sender, r_id = reply_id_, meta](std::vector<T> data) {
-          caf::anon_mail(r_id, 4, std::move(data), meta).send(sender);
+        [target, r_id = reply_id_, meta](std::vector<T> data) {
+          caf::anon_mail(r_id, 4, std::move(data), meta).send(target);
         });
     }
   }
 
-private:
+protected:
   uint32_t reply_id_;
 };
 
@@ -625,11 +624,25 @@ public:
         ctx->mappings = std::move(mappings);
         launch_iterations(ctx);
       },
+      
+      // Mode 3: Default (return vector to sender) - now handled by optimized facade
+      [this](in<int> rp, in<int> ci, in<T> val,
+             in<T> b_in, in_out<T> x_in,
+             matrix_format fmt, int n, int nnz,
+             T tol, int max_iter,
+             int device_num, int stream_id) {
+        auto ctx = setup_solve(rp, ci, val, b_in, x_in, fmt, n, nnz, tol, max_iter, device_num, stream_id);
+        launch_iterations(ctx);
+      },
 
       [this](next_batch_atom, std::shared_ptr<solve_context> ctx, T current_rho) {
         if (current_rho <= ctx->threshold || ctx->iterations >= ctx->max_iter) {
-          this->dispatch_result(std::move(ctx->mappings), ctx->x, ctx->n, 
-                                solver_result_meta(ctx->device_num, ctx->stream_id, ctx->iterations, current_rho <= ctx->threshold));
+          solver_result_meta meta(ctx->device_num, ctx->stream_id, ctx->iterations, current_rho <= ctx->threshold);
+          if (ctx->return_mem_ptr) {
+            caf::anon_mail(this->reply_id_, std::move(ctx->x), meta).send(ctx->requester);
+          } else {
+            this->dispatch_result(ctx->requester, std::move(ctx->mappings), ctx->x, ctx->n, meta);
+          }
         } else {
           launch_iterations(ctx);
         }
