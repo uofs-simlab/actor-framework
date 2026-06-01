@@ -338,7 +338,7 @@ int main() {
     };
 
     std::cout << "[INFO] Loading matrices...\n";
-    scan("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
+    scan("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
     //scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
 
     if (tasks.empty()) {

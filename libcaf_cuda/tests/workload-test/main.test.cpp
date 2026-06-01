@@ -209,7 +209,7 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
                     self->state().current_data = data;
                     if (type == CGS_SOLVER) {
                         // Use the optimized CG facade. It responds with (r_id, index, solution, meta)
-                        auto facade = self->spawn<sparse_cg_facade_optimized<float>>(0);
+                        auto facade = self->spawn<sparse_cg_facade<float>>(0);
                         self->mail(std::move(rp), std::move(ci), std::move(val),
                                    std::move(b), std::move(x),
                                    matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id).send(facade);
@@ -300,7 +300,7 @@ void caf_main(actor_system& sys) {
         }
     };
 
-    scan("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
+    scan("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
     //scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
 
     std::cout << "[INFO] Pre-loading " << tasks->size() << " matrices into memory...\n";
