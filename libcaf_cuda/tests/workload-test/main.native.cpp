@@ -362,7 +362,7 @@ int main(int argc, char** argv)
 {
     int num_streams = 8;
     int num_batches = 25;
-    int batch_size = 8;
+    int batch_size = 100;
     double mean_arrival_ms = 1000.0;
 
     if (argc > 1)
