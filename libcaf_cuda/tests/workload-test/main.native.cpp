@@ -13,10 +13,15 @@
 #include <filesystem>
 #include <memory>
 #include <algorithm>
+#include <random>
+#include <atomic>
+#include <cmath>
 
 #include "sparse_utils.hpp"
 
 namespace fs = std::filesystem;
+
+constexpr uint32_t WORKLOAD_SEED = 42;
 
 // ============================================================
 // Error Checking
@@ -71,21 +76,22 @@ public:
         std::unique_lock<std::mutex> lock(mutex_);
 
         cv_.wait(lock, [&] {
-            return closed_ || !queue_.empty();
+            return shutdown_ || !queue_.empty();
         });
 
-        if (queue_.empty())
-            return false;
+        if (!queue_.empty()) {
+            item = std::move(queue_.front());
+            queue_.pop();
+            return true;
+        }
 
-        item = std::move(queue_.front());
-        queue_.pop();
-        return true;
+        return false;
     }
 
-    void close() {
+    void signal_shutdown() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            closed_ = true;
+            shutdown_ = true;
         }
         cv_.notify_all();
     }
@@ -94,8 +100,42 @@ private:
     std::queue<T> queue_;
     std::mutex mutex_;
     std::condition_variable cv_;
-    bool closed_ = false;
+    bool shutdown_ = false;
 };
+
+// ============================================================
+// Workload Generation Helpers
+// ============================================================
+
+std::chrono::milliseconds generate_random_interval(
+    std::mt19937& rng,
+    double mean_ms)
+{
+    std::exponential_distribution<double> dist(
+        1.0 / mean_ms);
+
+    return std::chrono::milliseconds(
+        static_cast<int>(dist(rng)));
+}
+
+std::vector<MatrixTask> generate_batch(
+    const std::vector<MatrixTask>& matrix_pool,
+    std::mt19937& rng,
+    size_t batch_size)
+{
+    std::vector<MatrixTask> batch;
+    batch.reserve(batch_size);
+
+    std::uniform_int_distribution<size_t> dist(
+        0,
+        matrix_pool.size() - 1);
+
+    for (size_t i = 0; i < batch_size; ++i) {
+        batch.push_back(matrix_pool[dist(rng)]);
+    }
+
+    return batch;
+}
 
 // ============================================================
 // Existing Solver Implementations
@@ -198,18 +238,51 @@ void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
 
 void producer(
     ThreadSafeQueue<MatrixTask>& queue,
-    std::vector<MatrixTask> tasks)
+    const std::vector<MatrixTask>& matrix_pool,
+    int num_batches,
+    int batch_size,
+    double mean_arrival_ms)
 {
-    for (auto& task : tasks) {
-        queue.push(std::move(task));
+    std::mt19937 rng(WORKLOAD_SEED);
+
+    for (int batch = 0; batch < num_batches; ++batch) {
+
+        auto sleep_time =
+            generate_random_interval(
+                rng,
+                mean_arrival_ms);
+
+        std::this_thread::sleep_for(
+            sleep_time);
+
+        auto tasks =
+            generate_batch(
+                matrix_pool,
+                rng,
+                batch_size);
+
+        std::cout
+            << "[PRODUCER] Dispatching batch "
+            << batch + 1
+            << "/"
+            << num_batches
+            << " ("
+            << tasks.size()
+            << " tasks, slept "
+            << sleep_time.count()
+            << " ms)"
+            << std::endl;
+
+        for (auto& task : tasks) {
+            queue.push(std::move(task));
+        }
     }
 
-    queue.close();
+    queue.signal_shutdown();
 }
 
 // ============================================================
 // Worker
-// One thread == One stream
 // ============================================================
 
 void gpu_stream_worker(
@@ -251,13 +324,10 @@ void gpu_stream_worker(
 
         } else {
 
-            throw std::runtime_error("Unsupported solver type");
-            exit(1);
+            throw std::runtime_error(
+                "Unsupported solver type");
         }
 
-        // Optional safety.
-        // Likely redundant because the iterative
-        // solver performs host-side reductions.
         CHECK_CUDA(cudaStreamSynchronize(stream));
 
         auto end_task =
@@ -291,24 +361,30 @@ void gpu_stream_worker(
 int main(int argc, char** argv)
 {
     int num_streams = 8;
+    int num_batches = 25;
+    int batch_size = 8;
+    double mean_arrival_ms = 1000.0;
 
-    if (argc > 1) {
-        num_streams =
-            std::max(1, std::atoi(argv[1]));
-    }
+    if (argc > 1)
+        num_streams = std::max(1, std::atoi(argv[1]));
+
+    if (argc > 2)
+        num_batches = std::max(1, std::atoi(argv[2]));
+
+    if (argc > 3)
+        batch_size = std::max(1, std::atoi(argv[3]));
+
+    if (argc > 4)
+        mean_arrival_ms = std::atof(argv[4]);
 
     std::cout << "[INFO] Loading matrices...\n";
 
-    // --------------------------------------------------------
-    // Matrix generation NOT timed
-    // --------------------------------------------------------
-
-    std::vector<MatrixTask> tasks =
+    std::vector<MatrixTask> matrix_pool =
         scan_for_matrices(
             "/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd",
             CGS_SOLVER);
 
-    if (tasks.empty()) {
+    if (matrix_pool.empty()) {
         std::cerr << "No matrices found.\n";
         return 1;
     }
@@ -329,20 +405,31 @@ int main(int argc, char** argv)
         << " GPUs\n";
 
     std::cout
-        << "[INFO] "
-        << num_streams
-        << " worker threads per GPU\n";
+        << "[INFO] Matrix pool size: "
+        << matrix_pool.size()
+        << "\n";
 
     std::cout
-        << "[INFO] "
-        << tasks.size()
-        << " tasks queued\n";
+        << "[INFO] Streams/GPU: "
+        << num_streams
+        << "\n";
+
+    std::cout
+        << "[INFO] Batches: "
+        << num_batches
+        << "\n";
+
+    std::cout
+        << "[INFO] Batch size: "
+        << batch_size
+        << "\n";
+
+    std::cout
+        << "[INFO] Mean arrival: "
+        << mean_arrival_ms
+        << " ms\n";
 
     ThreadSafeQueue<MatrixTask> work_queue;
-
-    // --------------------------------------------------------
-    // Benchmark starts here
-    // --------------------------------------------------------
 
     auto benchmark_start =
         std::chrono::steady_clock::now();
@@ -350,7 +437,10 @@ int main(int argc, char** argv)
     std::thread producer_thread(
         producer,
         std::ref(work_queue),
-        std::move(tasks));
+        std::cref(matrix_pool),
+        num_batches,
+        batch_size,
+        mean_arrival_ms);
 
     std::vector<std::thread> workers;
 
@@ -389,18 +479,16 @@ int main(int argc, char** argv)
 
     std::cout << "\n";
     std::cout << "=====================================\n";
-    std::cout << "NATIVE PRODUCER/CONSUMER BENCHMARK\n";
+    std::cout << "IRREGULAR WORKLOAD BENCHMARK\n";
     std::cout << "=====================================\n";
-    std::cout << "GPUs:               "
-              << num_gpus << "\n";
-    std::cout << "Streams per GPU:    "
-              << num_streams << "\n";
-    std::cout << "Worker Threads:     "
-              << num_gpus * num_streams << "\n";
-    std::cout << "Tasks Processed:    "
-              << tasks.size() << "\n";
-    std::cout << "Total Runtime:      "
-              << total_time.count() << " s\n";
+    std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
+    std::cout << "GPUs:               " << num_gpus << "\n";
+    std::cout << "Streams per GPU:    " << num_streams << "\n";
+    std::cout << "Worker Threads:     " << num_gpus * num_streams << "\n";
+    std::cout << "Batches:            " << num_batches << "\n";
+    std::cout << "Batch Size:         " << batch_size << "\n";
+    std::cout << "Mean Arrival (ms):  " << mean_arrival_ms << "\n";
+    std::cout << "Total Runtime:      " << total_time.count() << " s\n";
     std::cout << "=====================================\n";
 
     return 0;
