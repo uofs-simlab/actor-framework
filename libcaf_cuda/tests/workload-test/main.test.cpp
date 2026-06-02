@@ -240,14 +240,17 @@ struct worker_state {
     std::string current_matrix_path;
     std::chrono::steady_clock::time_point task_start;
     SolverType current_solver_type;
+    caf::actor cg_facade;
 };
 
 behavior sparse_worker_fun(stateful_actor<worker_state>* self,
                            caf::actor supervisor, caf::actor device_actor, int dev_id, int stream_id) {
-    self->state().supervisor = supervisor;
-    self->state().device_actor = device_actor;
-    self->state().device_id = dev_id;
-    self->state().stream_id = stream_id;
+    auto& st = self->state();
+    st.supervisor = supervisor;
+    st.device_actor = device_actor;
+    st.device_id = dev_id;
+    st.stream_id = stream_id;
+    st.cg_facade = self->spawn<sparse_cg_facade<float>>(0);
 
     self->mail(request_work_atom_v).send(self);
 
@@ -263,10 +266,9 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
                     self->state().current_data = data;
                     if (type == CGS_SOLVER) {
                         // Use the optimized CG facade. It responds with (r_id, index, solution, meta)
-                        auto facade = self->spawn<sparse_cg_facade<float>>(0);
                         self->mail(std::move(rp), std::move(ci), std::move(val),
                                    std::move(b), std::move(x),
-                                   matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id).send(facade);
+                                   matrix_format::csr, rows, nnz, 1e-5f, 2000, dev_id, stream_id).send(self->state().cg_facade);
                     } else {
                         // BiCGSTAB still uses the standard stateful actor. It responds with (solution, meta)
                         auto solver = self->spawn<sparse_bicgstab_actor<float>>(
