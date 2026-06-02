@@ -44,21 +44,9 @@ namespace fs = std::filesystem;
         }                                                                  \
     } while (0)
 
-enum SolverType { CGS_SOLVER, BICSTAB_SOLVER };
-
-struct MatrixTask {
-    std::string path;
-    SolverType type;
-    int32_t rows, cols, nnz;
-    std::vector<int32_t> row_ptr;
-    std::vector<int32_t> col_indices;
-    std::vector<float> values;
-    std::vector<float> b;
-};
-
 // Simplified CG Solver using raw cuBLAS and cuSPARSE
 void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream) {
-    int n = task.rows;
+    int n = task.data->rows;
     float alpha = 1.0f, beta = 0.0f, r0 = 0.0f, r1 = 0.0f, a = 0.0f, na = 0.0f, b = 0.0f;
     float tolerance = 1e-5f;
     int max_iters = 2000;
@@ -67,19 +55,19 @@ void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
     int *d_row_ptr, *d_col_ind;
 
     // Use Stream Ordered Allocator
-    CHECK_CUDA(cudaMallocAsync(&d_val, task.nnz * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_val, task.data->nnz * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_row_ptr, (n + 1) * sizeof(int), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.nnz * sizeof(int), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.data->nnz * sizeof(int), stream));
     CHECK_CUDA(cudaMallocAsync(&d_x, n * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_r, n * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_p, n * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_Ap, n * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_b, n * sizeof(float), stream));
 
-    CHECK_CUDA(cudaMemcpyAsync(d_val, task.values.data(), task.nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.col_indices.data(), task.nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_b, task.b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_val, task.data->values.data(), task.data->nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.data->row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.data->col_indices.data(), task.data->nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_b, task.data->b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
     CHECK_CUDA(cudaMemsetAsync(d_x, 0, n * sizeof(float), stream));
 
     // Create descriptors
@@ -88,7 +76,7 @@ void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
 
     cusparseSpMatDescr_t matA;
     cusparseDnVecDescr_t vecX, vecP, vecAp;
-    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.nnz, d_row_ptr, d_col_ind, d_val, 
+    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.data->nnz, d_row_ptr, d_col_ind, d_val, 
                                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecP, n, d_p, CUDA_R_32F));
@@ -154,7 +142,7 @@ void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
 
 // BiCGSTAB Solver using raw cuBLAS and cuSPARSE (Asynchronous version)
 void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream) {
-    int n = task.rows;
+    int n = task.data->rows;
     float alpha = 1.0f, beta = 0.0f, omega = 1.0f, rho = 1.0f, rho_prev = 1.0f;
     float tolerance = 1e-5f;
     int max_iters = 2000;
@@ -162,9 +150,9 @@ void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, cons
     float *d_val, *d_x, *d_r, *d_r_hat, *d_p, *d_v, *d_s, *d_t, *d_b;
     int *d_row_ptr, *d_col_ind;
 
-    CHECK_CUDA(cudaMallocAsync(&d_val, task.nnz * sizeof(float), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_val, task.data->nnz * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_row_ptr, (n + 1) * sizeof(int), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.nnz * sizeof(int), stream));
+    CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.data->nnz * sizeof(int), stream));
     CHECK_CUDA(cudaMallocAsync(&d_x, n * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_r, n * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_r_hat, n * sizeof(float), stream));
@@ -174,10 +162,10 @@ void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, cons
     CHECK_CUDA(cudaMallocAsync(&d_t, n * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_b, n * sizeof(float), stream));
 
-    CHECK_CUDA(cudaMemcpyAsync(d_val, task.values.data(), task.nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.col_indices.data(), task.nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_b, task.b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_val, task.data->values.data(), task.data->nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.data->row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.data->col_indices.data(), task.data->nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_b, task.data->b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
     CHECK_CUDA(cudaMemsetAsync(d_x, 0, n * sizeof(float), stream));
     CHECK_CUDA(cudaMemsetAsync(d_v, 0, n * sizeof(float), stream));
     CHECK_CUDA(cudaMemsetAsync(d_p, 0, n * sizeof(float), stream));
@@ -187,7 +175,7 @@ void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, cons
 
     cusparseSpMatDescr_t matA;
     cusparseDnVecDescr_t vecX, vecP, vecV, vecS, vecT;
-    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.nnz, d_row_ptr, d_col_ind, d_val, 
+    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.data->nnz, d_row_ptr, d_col_ind, d_val, 
                                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecP, n, d_p, CUDA_R_32F));
@@ -316,29 +304,8 @@ void gpu_worker(int device_id, int thread_id, std::vector<MatrixTask> assigned_t
 int main() {
     std::vector<MatrixTask> tasks;
     
-    auto scan = [&](const std::string& dir, SolverType type) {
-        if (!fs::exists(dir)) return;
-        for (const auto& entry : fs::directory_iterator(dir)) {
-            if (entry.path().extension() == ".bin") {
-                auto coo = load_binary_coo(entry.path().string());
-                auto csr = convert_coo_to_csr(coo);
-                MatrixTask t;
-                // Compute t.b using the valid csr object before its internal vectors are moved
-                t.b = compute_rhs_spmv(csr, std::vector<float>(csr.cols, 1.0f));
-                t.path = entry.path().string();
-                t.type = type;
-                t.rows = csr.rows;
-                t.nnz = csr.nnz;
-                t.row_ptr = std::move(csr.row_ptr);
-                t.col_indices = std::move(csr.col_indices);
-                t.values = std::move(csr.values);
-                tasks.push_back(std::move(t));
-            }
-        }
-    };
-
     std::cout << "[INFO] Loading matrices...\n";
-    scan("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
+    tasks = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
     //scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
 
     if (tasks.empty()) {

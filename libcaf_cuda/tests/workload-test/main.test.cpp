@@ -17,23 +17,6 @@
 using namespace caf;
 using namespace caf::cuda;
 namespace fs = std::filesystem;
-
-enum SolverType { CGS_SOLVER, BICSTAB_SOLVER };
-
-struct MatrixData {
-    std::vector<int> row_ptr;
-    std::vector<int> col_indices;
-    std::vector<float> values;
-    std::vector<float> b;
-    std::vector<float> x_guess;
-};
-
-struct MatrixTask {
-    std::string path;
-    SolverType type;
-    std::shared_ptr<MatrixData> data;
-};
-
 template <class Inspector>
 bool inspect(Inspector& f, SolverType& x) {
     auto val = static_cast<int>(x);
@@ -114,7 +97,7 @@ behavior gpu_device_actor(stateful_actor<device_actor_state>* self,
             st.local_tasks.pop_front();
 
             auto& data = *t.data;
-            promise.deliver(t.type, t.path, create_in_arg(data.row_ptr), create_in_arg(data.col_indices), 
+            promise.deliver(t.type, t.path, create_in_arg((const std::vector<int32_t>&)data.row_ptr), create_in_arg((const std::vector<int32_t>&)data.col_indices), 
                             create_in_arg(data.values), create_in_arg(data.b), create_in_out_arg(data.x_guess), 
                             (int)data.row_ptr.size() - 1, (int)data.values.size(), t.data);
         }
@@ -290,31 +273,12 @@ behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, int total,
 
 void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
-    auto tasks = std::make_shared<std::vector<MatrixTask>>();
     
-    auto scan = [&](const std::string& dir, SolverType type) {
-        if (!fs::exists(dir)) return;
-        for (const auto& entry : fs::directory_iterator(dir)) {
-            if (entry.path().extension() == ".bin")
-                tasks->push_back({entry.path().string(), type, nullptr});
-        }
-    };
-
-    scan("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
+    std::cout << "[INFO] Loading matrices into memory...\n";
+    auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
     //scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
-
-    std::cout << "[INFO] Pre-loading " << tasks->size() << " matrices into memory...\n";
-    for (auto& t : *tasks) {
-        auto coo = load_binary_coo(t.path);
-        auto A = convert_coo_to_csr(coo);
-        t.data = std::make_shared<MatrixData>();
-        t.data->b = compute_rhs_spmv(A, std::vector<float>(A.cols, 1.0f));
-        t.data->row_ptr = std::move(A.row_ptr);
-        t.data->col_indices = std::move(A.col_indices);
-        t.data->values = std::move(A.values);
-        t.data->x_guess.assign(A.cols, 0.0f);
-    }
-
+    auto tasks = std::make_shared<std::vector<MatrixTask>>(std::move(tasks_vec));
+    
     if (tasks->empty()) {
         std::cerr << "No matrix files found in search paths.\n";
         manager::shutdown();
