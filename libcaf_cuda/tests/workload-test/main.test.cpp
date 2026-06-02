@@ -17,6 +17,9 @@
 using namespace caf;
 using namespace caf::cuda;
 namespace fs = std::filesystem;
+
+constexpr uint32_t WORKLOAD_SEED = 42;
+
 template <class Inspector>
 bool inspect(Inspector& f, SolverType& x) {
     auto val = static_cast<int>(x);
@@ -33,6 +36,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_ATOM(workload_test, release_memory_atom)
     CAF_ADD_ATOM(workload_test, request_work_atom)
     CAF_ADD_ATOM(workload_test, worker_done_atom)
+    CAF_ADD_ATOM(workload_test, work_tick_atom)
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
     CAF_ADD_TYPE_ID(workload_test, (std::vector<MatrixTask>))
@@ -45,23 +49,90 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(MatrixTask)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<MatrixTask>)
 
 // ---------------------------- GLOBAL TASK POOL ----------------------------
-struct pool_state {
-    std::shared_ptr<std::vector<MatrixTask>> tasks;
-    size_t next_task_idx = 0;
+struct pending_request {
+    caf::response_promise promise;
+    size_t requested_size;
 };
 
-behavior global_task_pool(stateful_actor<pool_state>* self, std::shared_ptr<std::vector<MatrixTask>> tasks) {
-    self->state().tasks = std::move(tasks);
+struct pool_state {
+    std::vector<MatrixTask> matrix_pool;
+    std::deque<MatrixTask> work_buffer;
+    std::vector<pending_request> pending_requests;
+    std::mt19937 rng;
+    int batches_remaining;
+    int batch_size;
+    double mean_arrival_ms;
+    bool production_finished = false;
+};
+
+behavior global_task_pool(stateful_actor<pool_state>* self, 
+                          std::vector<MatrixTask> matrix_pool,
+                          int num_batches, int batch_size, double mean_arrival_ms) {
+    auto& st = self->state();
+    st.matrix_pool = std::move(matrix_pool);
+    st.batches_remaining = num_batches;
+    st.batch_size = batch_size;
+    st.mean_arrival_ms = mean_arrival_ms;
+    st.rng.seed(WORKLOAD_SEED);
+
+    self->mail(work_tick_atom_v).send(self);
+
     return {
+        [=](work_tick_atom) {
+            auto& st = self->state();
+            if (st.batches_remaining > 0) {
+                auto tasks = generate_batch(st.matrix_pool, st.rng, st.batch_size);
+                for (auto& t : tasks)
+                    st.work_buffer.push_back(std::move(t));
+                st.batches_remaining--;
+
+                // Satisfy pending requests from the new work
+                while (!st.pending_requests.empty() && !st.work_buffer.empty()) {
+                    auto req = std::move(st.pending_requests.front());
+                    st.pending_requests.erase(st.pending_requests.begin());
+
+                    size_t count = std::min(req.requested_size, st.work_buffer.size());
+                    std::vector<MatrixTask> batch;
+                    for (size_t i = 0; i < count; ++i) {
+                        batch.push_back(std::move(st.work_buffer.front()));
+                        st.work_buffer.pop_front();
+                    }
+                    req.promise.deliver(std::move(batch));
+                }
+
+                if (st.batches_remaining > 0) {
+                    auto interval = generate_random_interval(st.rng, st.mean_arrival_ms);
+                    std::cout << "[PRODUCER] going to sleep for " << interval.count() << " ms\n";
+                    self->mail(work_tick_atom_v).delay(interval).send(self);
+                } else {
+                    st.production_finished = true;
+                    // If the buffer is empty and no more batches are coming, signal EOS to anyone waiting
+                    if (st.work_buffer.empty()) {
+                        for (auto& req : st.pending_requests)
+                            req.promise.deliver(sec::end_of_stream);
+                        st.pending_requests.clear();
+                    }
+                }
+            }
+        },
         [=](get_work_atom, size_t batch_size) -> result<std::vector<MatrixTask>> {
             auto& st = self->state();
-            if (st.next_task_idx >= st.tasks->size())
+            if (!st.work_buffer.empty()) {
+                size_t count = std::min(batch_size, st.work_buffer.size());
+                std::vector<MatrixTask> batch;
+                for (size_t i = 0; i < count; ++i) {
+                    batch.push_back(std::move(st.work_buffer.front()));
+                    st.work_buffer.pop_front();
+                }
+                return batch;
+            }
+
+            if (st.production_finished)
                 return sec::end_of_stream;
-            size_t count = std::min(batch_size, st.tasks->size() - st.next_task_idx);
-            std::vector<MatrixTask> batch(st.tasks->begin() + st.next_task_idx, 
-                                          st.tasks->begin() + st.next_task_idx + count);
-            st.next_task_idx += count;
-            return batch;
+
+            auto promise = self->make_response_promise();
+            st.pending_requests.push_back({promise, batch_size});
+            return promise;
         }
     };
 }
@@ -240,17 +311,17 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
 struct supervisor_state {
     int total_tasks;
     int completed = 0;
-    std::shared_ptr<std::vector<MatrixTask>> tasks_holder; // Anchors shared_ptr reference count
 };
 
-behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, int total, std::shared_ptr<std::vector<MatrixTask>> tasks) {
-    self->state().total_tasks = total;
-    self->state().tasks_holder = tasks; // Retain ownership within supervisor state
-    auto pool = self->spawn(global_task_pool, tasks); // Pass a copy, don't move it
+behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, 
+                              std::vector<MatrixTask> matrix_pool,
+                              int num_streams, int num_batches, int batch_size, double mean_arrival_ms) {
+    self->state().total_tasks = num_batches * batch_size;
+    auto pool = self->spawn(global_task_pool, std::move(matrix_pool), num_batches, batch_size, mean_arrival_ms);
     
     manager& mgr = manager::get();
     int num_gpus = mgr.get_num_devices();
-    int workers_per_gpu = 8;
+    int workers_per_gpu = num_streams;
     int max_in_flight_tasks_per_worker = 1;
 
     for (int i = 0; i < num_gpus; ++i) {
@@ -264,7 +335,7 @@ behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, int total,
         [=](int done) {
             self->state().completed += done;
             if (self->state().completed >= self->state().total_tasks) {
-                std::cout << "\n[DONE] All " << self->state().total_tasks << " matrices processed.\n";
+                std::cout << "\n[DONE] All " << self->state().total_tasks << " tasks processed.\n";
                 self->quit();
             }
         }
@@ -274,32 +345,53 @@ behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, int total,
 void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
     
+    int num_streams = 8;
+    int num_batches = 25;
+    int batch_size = 100;
+    double mean_arrival_ms = 1000.0;
+
+    // // Basic command line argument parsing similar to native
+    // auto& args = sys.config().remainder;
+    // if (args.size() > 0) num_streams = std::max(1, std::stoi(args[0]));
+    // if (args.size() > 1) num_batches = std::max(1, std::stoi(args[1]));
+    // if (args.size() > 2) batch_size = std::max(1, std::stoi(args[2]));
+    // if (args.size() > 3) mean_arrival_ms = std::stod(args[3]);
+
     std::cout << "[INFO] Loading matrices into memory...\n";
     auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
     //scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
-    auto tasks = std::make_shared<std::vector<MatrixTask>>(std::move(tasks_vec));
     
-    if (tasks->empty()) {
+    if (tasks_vec.empty()) {
         std::cerr << "No matrix files found in search paths.\n";
         manager::shutdown();
         return;
     }
 
-    auto task_count = tasks->size();
-    std::cout << "[INFO] Found " << task_count << " matrices. Spawning workload...\n";
+    std::cout << "[INFO] Matrix pool size: " << tasks_vec.size() << "\n";
+    std::cout << "[INFO] Streams/GPU:      " << num_streams << "\n";
+    std::cout << "[INFO] Batches:          " << num_batches << "\n";
+    std::cout << "[INFO] Batch size:       " << batch_size << "\n";
+    std::cout << "[INFO] Mean arrival:     " << mean_arrival_ms << " ms\n";
 
     auto start = std::chrono::steady_clock::now();
 
-    // Fixed Exit Race: Pass tasks directly by copy to keep it active inside caf_main frame
-    sys.spawn(supervisor_actor_fun, static_cast<int>(task_count), tasks);
+    sys.spawn(supervisor_actor_fun, std::move(tasks_vec), num_streams, num_batches, batch_size, mean_arrival_ms);
     sys.await_all_actors_done();
 
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = end - start;
 
+    int total_tasks = num_batches * batch_size;
+
     std::cout << "\n===== BENCHMARK COMPLETE =====\n";
-    std::cout << "Tasks Processed: " << task_count << "\n";
-    std::cout << "Total Runtime:   " << elapsed.count() << " s\n";
+    std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
+    std::cout << "Streams per GPU:    " << num_streams << "\n";
+    std::cout << "Batches:            " << num_batches << "\n";
+    std::cout << "Batch Size:         " << batch_size << "\n";
+    std::cout << "Mean Arrival (ms):  " << mean_arrival_ms << "\n";
+    std::cout << "Tasks Processed:    " << total_tasks << "\n";
+    std::cout << "Total Runtime:      " << elapsed.count() << " s\n";
+    std::cout << "Throughput:         " << total_tasks / elapsed.count() << " tasks/s\n";
     std::cout << "==============================\n";
 
     manager::shutdown();
