@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cusparse.h>
+
 #include <iostream>
 #include <vector>
 #include <string>
@@ -11,18 +12,23 @@
 #include <filesystem>
 #include <memory>
 #include <algorithm>
+#include <condition_variable>
+#include <atomic>
+
 #include "sparse_utils.hpp"
 
 namespace fs = std::filesystem;
 
+// ------------------------------------------------------------
 // Error checking macros
+// ------------------------------------------------------------
 #define CHECK_CUDA(call)                                                   \
     do {                                                                   \
         cudaError_t status = call;                                         \
         if (status != cudaSuccess) {                                       \
             std::cerr << "CUDA Error: " << cudaGetErrorString(status)      \
                       << " at " << __FILE__ << ":" << __LINE__ << std::endl; \
-            exit(1);                                                       \
+            std::exit(1);                                                  \
         }                                                                  \
     } while (0)
 
@@ -31,7 +37,7 @@ namespace fs = std::filesystem;
         cublasStatus_t status = call;                                      \
         if (status != CUBLAS_STATUS_SUCCESS) {                             \
             std::cerr << "cuBLAS Error at " << __FILE__ << ":" << __LINE__ << std::endl; \
-            exit(1);                                                       \
+            std::exit(1);                                                  \
         }                                                                  \
     } while (0)
 
@@ -39,13 +45,73 @@ namespace fs = std::filesystem;
     do {                                                                   \
         cusparseStatus_t status = call;                                    \
         if (status != CUSPARSE_STATUS_SUCCESS) {                           \
-            std::cerr << "cuSparse Error at " << __FILE__ << ":" << __LINE__ << std::endl; \
-            exit(1);                                                       \
+            std::cerr << "cuSPARSE Error at " << __FILE__ << ":" << __LINE__ << std::endl; \
+            std::exit(1);                                                  \
         }                                                                  \
     } while (0)
 
-// Simplified CG Solver using raw cuBLAS and cuSPARSE
-void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream) {
+// ------------------------------------------------------------
+// Thread-safe queue
+// ------------------------------------------------------------
+template <typename T>
+class ThreadSafeQueue {
+public:
+    void push(T item) {
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (closed_) {
+                return;
+            }
+            q_.push(std::move(item));
+        }
+        cv_.notify_one();
+    }
+
+    bool wait_pop(T& item) {
+        std::unique_lock<std::mutex> lock(mtx_);
+        cv_.wait(lock, [&] { return closed_ || !q_.empty(); });
+
+        if (q_.empty()) {
+            return false; // closed and empty
+        }
+
+        item = std::move(q_.front());
+        q_.pop();
+        return true;
+    }
+
+    void close() {
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            closed_ = true;
+        }
+        cv_.notify_all();
+    }
+
+private:
+    std::mutex mtx_;
+    std::condition_variable cv_;
+    std::queue<T> q_;
+    bool closed_ = false;
+};
+
+// ------------------------------------------------------------
+// Stream slot owned by one GPU consumer thread
+// ------------------------------------------------------------
+struct StreamSlot {
+    cudaStream_t stream{};
+    cublasHandle_t cublas{};
+    cusparseHandle_t cusparse{};
+    cudaEvent_t done{};
+    bool busy = false;
+};
+
+// ------------------------------------------------------------
+// Your existing solver functions can stay the same
+// ------------------------------------------------------------
+// Keep these as you already have them, or minimally adjust if needed.
+void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
+                    const MatrixTask& task, cudaStream_t stream) {
     int n = task.data->rows;
     float alpha = 1.0f, beta = 0.0f, r0 = 0.0f, r1 = 0.0f, a = 0.0f, na = 0.0f, b = 0.0f;
     float tolerance = 1e-5f;
@@ -54,7 +120,6 @@ void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
     float *d_val, *d_x, *d_r, *d_p, *d_Ap, *d_b;
     int *d_row_ptr, *d_col_ind;
 
-    // Use Stream Ordered Allocator
     CHECK_CUDA(cudaMallocAsync(&d_val, task.data->nnz * sizeof(float), stream));
     CHECK_CUDA(cudaMallocAsync(&d_row_ptr, (n + 1) * sizeof(int), stream));
     CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.data->nnz * sizeof(int), stream));
@@ -70,65 +135,61 @@ void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
     CHECK_CUDA(cudaMemcpyAsync(d_b, task.data->b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
     CHECK_CUDA(cudaMemsetAsync(d_x, 0, n * sizeof(float), stream));
 
-    // Create descriptors
     CHECK_CUBLAS(cublasSetStream(cublas, stream));
     CHECK_CUSPARSE(cusparseSetStream(cusparse, stream));
 
     cusparseSpMatDescr_t matA;
     cusparseDnVecDescr_t vecX, vecP, vecAp;
-    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.data->nnz, d_row_ptr, d_col_ind, d_val, 
-                                     CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
+
+    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.data->nnz, d_row_ptr, d_col_ind, d_val,
+                                     CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+                                     CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecP, n, d_p, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecAp, n, d_Ap, CUDA_R_32F));
 
     size_t bufferSize = 0;
     void* d_buffer = nullptr;
-    CHECK_CUSPARSE(cusparseSpMV_bufferSize(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecX, &beta, vecAp, 
+    CHECK_CUSPARSE(cusparseSpMV_bufferSize(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &alpha, matA, vecX, &beta, vecAp,
                                            CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize));
     CHECK_CUDA(cudaMallocAsync(&d_buffer, bufferSize, stream));
 
-    // CG Logic: r = b - Ax (initially r = b since x=0)
     CHECK_CUBLAS(cublasScopy(cublas, n, d_b, 1, d_r, 1));
     CHECK_CUBLAS(cublasScopy(cublas, n, d_r, 1, d_p, 1));
     CHECK_CUBLAS(cublasSdot(cublas, n, d_r, 1, d_r, 1, &r1));
 
     int k = 0;
     while (k < max_iters) {
-        // Ap = A * p
-        CHECK_CUSPARSE(cusparseSpMV(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecP, &beta, vecAp, 
+        CHECK_CUSPARSE(cusparseSpMV(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &alpha, matA, vecP, &beta, vecAp,
                                     CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, d_buffer));
-        
+
         float pAp;
         CHECK_CUBLAS(cublasSdot(cublas, n, d_p, 1, d_Ap, 1, &pAp));
         a = r1 / pAp;
 
-        // x = x + a*p
         CHECK_CUBLAS(cublasSaxpy(cublas, n, &a, d_p, 1, d_x, 1));
-        
-        // r = r - a*Ap
+
         na = -a;
         CHECK_CUBLAS(cublasSaxpy(cublas, n, &na, d_Ap, 1, d_r, 1));
 
         r0 = r1;
         CHECK_CUBLAS(cublasSdot(cublas, n, d_r, 1, d_r, 1, &r1));
 
-        if (sqrt(r1) < tolerance) break;
+        if (std::sqrt(r1) < tolerance) break;
 
         b = r1 / r0;
-        // p = r + b*p => scal p by b then add r
         CHECK_CUBLAS(cublasSscal(cublas, n, &b, d_p, 1));
         CHECK_CUBLAS(cublasSaxpy(cublas, n, &alpha, d_r, 1, d_p, 1));
         k++;
     }
 
-    // Cleanup
-    cusparseDestroySpMat(matA);
-    cusparseDestroyDnVec(vecX);
-    cusparseDestroyDnVec(vecP);
-    cusparseDestroyDnVec(vecAp);
+    CHECK_CUSPARSE(cusparseDestroySpMat(matA));
+    CHECK_CUSPARSE(cusparseDestroyDnVec(vecX));
+    CHECK_CUSPARSE(cusparseDestroyDnVec(vecP));
+    CHECK_CUSPARSE(cusparseDestroyDnVec(vecAp));
 
-    // Stream-ordered free
     CHECK_CUDA(cudaFreeAsync(d_val, stream));
     CHECK_CUDA(cudaFreeAsync(d_row_ptr, stream));
     CHECK_CUDA(cudaFreeAsync(d_col_ind, stream));
@@ -140,205 +201,147 @@ void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const Matr
     CHECK_CUDA(cudaFreeAsync(d_buffer, stream));
 }
 
-// BiCGSTAB Solver using raw cuBLAS and cuSPARSE (Asynchronous version)
-void solve_bicgstab_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream) {
-    int n = task.data->rows;
-    float alpha = 1.0f, beta = 0.0f, omega = 1.0f, rho = 1.0f, rho_prev = 1.0f;
-    float tolerance = 1e-5f;
-    int max_iters = 2000;
 
-    float *d_val, *d_x, *d_r, *d_r_hat, *d_p, *d_v, *d_s, *d_t, *d_b;
-    int *d_row_ptr, *d_col_ind;
 
-    CHECK_CUDA(cudaMallocAsync(&d_val, task.data->nnz * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_row_ptr, (n + 1) * sizeof(int), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.data->nnz * sizeof(int), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_x, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_r, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_r_hat, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_p, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_v, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_s, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_t, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_b, n * sizeof(float), stream));
+// ------------------------------------------------------------
+// GPU consumer thread: one thread per GPU
+// ------------------------------------------------------------
+void gpu_consumer(int device_id, int num_streams, ThreadSafeQueue<MatrixTask>& work_queue) {
+    CHECK_CUDA(cudaSetDevice(device_id));
 
-    CHECK_CUDA(cudaMemcpyAsync(d_val, task.data->values.data(), task.data->nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.data->row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.data->col_indices.data(), task.data->nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_b, task.data->b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemsetAsync(d_x, 0, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMemsetAsync(d_v, 0, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMemsetAsync(d_p, 0, n * sizeof(float), stream));
+    std::vector<StreamSlot> slots(num_streams);
 
-    CHECK_CUBLAS(cublasSetStream(cublas, stream));
-    CHECK_CUSPARSE(cusparseSetStream(cusparse, stream));
-
-    cusparseSpMatDescr_t matA;
-    cusparseDnVecDescr_t vecX, vecP, vecV, vecS, vecT;
-    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.data->nnz, d_row_ptr, d_col_ind, d_val, 
-                                     CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
-    CHECK_CUSPARSE(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_32F));
-    CHECK_CUSPARSE(cusparseCreateDnVec(&vecP, n, d_p, CUDA_R_32F));
-    CHECK_CUSPARSE(cusparseCreateDnVec(&vecV, n, d_v, CUDA_R_32F));
-    CHECK_CUSPARSE(cusparseCreateDnVec(&vecS, n, d_s, CUDA_R_32F));
-    CHECK_CUSPARSE(cusparseCreateDnVec(&vecT, n, d_t, CUDA_R_32F));
-
-    size_t bufferSize = 0;
-    void* d_buffer = nullptr;
-    float one = 1.0f, zero = 0.0f;
-    CHECK_CUSPARSE(cusparseSpMV_bufferSize(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecP, &zero, vecV, 
-                                           CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize));
-    CHECK_CUDA(cudaMallocAsync(&d_buffer, bufferSize, stream));
-
-    // r = b - Ax
-    // Note: We compute Ax explicitly to support non-zero initial guesses in the future
-    CHECK_CUSPARSE(cusparseSpMV(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecX, &zero, vecV, 
-                                CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, d_buffer));
-    CHECK_CUBLAS(cublasScopy(cublas, n, d_b, 1, d_r, 1));
-    float minus_one = -1.0f;
-    CHECK_CUBLAS(cublasSaxpy(cublas, n, &minus_one, d_v, 1, d_r, 1));
-    CHECK_CUBLAS(cublasScopy(cublas, n, d_r, 1, d_r_hat, 1));
-
-    for (int i = 1; i <= max_iters; ++i) {
-        CHECK_CUBLAS(cublasSdot(cublas, n, d_r_hat, 1, d_r, 1, &rho));
-        
-        if (i == 1) {
-            CHECK_CUBLAS(cublasScopy(cublas, n, d_r, 1, d_p, 1));
-        } else {
-            beta = (rho / rho_prev) * (alpha / omega);
-            float minus_omega = -omega;
-            CHECK_CUBLAS(cublasSaxpy(cublas, n, &minus_omega, d_v, 1, d_p, 1));
-            CHECK_CUBLAS(cublasSscal(cublas, n, &beta, d_p, 1));
-            CHECK_CUBLAS(cublasSaxpy(cublas, n, &one, d_r, 1, d_p, 1));
-        }
-
-        // v = Ap
-        CHECK_CUSPARSE(cusparseSpMV(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecP, &zero, vecV, 
-                                    CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, d_buffer));
-
-        float rhat_v;
-        CHECK_CUBLAS(cublasSdot(cublas, n, d_r_hat, 1, d_v, 1, &rhat_v));
-        alpha = rho / rhat_v;
-
-        // s = r - alpha*v
-        CHECK_CUBLAS(cublasScopy(cublas, n, d_r, 1, d_s, 1));
-        float neg_alpha = -alpha;
-        CHECK_CUBLAS(cublasSaxpy(cublas, n, &neg_alpha, d_v, 1, d_s, 1));
-
-        // t = As
-        CHECK_CUSPARSE(cusparseSpMV(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecS, &zero, vecT, 
-                                    CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, d_buffer));
-
-        float t_s, t_t;
-        CHECK_CUBLAS(cublasSdot(cublas, n, d_t, 1, d_s, 1, &t_s));
-        CHECK_CUBLAS(cublasSdot(cublas, n, d_t, 1, d_t, 1, &t_t));
-        omega = t_s / t_t;
-
-        // x = x + alpha*p + omega*s
-        CHECK_CUBLAS(cublasSaxpy(cublas, n, &alpha, d_p, 1, d_x, 1));
-        CHECK_CUBLAS(cublasSaxpy(cublas, n, &omega, d_s, 1, d_x, 1));
-
-        // r = s - omega*t
-        CHECK_CUBLAS(cublasScopy(cublas, n, d_s, 1, d_r, 1));
-        float neg_omega_bc = -omega;
-        CHECK_CUBLAS(cublasSaxpy(cublas, n, &neg_omega_bc, d_t, 1, d_r, 1));
-
-        float norm_r;
-        CHECK_CUBLAS(cublasSnrm2(cublas, n, d_r, 1, &norm_r));
-        if (norm_r < tolerance) break;
-        
-        rho_prev = rho;
+    for (int i = 0; i < num_streams; ++i) {
+        CHECK_CUDA(cudaStreamCreateWithFlags(&slots[i].stream, cudaStreamNonBlocking));
+        CHECK_CUBLAS(cublasCreate(&slots[i].cublas));
+        CHECK_CUSPARSE(cusparseCreate(&slots[i].cusparse));
+        CHECK_CUDA(cudaEventCreateWithFlags(&slots[i].done, cudaEventDisableTiming));
+        slots[i].busy = false;
     }
 
-    // Cleanup
-    cusparseDestroySpMat(matA);
-    cusparseDestroyDnVec(vecX); cusparseDestroyDnVec(vecP); cusparseDestroyDnVec(vecV);
-    cusparseDestroyDnVec(vecS); cusparseDestroyDnVec(vecT);
-    CHECK_CUDA(cudaFreeAsync(d_val, stream));
-    CHECK_CUDA(cudaFreeAsync(d_row_ptr, stream));
-    CHECK_CUDA(cudaFreeAsync(d_col_ind, stream));
-    CHECK_CUDA(cudaFreeAsync(d_x, stream));
-    CHECK_CUDA(cudaFreeAsync(d_r, stream));
-    CHECK_CUDA(cudaFreeAsync(d_r_hat, stream));
-    CHECK_CUDA(cudaFreeAsync(d_p, stream));
-    CHECK_CUDA(cudaFreeAsync(d_v, stream));
-    CHECK_CUDA(cudaFreeAsync(d_s, stream));
-    CHECK_CUDA(cudaFreeAsync(d_t, stream));
-    CHECK_CUDA(cudaFreeAsync(d_b, stream));
-    CHECK_CUDA(cudaFreeAsync(d_buffer, stream));
-}
+    int rr = 0;
+    auto acquire_slot = [&]() -> int {
+        while (true) {
+            for (int offset = 0; offset < num_streams; ++offset) {
+                int idx = (rr + offset) % num_streams;
 
-// GPU Worker function (One thread per stream)
-void gpu_worker(int device_id, int thread_id, std::vector<MatrixTask> assigned_tasks) {
-    CHECK_CUDA(cudaSetDevice(device_id));
-    
-    cudaStream_t stream;
-    cublasHandle_t cublas_handle;
-    cusparseHandle_t cusparse_handle;
+                if (!slots[idx].busy) {
+                    rr = (idx + 1) % num_streams;
+                    return idx;
+                }
 
-    CHECK_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-    CHECK_CUBLAS(cublasCreate(&cublas_handle));
-    CHECK_CUSPARSE(cusparseCreate(&cusparse_handle));
-
-    for (const auto& t : assigned_tasks) {
-        auto start_task = std::chrono::steady_clock::now();
-        if (t.type == CGS_SOLVER) {
-            solve_cg_async(cublas_handle, cusparse_handle, t, stream);
-        } else {
-            solve_bicgstab_async(cublas_handle, cusparse_handle, t, stream); 
+                cudaError_t q = cudaEventQuery(slots[idx].done);
+                if (q == cudaSuccess) {
+                    slots[idx].busy = false;
+                    rr = (idx + 1) % num_streams;
+                    return idx;
+                } else if (q != cudaErrorNotReady) {
+                    std::cerr << "CUDA event query failed on GPU " << device_id
+                              << ", stream " << idx << ": " << cudaGetErrorString(q) << std::endl;
+                    std::exit(1);
+                }
+            }
+            std::this_thread::yield();
         }
-        // CHECK_CUDA(cudaStreamSynchronize(stream)); solvers are synchronious anyways do not need this
+    };
+
+    MatrixTask task;
+    while (work_queue.wait_pop(task)) {
+        int slot_id = acquire_slot();
+        auto& slot = slots[slot_id];
+
+        auto start_task = std::chrono::steady_clock::now();
+
+        if (task.type == CGS_SOLVER) {
+            solve_cg_async(slot.cublas, slot.cusparse, task, slot.stream);
+        } 
+        else {
+            throw std::runtime_error("Unsupported solver type");
+            exit(1);
+        }
+
+        CHECK_CUDA(cudaEventRecord(slot.done, slot.stream));
+        slot.busy = true;
 
         auto end_task = std::chrono::steady_clock::now();
         std::chrono::duration<double> task_duration = end_task - start_task;
-        std::string solver_type_str = (t.type == CGS_SOLVER) ? "CGS_SOLVER" : "BICSTAB_SOLVER";
-        std::cout << "Thread " << thread_id << ": Solve time for " << t.path 
-                  << " (" << solver_type_str << ") took " << task_duration.count() << " s" << std::endl;
+
+        std::string solver_type_str = (task.type == CGS_SOLVER) ? "CGS_SOLVER" : "BICGSTAB_SOLVER";
+        std::cout << "GPU " << device_id
+                  << " stream " << slot_id
+                  << ": " << task.path
+                  << " (" << solver_type_str << ") took "
+                  << task_duration.count() << " s\n";
     }
 
-    cublasDestroy(cublas_handle);
-    cusparseDestroy(cusparse_handle);
-    cudaStreamDestroy(stream);
+    for (auto& slot : slots) {
+        if (slot.busy) {
+            CHECK_CUDA(cudaEventSynchronize(slot.done));
+        }
+        CHECK_CUDA(cudaEventDestroy(slot.done));
+        CHECK_CUBLAS(cublasDestroy(slot.cublas));
+        CHECK_CUSPARSE(cusparseDestroy(slot.cusparse));
+        CHECK_CUDA(cudaStreamDestroy(slot.stream));
+    }
 }
 
-int main() {
-    std::vector<MatrixTask> tasks;
-    
+// ------------------------------------------------------------
+// Producer thread: enqueue pre-generated tasks
+// ------------------------------------------------------------
+void producer(ThreadSafeQueue<MatrixTask>& work_queue, std::vector<MatrixTask> tasks) {
+    for (auto& t : tasks) {
+        work_queue.push(std::move(t));
+    }
+    work_queue.close();
+}
+
+// ------------------------------------------------------------
+// Main
+// ------------------------------------------------------------
+int main(int argc, char** argv) {
+    int num_streams = 8;
+    if (argc > 1) {
+        num_streams = std::max(1, std::atoi(argv[1]));
+    }
+
     std::cout << "[INFO] Loading matrices...\n";
-    tasks = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
-    //scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
+    std::vector<MatrixTask> tasks =
+        scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd",
+                          CGS_SOLVER);
 
     if (tasks.empty()) {
         std::cerr << "No matrices found.\n";
         return 1;
     }
 
-    int num_gpus;
+    int num_gpus = 0;
     CHECK_CUDA(cudaGetDeviceCount(&num_gpus));
-    int workers_per_gpu = 8;
-    
-    // Hierarchical Static Partitioning: Queue -> Devices -> Worker Threads
-    std::vector<std::vector<std::vector<MatrixTask>>> partitions(num_gpus, 
-                                        std::vector<std::vector<MatrixTask>>(workers_per_gpu));
-    for (size_t i = 0; i < tasks.size(); ++i) {
-        int g_id = i % num_gpus;
-        int w_id = (i / num_gpus) % workers_per_gpu;
-        partitions[g_id][w_id].push_back(std::move(tasks[i]));
+    if (num_gpus <= 0) {
+        std::cerr << "No CUDA devices found.\n";
+        return 1;
     }
 
-    std::cout << "[INFO] Processing " << tasks.size() << " tasks using " 
-              << (num_gpus * workers_per_gpu) << " worker threads (" << workers_per_gpu << " threads/GPU)...\n";
+    std::cout << "[INFO] Tasks ready: " << tasks.size() << "\n";
+    std::cout << "[INFO] GPUs: " << num_gpus << "\n";
+    std::cout << "[INFO] Streams per GPU: " << num_streams << "\n";
 
+    ThreadSafeQueue<MatrixTask> work_queue;
+
+    // Timing starts after matrix scanning/generation is already done.
     auto start = std::chrono::steady_clock::now();
 
-    std::vector<std::thread> workers;
-    for (int i = 0; i < num_gpus; ++i) {
-        for (int j = 0; j < workers_per_gpu; ++j) {
-            workers.emplace_back(gpu_worker, i, (i * 100 + j), std::move(partitions[i][j]));
-        }
+    std::thread prod_thread(producer, std::ref(work_queue), std::move(tasks));
+
+    std::vector<std::thread> consumers;
+    consumers.reserve(num_gpus);
+    for (int gpu = 0; gpu < num_gpus; ++gpu) {
+        consumers.emplace_back(gpu_consumer, gpu, num_streams, std::ref(work_queue));
     }
 
-    for (auto& w : workers) w.join();
+    prod_thread.join();
+    for (auto& t : consumers) {
+        t.join();
+    }
 
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = end - start;
