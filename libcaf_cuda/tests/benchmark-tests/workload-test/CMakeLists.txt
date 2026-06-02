@@ -43,4 +43,5 @@ target_link_libraries(work-stealing
     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
     CUDA::nvrtc
     CUDA::cublas
+    CUDA::cusparse
 )

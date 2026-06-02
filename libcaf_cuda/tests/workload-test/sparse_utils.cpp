@@ -103,3 +103,33 @@ int generate_random_sleep_ms(int min_ms, int max_ms) {
     std::uniform_int_distribution<> dis(min_ms, max_ms);
     return dis(gen);
 }
+
+std::chrono::milliseconds generate_random_interval(
+    std::mt19937& rng,
+    double mean_ms)
+{
+    std::exponential_distribution<double> dist(
+        1.0 / mean_ms);
+
+    return std::chrono::milliseconds(
+        static_cast<int>(dist(rng)));
+}
+
+std::vector<MatrixTask> generate_batch(
+    const std::vector<MatrixTask>& matrix_pool,
+    std::mt19937& rng,
+    size_t batch_size)
+{
+    std::vector<MatrixTask> batch;
+    batch.reserve(batch_size);
+
+    std::uniform_int_distribution<size_t> dist(
+        0,
+        matrix_pool.size() - 1);
+
+    for (size_t i = 0; i < batch_size; ++i) {
+        batch.push_back(matrix_pool[dist(rng)]);
+    }
+
+    return batch;
+}

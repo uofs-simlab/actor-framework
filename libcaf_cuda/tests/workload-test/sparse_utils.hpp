@@ -4,6 +4,8 @@
 #include <string>
 #include <cstdint>
 #include <memory>
+#include <random>
+#include <chrono>
 
 enum SolverType { CGS_SOLVER, BICSTAB_SOLVER };
 
@@ -55,3 +57,13 @@ std::vector<float> compute_rhs_spmv(const SparseMatrixCSR& A, const std::vector<
 
 std::vector<MatrixTask> scan_for_matrices(const std::string& dir, SolverType type);
 int generate_random_sleep_ms(int min_ms, int max_ms);
+
+// Workload generation helpers
+std::chrono::milliseconds generate_random_interval(
+    std::mt19937& rng,
+    double mean_ms);
+
+std::vector<MatrixTask> generate_batch(
+    const std::vector<MatrixTask>& matrix_pool,
+    std::mt19937& rng,
+    size_t batch_size);
