@@ -9,26 +9,26 @@
 #include <thread>
 #include <mutex>
 #include <queue>
+#include <condition_variable>
 #include <filesystem>
 #include <memory>
 #include <algorithm>
-#include <condition_variable>
-#include <atomic>
 
 #include "sparse_utils.hpp"
 
 namespace fs = std::filesystem;
 
-// ------------------------------------------------------------
-// Error checking macros
-// ------------------------------------------------------------
+// ============================================================
+// Error Checking
+// ============================================================
+
 #define CHECK_CUDA(call)                                                   \
     do {                                                                   \
         cudaError_t status = call;                                         \
         if (status != cudaSuccess) {                                       \
             std::cerr << "CUDA Error: " << cudaGetErrorString(status)      \
                       << " at " << __FILE__ << ":" << __LINE__ << std::endl; \
-            std::exit(1);                                                  \
+            std::exit(EXIT_FAILURE);                                       \
         }                                                                  \
     } while (0)
 
@@ -36,8 +36,9 @@ namespace fs = std::filesystem;
     do {                                                                   \
         cublasStatus_t status = call;                                      \
         if (status != CUBLAS_STATUS_SUCCESS) {                             \
-            std::cerr << "cuBLAS Error at " << __FILE__ << ":" << __LINE__ << std::endl; \
-            std::exit(1);                                                  \
+            std::cerr << "cuBLAS Error at "                               \
+                      << __FILE__ << ":" << __LINE__ << std::endl;         \
+            std::exit(EXIT_FAILURE);                                       \
         }                                                                  \
     } while (0)
 
@@ -45,71 +46,61 @@ namespace fs = std::filesystem;
     do {                                                                   \
         cusparseStatus_t status = call;                                    \
         if (status != CUSPARSE_STATUS_SUCCESS) {                           \
-            std::cerr << "cuSPARSE Error at " << __FILE__ << ":" << __LINE__ << std::endl; \
-            std::exit(1);                                                  \
+            std::cerr << "cuSPARSE Error at "                             \
+                      << __FILE__ << ":" << __LINE__ << std::endl;         \
+            std::exit(EXIT_FAILURE);                                       \
         }                                                                  \
     } while (0)
 
-// ------------------------------------------------------------
-// Thread-safe queue
-// ------------------------------------------------------------
-template <typename T>
+// ============================================================
+// Thread Safe Queue
+// ============================================================
+
+template<typename T>
 class ThreadSafeQueue {
 public:
     void push(T item) {
         {
-            std::lock_guard<std::mutex> lock(mtx_);
-            if (closed_) {
-                return;
-            }
-            q_.push(std::move(item));
+            std::lock_guard<std::mutex> lock(mutex_);
+            queue_.push(std::move(item));
         }
         cv_.notify_one();
     }
 
     bool wait_pop(T& item) {
-        std::unique_lock<std::mutex> lock(mtx_);
-        cv_.wait(lock, [&] { return closed_ || !q_.empty(); });
+        std::unique_lock<std::mutex> lock(mutex_);
 
-        if (q_.empty()) {
-            return false; // closed and empty
-        }
+        cv_.wait(lock, [&] {
+            return closed_ || !queue_.empty();
+        });
 
-        item = std::move(q_.front());
-        q_.pop();
+        if (queue_.empty())
+            return false;
+
+        item = std::move(queue_.front());
+        queue_.pop();
         return true;
     }
 
     void close() {
         {
-            std::lock_guard<std::mutex> lock(mtx_);
+            std::lock_guard<std::mutex> lock(mutex_);
             closed_ = true;
         }
         cv_.notify_all();
     }
 
 private:
-    std::mutex mtx_;
+    std::queue<T> queue_;
+    std::mutex mutex_;
     std::condition_variable cv_;
-    std::queue<T> q_;
     bool closed_ = false;
 };
 
-// ------------------------------------------------------------
-// Stream slot owned by one GPU consumer thread
-// ------------------------------------------------------------
-struct StreamSlot {
-    cudaStream_t stream{};
-    cublasHandle_t cublas{};
-    cusparseHandle_t cusparse{};
-    cudaEvent_t done{};
-    bool busy = false;
-};
+// ============================================================
+// Existing Solver Implementations
+// ============================================================
 
-// ------------------------------------------------------------
-// Your existing solver functions can stay the same
-// ------------------------------------------------------------
-// Keep these as you already have them, or minimally adjust if needed.
 void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
                     const MatrixTask& task, cudaStream_t stream) {
     int n = task.data->rows;
@@ -201,113 +192,121 @@ void solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
     CHECK_CUDA(cudaFreeAsync(d_buffer, stream));
 }
 
+// ============================================================
+// Producer
+// ============================================================
 
-
-// ------------------------------------------------------------
-// GPU consumer thread: one thread per GPU
-// ------------------------------------------------------------
-void gpu_consumer(int device_id, int num_streams, ThreadSafeQueue<MatrixTask>& work_queue) {
-    CHECK_CUDA(cudaSetDevice(device_id));
-
-    std::vector<StreamSlot> slots(num_streams);
-
-    for (int i = 0; i < num_streams; ++i) {
-        CHECK_CUDA(cudaStreamCreateWithFlags(&slots[i].stream, cudaStreamNonBlocking));
-        CHECK_CUBLAS(cublasCreate(&slots[i].cublas));
-        CHECK_CUSPARSE(cusparseCreate(&slots[i].cusparse));
-        CHECK_CUDA(cudaEventCreateWithFlags(&slots[i].done, cudaEventDisableTiming));
-        slots[i].busy = false;
+void producer(
+    ThreadSafeQueue<MatrixTask>& queue,
+    std::vector<MatrixTask> tasks)
+{
+    for (auto& task : tasks) {
+        queue.push(std::move(task));
     }
 
-    int rr = 0;
-    auto acquire_slot = [&]() -> int {
-        while (true) {
-            for (int offset = 0; offset < num_streams; ++offset) {
-                int idx = (rr + offset) % num_streams;
+    queue.close();
+}
 
-                if (!slots[idx].busy) {
-                    rr = (idx + 1) % num_streams;
-                    return idx;
-                }
+// ============================================================
+// Worker
+// One thread == One stream
+// ============================================================
 
-                cudaError_t q = cudaEventQuery(slots[idx].done);
-                if (q == cudaSuccess) {
-                    slots[idx].busy = false;
-                    rr = (idx + 1) % num_streams;
-                    return idx;
-                } else if (q != cudaErrorNotReady) {
-                    std::cerr << "CUDA event query failed on GPU " << device_id
-                              << ", stream " << idx << ": " << cudaGetErrorString(q) << std::endl;
-                    std::exit(1);
-                }
-            }
-            std::this_thread::yield();
-        }
-    };
+void gpu_stream_worker(
+    int device_id,
+    int worker_id,
+    ThreadSafeQueue<MatrixTask>& queue)
+{
+    CHECK_CUDA(cudaSetDevice(device_id));
+
+    cudaStream_t stream;
+    cublasHandle_t cublas;
+    cusparseHandle_t cusparse;
+
+    CHECK_CUDA(
+        cudaStreamCreateWithFlags(
+            &stream,
+            cudaStreamNonBlocking));
+
+    CHECK_CUBLAS(
+        cublasCreate(&cublas));
+
+    CHECK_CUSPARSE(
+        cusparseCreate(&cusparse));
 
     MatrixTask task;
-    while (work_queue.wait_pop(task)) {
-        int slot_id = acquire_slot();
-        auto& slot = slots[slot_id];
 
-        auto start_task = std::chrono::steady_clock::now();
+    while (queue.wait_pop(task)) {
+
+        auto start_task =
+            std::chrono::steady_clock::now();
 
         if (task.type == CGS_SOLVER) {
-            solve_cg_async(slot.cublas, slot.cusparse, task, slot.stream);
-        } 
-        else {
+
+            solve_cg_async(
+                cublas,
+                cusparse,
+                task,
+                stream);
+
+        } else {
+
             throw std::runtime_error("Unsupported solver type");
             exit(1);
         }
 
-        CHECK_CUDA(cudaEventRecord(slot.done, slot.stream));
-        slot.busy = true;
+        // Optional safety.
+        // Likely redundant because the iterative
+        // solver performs host-side reductions.
+        CHECK_CUDA(cudaStreamSynchronize(stream));
 
-        auto end_task = std::chrono::steady_clock::now();
-        std::chrono::duration<double> task_duration = end_task - start_task;
+        auto end_task =
+            std::chrono::steady_clock::now();
 
-        std::string solver_type_str = (task.type == CGS_SOLVER) ? "CGS_SOLVER" : "BICGSTAB_SOLVER";
-        std::cout << "GPU " << device_id
-                  << " stream " << slot_id
-                  << ": " << task.path
-                  << " (" << solver_type_str << ") took "
-                  << task_duration.count() << " s\n";
+        std::chrono::duration<double>
+            elapsed = end_task - start_task;
+
+        std::cout
+            << "Worker "
+            << worker_id
+            << " (GPU "
+            << device_id
+            << ") solved "
+            << task.path
+            << " in "
+            << elapsed.count()
+            << " s"
+            << std::endl;
     }
 
-    for (auto& slot : slots) {
-        if (slot.busy) {
-            CHECK_CUDA(cudaEventSynchronize(slot.done));
-        }
-        CHECK_CUDA(cudaEventDestroy(slot.done));
-        CHECK_CUBLAS(cublasDestroy(slot.cublas));
-        CHECK_CUSPARSE(cusparseDestroy(slot.cusparse));
-        CHECK_CUDA(cudaStreamDestroy(slot.stream));
-    }
+    CHECK_CUBLAS(cublasDestroy(cublas));
+    CHECK_CUSPARSE(cusparseDestroy(cusparse));
+    CHECK_CUDA(cudaStreamDestroy(stream));
 }
 
-// ------------------------------------------------------------
-// Producer thread: enqueue pre-generated tasks
-// ------------------------------------------------------------
-void producer(ThreadSafeQueue<MatrixTask>& work_queue, std::vector<MatrixTask> tasks) {
-    for (auto& t : tasks) {
-        work_queue.push(std::move(t));
-    }
-    work_queue.close();
-}
-
-// ------------------------------------------------------------
+// ============================================================
 // Main
-// ------------------------------------------------------------
-int main(int argc, char** argv) {
+// ============================================================
+
+int main(int argc, char** argv)
+{
     int num_streams = 8;
+
     if (argc > 1) {
-        num_streams = std::max(1, std::atoi(argv[1]));
+        num_streams =
+            std::max(1, std::atoi(argv[1]));
     }
 
     std::cout << "[INFO] Loading matrices...\n";
+
+    // --------------------------------------------------------
+    // Matrix generation NOT timed
+    // --------------------------------------------------------
+
     std::vector<MatrixTask> tasks =
-        scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd",
-                          CGS_SOLVER);
+        scan_for_matrices(
+            "/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd",
+            CGS_SOLVER);
 
     if (tasks.empty()) {
         std::cerr << "No matrices found.\n";
@@ -315,41 +314,94 @@ int main(int argc, char** argv) {
     }
 
     int num_gpus = 0;
-    CHECK_CUDA(cudaGetDeviceCount(&num_gpus));
-    if (num_gpus <= 0) {
+
+    CHECK_CUDA(
+        cudaGetDeviceCount(&num_gpus));
+
+    if (num_gpus == 0) {
         std::cerr << "No CUDA devices found.\n";
         return 1;
     }
 
-    std::cout << "[INFO] Tasks ready: " << tasks.size() << "\n";
-    std::cout << "[INFO] GPUs: " << num_gpus << "\n";
-    std::cout << "[INFO] Streams per GPU: " << num_streams << "\n";
+    std::cout
+        << "[INFO] Found "
+        << num_gpus
+        << " GPUs\n";
+
+    std::cout
+        << "[INFO] "
+        << num_streams
+        << " worker threads per GPU\n";
+
+    std::cout
+        << "[INFO] "
+        << tasks.size()
+        << " tasks queued\n";
 
     ThreadSafeQueue<MatrixTask> work_queue;
 
-    // Timing starts after matrix scanning/generation is already done.
-    auto start = std::chrono::steady_clock::now();
+    // --------------------------------------------------------
+    // Benchmark starts here
+    // --------------------------------------------------------
 
-    std::thread prod_thread(producer, std::ref(work_queue), std::move(tasks));
+    auto benchmark_start =
+        std::chrono::steady_clock::now();
 
-    std::vector<std::thread> consumers;
-    consumers.reserve(num_gpus);
+    std::thread producer_thread(
+        producer,
+        std::ref(work_queue),
+        std::move(tasks));
+
+    std::vector<std::thread> workers;
+
+    workers.reserve(
+        num_gpus * num_streams);
+
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
-        consumers.emplace_back(gpu_consumer, gpu, num_streams, std::ref(work_queue));
+
+        for (int stream = 0;
+             stream < num_streams;
+             ++stream)
+        {
+            int worker_id =
+                gpu * num_streams + stream;
+
+            workers.emplace_back(
+                gpu_stream_worker,
+                gpu,
+                worker_id,
+                std::ref(work_queue));
+        }
     }
 
-    prod_thread.join();
-    for (auto& t : consumers) {
-        t.join();
+    producer_thread.join();
+
+    for (auto& worker : workers) {
+        worker.join();
     }
 
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
+    auto benchmark_end =
+        std::chrono::steady_clock::now();
 
-    std::cout << "\n===== NATIVE BENCHMARK COMPLETE =====\n";
-    std::cout << "Tasks Processed: " << tasks.size() << "\n";
-    std::cout << "Total Runtime:   " << elapsed.count() << " s\n";
-    std::cout << "======================================\n";
+    std::chrono::duration<double>
+        total_time =
+            benchmark_end - benchmark_start;
+
+    std::cout << "\n";
+    std::cout << "=====================================\n";
+    std::cout << "NATIVE PRODUCER/CONSUMER BENCHMARK\n";
+    std::cout << "=====================================\n";
+    std::cout << "GPUs:               "
+              << num_gpus << "\n";
+    std::cout << "Streams per GPU:    "
+              << num_streams << "\n";
+    std::cout << "Worker Threads:     "
+              << num_gpus * num_streams << "\n";
+    std::cout << "Tasks Processed:    "
+              << tasks.size() << "\n";
+    std::cout << "Total Runtime:      "
+              << total_time.count() << " s\n";
+    std::cout << "=====================================\n";
 
     return 0;
 }
