@@ -51,6 +51,8 @@ struct MatrixTask {
 struct Partition {
     size_t begin;
     size_t end;
+    std::vector<int> devices;
+    std::vector<int> streams;
 };
 
 // Function to slurp the binary data into memory
