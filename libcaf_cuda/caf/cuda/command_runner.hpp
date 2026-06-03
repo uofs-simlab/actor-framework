@@ -10,6 +10,7 @@
 #include "caf/cuda/control-layer/response_token.hpp"
 #include "caf/cuda/control-layer/launch_response_token.hpp"
 #include "caf/cuda/control-layer/memory_response_token.hpp"
+#include "caf/cuda/event.hpp"
 
 namespace caf::cuda {
 
@@ -305,8 +306,44 @@ public:
       plat->reset_device_context(device_number);
   }
 
+  // -------------------------------
+  // CUDA Event Management
+  // -------------------------------
 
+  /// Creates a new CUDA event on the specified device.
+  event_ptr create_event(int device_number, unsigned int flags = CU_EVENT_DEFAULT) {
+    auto plat = platform::create();
+    auto dev = plat->getDevice(device_number % plat->get_num_devices());
+    return dev->create_event(flags);
+  }
 
+  /// Records a CUDA event on the stream associated with the given stream_id.
+  void record_event(event_ptr e, int stream_id, int device_number) {
+    auto plat = platform::create();
+    auto dev = plat->schedule(stream_id, device_number);
+    dev->record_event(std::move(e), stream_id);
+  }
+
+  /// Enqueues a wait on the stream for the specified CUDA event.
+  void wait_event(event_ptr e, int stream_id, int device_number) {
+    auto plat = platform::create();
+    auto dev = plat->schedule(stream_id, device_number);
+    dev->wait_event(std::move(e), stream_id);
+  }
+
+  /// Returns true if the specified CUDA event has completed.
+  bool query_event(event_ptr e, int device_number) {
+    auto plat = platform::create();
+    auto dev = plat->getDevice(device_number % plat->get_num_devices());
+    return dev->query_event(std::move(e));
+  }
+
+  /// Blocks until the specified CUDA event has completed.
+  void synchronize_event(event_ptr e, int device_number) {
+    auto plat = platform::create();
+    auto dev = plat->getDevice(device_number % plat->get_num_devices());
+    dev->synchronize_event(std::move(e));
+  }
 
 };
 

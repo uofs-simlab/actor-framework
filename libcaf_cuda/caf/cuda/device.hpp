@@ -21,6 +21,7 @@
 #include "caf/cuda/types.hpp"
 #include "caf/cuda/streampool.hpp"
 #include "caf/cuda/mem_ref.hpp"
+#include "caf/cuda/event.hpp"
 
 namespace caf::cuda {
 
@@ -119,6 +120,41 @@ public:
   //releases the CUStream associated with the actor id 
   void release_stream_for_actor(int actor_id) {
     stream_table_->release_stream(actor_id);
+  }
+
+  /// Creates a CUDA event on this device.
+  event_ptr create_event(unsigned int flags = CU_EVENT_DEFAULT) {
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    auto res = caf::make_counted<event>(flags);
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    return res;
+  }
+
+  /// Records an event on the stream associated with the actor_id.
+  void record_event(event_ptr e, int actor_id) {
+    CUstream stream = get_stream_for_actor(actor_id);
+    CHECK_CUDA(cuEventRecord(e->get(), stream));
+  }
+
+  /// Makes a stream wait on an event.
+  void wait_event(event_ptr e, int actor_id) {
+    CUstream stream = get_stream_for_actor(actor_id);
+    CHECK_CUDA(cuStreamWaitEvent(stream, e->get(), 0));
+  }
+
+  /// Returns true if the event has completed.
+  bool query_event(event_ptr e) {
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    bool res = e->query();
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
+    return res;
+  }
+
+  /// Blocks until the event has completed.
+  void synchronize_event(event_ptr e) {
+    CHECK_CUDA(cuCtxPushCurrent(context_));
+    e->synchronize();
+    CHECK_CUDA(cuCtxPopCurrent(nullptr));
   }
 
   /// Enable cuBLAS support.

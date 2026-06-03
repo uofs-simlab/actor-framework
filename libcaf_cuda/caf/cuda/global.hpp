@@ -10,6 +10,7 @@
 #include <memory>
 #include "caf/cuda/nd_range.hpp"
 #include "caf/cuda/helpers.hpp"
+#include "caf/cuda/event.hpp"
 #include <nvrtc.h>
 // CAF type ID registration
 #include <caf/type_id.hpp>
@@ -259,6 +260,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<float>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<double>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<char>))  
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::event_ptr))
   CAF_ADD_TYPE_ID(cuda, (caf::cuda::matrix_format))
   CAF_ADD_TYPE_ID(cuda, (caf::cuda::solver_result_meta))
   CAF_ADD_TYPE_ID(cuda, (caf::cuda::sparse_cg_solve_context<float>))
@@ -291,6 +293,7 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<int>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<float>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<double>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<char>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::event_ptr)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::nd_range)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::program_ptr)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(output_mapping)
