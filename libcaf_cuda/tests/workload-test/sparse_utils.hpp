@@ -46,6 +46,13 @@ struct MatrixTask {
     std::shared_ptr<MatrixData> data;
 };
 
+
+
+struct Partition {
+    size_t begin;
+    size_t end;
+};
+
 // Function to slurp the binary data into memory
 SparseMatrixCOO load_binary_coo(const std::string& filepath);
 

@@ -97,6 +97,35 @@ std::vector<MatrixTask> scan_for_matrices(const std::string& dir, SolverType typ
     return tasks;
 }
 
+
+std::vector<Partition>
+make_contiguous_partitions(size_t num_tasks, size_t rows, size_t cols)
+{
+    size_t num_parts = rows * cols;
+
+    std::vector<Partition> parts;
+    parts.reserve(num_parts);
+
+    size_t base = num_tasks / num_parts;
+    size_t rem  = num_tasks % num_parts;
+
+    size_t current = 0;
+
+    for (size_t p = 0; p < num_parts; ++p) {
+        size_t size = base + (p < rem ? 1 : 0);
+
+        parts.push_back({
+            current,
+            current + size
+        });
+
+        current += size;
+    }
+
+    return parts;
+}
+
+
 int generate_random_sleep_ms(int min_ms, int max_ms) {
     static std::random_device rd;
     static std::mt19937 gen(rd());
