@@ -1,14 +1,12 @@
-/* An example file demonstrating how the actor facade works
- * by showing how to launch a matrix multiplication kernel using the actor facade 
- * we use managers spawnFromCubin and is recommended that you do too or use spawnFromFatbin
- * to spawn an actor facade 
- * since using the spawn method will likely result in an unsupported toolchain error
- * be sure to run compile_kernels.sh
+/* 
+ * Modern Actor Facade Example: Matrix Multiplication
+ * 
+ * This file demonstrates the three primary ways to interact with the caf::cuda::actor_facade.
+ * The facade is fully asynchronous and pushes results back to the requester's mailbox.
+ * 
+ * Requirements: Run compile_kernels.sh to generate mmul.cubin before running.
  */
-
-
 #include <caf/all.hpp>  // Includes most CAF essentials
-
 #include "caf/cuda/actor_facade.hpp"
 #include "caf/cuda/manager.hpp"
 #include "caf/cuda/nd_range.hpp"
@@ -16,22 +14,16 @@
 #include <caf/type_id.hpp>
 #include "caf/detail/test.hpp"
 #include <cassert>
-
 #include <iostream>
 #include <iomanip>
 #include <vector>
-#include <chrono>
-#include <thread>
 #include <algorithm>
-#include <numeric>
-#include "caf/actor_registry.hpp"
-
-
 
 using namespace caf;
 using namespace std::chrono_literals;
+using namespace caf::cuda;
 
-//verification of matrix multiplication on the gpu
+// Verification function for matrix multiplication on the CPU
 void serial_matrix_multiply(const std::vector<int>& a,
                             const std::vector<int>& b,
                             std::vector<int>& c,
@@ -49,99 +41,149 @@ void serial_matrix_multiply(const std::vector<int>& a,
   }
 }
 
+// Common state for all testers to hold input vectors and output buffer for mapping
+struct mmul_tester_state {
+  std::vector<int> A;
+  std::vector<int> B;
+  std::vector<int> host_buffer; // Used by mapping_tester
+};
 
-void test_mmul_from_cubin(caf::actor_system& sys, int N) {
-  std::cout << "[TEST] Starting test_mmul_from_cubin\n";
+// ---------------------------------------------------------------------------
+// Case 1: Standard Vector Results
+// The facade copies results from Device to Host and sends std::vector<T>.
+// ---------------------------------------------------------------------------
+caf::behavior standard_tester(caf::stateful_actor<mmul_tester_state>* self, caf::actor facade,
+                              int N, std::vector<int> ref, int launch_id) {
+  std::cout << "[Tester] Launching Standard Facade Test...\n";
 
-  caf::cuda::manager& mgr = caf::cuda::manager::get();
+  self->state().A.assign(N * N, 1); // Store A in actor state
+  self->state().B.assign(N * N, 2); // Store B in actor state
+  auto arg1 = create_in_arg(self->state().A);
+  auto arg2 = create_in_arg(self->state().B);
+  auto arg3 = create_out_arg_with_size<int>(N * N);
+  auto arg4 = create_in_arg(N);
 
-  int THREADS = 32;
-  int BLOCKS = (N + THREADS - 1) / THREADS;
+  // Send work. We use 'mail' to provide type-safe arguments.
+  self->mail(arg1, arg2, arg3, arg4).send(facade);
 
-  caf::cuda::nd_range dim(
-		  BLOCKS, //grid X dimension
-		  BLOCKS, //grid Y dimension
-		  1, //grid Z dimension
-		  THREADS, // block X dimension 
-		  THREADS, // block Y dimension
-		  1 // block Z dimension
-		  );
-
-
-  // Spawn actor from precompiled cubin file
-  auto gpuActor = mgr.spawnFromCUBIN(
-		  "../mmul.cubin", //kernel file location
-		  "matrixMul", //kernel name 
-		  dim, //kernel dimensions             
-		  in<int>{}, in<int>{}, out<int>{}, in<int>{} //kernel arg tags 
-							      //in order they appear in kernel
-		  );
-
-
-
-
-  //generate random matrices
-  std::vector<int> h_a(N * N);
-  std::vector<int> h_b(N * N);
-  std::vector<int> h_c(N * N, 0);
-  std::vector<int> h_ref(N * N, 0);
-  std::vector<int> h_n(1, N);
-  std::generate(h_a.begin(), h_a.end(), []() { return rand() % 10; });
-  std::generate(h_b.begin(), h_b.end(), []() { return rand() % 10; });
-
-
-
-  //tag the arguments 
-  auto arg1 = caf::cuda::create_in_arg(h_a); //matrix A readonly buffer
-  auto arg2 = caf::cuda::create_in_arg(h_b); //matrix B readonly buffer
-  auto arg3 = caf::cuda::create_out_arg_with_size<int>(N*N); //matrix size Writeonly buffer
-  auto arg4 = caf::cuda::create_in_arg(N); // int size, readonly scalar
-
-  serial_matrix_multiply(h_a, h_b, h_ref, N);
-
-  sys.spawn([=](caf::event_based_actor* self_actor) {
-    auto start = std::chrono::high_resolution_clock::now();
-
-    //when mailing the gpu actor, the message is in the form of the kernel arguments 
-    //and must be in the order they appear in the kernel parameters 
-    //it will deliever a response promise with the results of that kernel launch
-    self_actor->mail(arg1, arg2, arg3, arg4)
-      .request(gpuActor, std::chrono::seconds(10))
-      .then([=](const std::vector<output_buffer>& outputs) {
-        auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> elapsed = end - start;
-
-	
-        std::vector<int> result = caf::cuda::extract_vector<int>(outputs); //collect the result buffer from output
-
-
-        // Compare result with reference
-        bool match = (result == h_ref);
-        std::cout << "[INFO] Kernel round-trip time: " << elapsed.count() << " seconds\n";
-        std::cout << (match ? "[PASS] GPU result matches reference\n" : "[FAIL] Mismatch in GPU result\n");
-
-        self_actor->send_exit(gpuActor, caf::exit_reason::user_shutdown);
-        self_actor->quit();
-      });
-  });
-
-  sys.await_all_actors_done();
+  return {
+    // Signature: (int reply_id, int index, std::vector<T> data)
+    [=](int r_id, int index, std::vector<int> data) {
+      if (r_id == launch_id) {
+        std::cout << "[Standard] Received result for index " << index << "\n";
+        if (index == 2) { // Matrix C
+          bool match = (data == ref);
+          std::cout << (match ? "[PASS]" : "[FAIL]") << " Standard Vector Match\n";
+        }
+        self->quit();
+      }
+    }
+  };
 }
 
+// ---------------------------------------------------------------------------
+// Case 2: Memory Pointer Results
+// The facade returns raw mem_ptr<T> handles instead of copying data to host.
+// ---------------------------------------------------------------------------
+caf::behavior memptr_tester(caf::stateful_actor<mmul_tester_state>* self, caf::actor facade,
+                            int N, std::vector<int> ref, int launch_id) {
+  std::cout << "[Tester] Launching MemPtr Facade Test...\n";
 
+  self->state().A.assign(N * N, 1);
+  self->state().B.assign(N * N, 2);
+  auto arg1 = create_in_arg(self->state().A);
+  auto arg2 = create_in_arg(self->state().B);
+  auto arg3 = create_out_arg_with_size<int>(N * N);
+  auto arg4 = create_in_arg(N);
 
+  // By prepending return_mem_ptr_atom, the facade returns handles immediately 
+  // after kernel launch, allowing manual control over Device-to-Host moves.
+  self->mail(return_mem_ptr_atom_v, arg1, arg2, arg3, arg4).send(facade);
+
+  return {
+    // Signature: (int reply_id, mem_ptr<T>...)
+    [=](int r_id, mem_ptr<int> pA, mem_ptr<int> pB, mem_ptr<int> pC, mem_ptr<int> pN) {
+      if (r_id == launch_id) {
+        std::cout << "[MemPtr] Received device memory handles.\n";
+        
+        // Copy matrix C back to host manually.
+        std::vector<int> data = pC->copy_to_host();
+        
+        bool match = (data == ref);
+        std::cout << (match ? "[PASS]" : "[FAIL]") << " MemPtr Data Match\n";
+        self->quit();
+      }
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Case 3: Output Mapping
+// The facade copies results directly into a pre-allocated host buffer.
+// ---------------------------------------------------------------------------
+caf::behavior mapping_tester(caf::stateful_actor<mmul_tester_state>* self,
+                             caf::actor facade, int N, std::vector<int> ref, 
+                             int launch_id) {
+  std::cout << "[Tester] Launching Output Mapping Test...\n";
+  
+  self->state().A.assign(N * N, 1); // Store A in actor state
+  self->state().B.assign(N * N, 2); // Store B in actor state
+  self->state().host_buffer.assign(N * N, 0);
+
+  auto arg1 = create_in_arg(self->state().A);
+  auto arg2 = create_in_arg(self->state().B);
+  auto arg3 = create_out_arg_with_size<int>(N * N);
+  auto arg4 = create_in_arg(N);
+
+  // Define the mapping: tell the facade to put index 2 into our local vector.
+  std::vector<output_mapping> mappings = {
+    {2, self->state().host_buffer.data(), self->state().host_buffer.size()}
+  };
+
+  self->mail(mappings, arg1, arg2, arg3, arg4).send(facade);
+
+  return {
+    // Signature: (int reply_id, int index)
+    [=](int r_id, int index) {
+      if (r_id == launch_id) {
+        std::cout << "[Mapping] Facade notified completion for index " << index << "\n";
+        if (index == 2) {
+          bool match = (self->state().host_buffer == ref);
+          std::cout << (match ? "[PASS]" : "[FAIL]") << " Mapped Buffer Match\n";
+        }
+        self->quit();
+      }
+    }
+  };
+}
 
 void caf_main(caf::actor_system& sys) {
-  caf::cuda::manager::init(sys);  //be sure to initialize the manager
-				  //as certain things need to be startup 
-   test_mmul_from_cubin(sys,100);
+  // 1. Initialize the CUDA Manager
+  manager::init(sys);
+  auto& mgr = manager::get();
 
-   //test_mmul_from_cubin(sys,50);
-   //test_mmul_from_cubin(sys,1024);
+  // 2. Setup Kernel Dimensions and Metadata
+  int N = 128;
+  int threads = 32;
+  int blocks = (N + threads - 1) / threads;
+  nd_range dims(blocks, blocks, 1, threads, threads, 1);
 
+  // 3. Create Reference Data on CPU
+  std::vector<int> h_a(N * N, 1), h_b(N * N, 2), h_ref(N * N, 0);
+  serial_matrix_multiply(h_a, h_b, h_ref, N);
+
+  // 4. Spawn the Facade
+  // We pass the argument tags (in/out) so the facade knows the kernel signature.
+  int my_reply_id = 0;
+  auto mmul_facade = mgr.spawnFromCUBIN(
+    "../mmul.cubin", "matrixMul", dims, 
+    in<int>{}, in<int>{}, out<int>{}, in<int>{}
+  );
+
+  // 5. Run the interaction tests
+  sys.spawn(standard_tester, mmul_facade, N, h_ref, my_reply_id);
+  sys.spawn(memptr_tester, mmul_facade, N, h_ref, my_reply_id);
+  sys.spawn(mapping_tester, mmul_facade, N, h_ref, my_reply_id);
 }
-
-
-
 
 CAF_MAIN()
