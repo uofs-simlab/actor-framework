@@ -255,7 +255,7 @@ struct supervisor_state {
     std::vector<caf::actor> active_solvers;
     std::unordered_map<caf::actor_id, std::string> task_names;
     std::unordered_map<caf::actor_id, std::chrono::steady_clock::time_point> start_times;
-    int max_active = 1; // Admission control limit to be mindful of GPU memory. If Illegal memory access that means two or more actors are using the same stream
+    int max_active = 4; // Admission control limit to be mindful of GPU memory. If Illegal memory access that means two or more actors are using the same stream
     int num_iterations = 50;
     int stream = 0;
     int device = 0;
@@ -282,7 +282,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     create_in_out_arg(task.data->x_guess),
                                     (int)task.data->row_ptr.size() - 1,
                                     (int)task.data->values.size(),
-                                    1e-4f, 128000, s.device, (++s.stream)%32, actor_cast<actor>(self));
+                                    1e-5f, 128000, s.device, (++s.stream)%32, actor_cast<actor>(self));
             s.task_names[solver->id()] = std::move(path);
             
             s.start_times[solver->id()] = std::chrono::steady_clock::now();
@@ -352,7 +352,8 @@ void caf_main(actor_system& sys) {
     {
          //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
         //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/unsymmetric", CGS_SOLVER);
-         auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
+         //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/unsymmetric", CGS_SOLVER);
+         auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/mixed", CGS_SOLVER);
 
         std::cout << "loaded\n";
         if (tasks_vec.empty()) {
