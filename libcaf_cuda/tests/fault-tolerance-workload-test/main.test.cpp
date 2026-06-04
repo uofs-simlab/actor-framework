@@ -254,8 +254,9 @@ struct supervisor_state {
     std::deque<MatrixTask> queue;
     std::vector<caf::actor> active_solvers;
     std::unordered_map<caf::actor_id, std::string> task_names;
-    int max_active = 4; // Admission control limit to be mindful of GPU memory
-    int batch_size = 50;
+    std::unordered_map<caf::actor_id, std::chrono::steady_clock::time_point> start_times;
+    int max_active = 1; // Admission control limit to be mindful of GPU memory. If Illegal memory access that means two or more actors are using the same stream
+    int num_iterations = 50;
     int stream = 0;
     int device = 0;
 };
@@ -281,9 +282,10 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     create_in_out_arg(task.data->x_guess),
                                     (int)task.data->row_ptr.size() - 1,
                                     (int)task.data->values.size(),
-                                    1e-4f, 64000, s.device, (++s.stream)%32, actor_cast<actor>(self));
+                                    1e-4f, 128000, s.device, (++s.stream)%32, actor_cast<actor>(self));
             s.task_names[solver->id()] = std::move(path);
             
+            s.start_times[solver->id()] = std::chrono::steady_clock::now();
             s.active_solvers.push_back(solver);
             self->mail(start_atom_v).send(solver);
         }
@@ -298,7 +300,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             
             if (meta.iterations == 0 && meta.error_code == CG_SUCCESS) {
                 // Initialization report: trigger the first batch
-                self->mail(cg_next_step_atom_v, s.batch_size).send(solver);
+                self->mail(cg_next_step_atom_v, s.num_iterations).send(solver);
                 return;
             }
 
@@ -307,22 +309,28 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     : "Unknown Task";
 
             if (meta.converged || meta.error_code != CG_SUCCESS) {
+                auto end_time = std::chrono::steady_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  end_time - s.start_times[solver->id()]).count();
+
                 if (meta.converged) {
                     if (meta.iterations == 0)
-                        self->println("[DONE] {}: Initial guess satisfied tolerance.", task_name);
+                        self->println("[DONE] {}: Initial guess satisfied tolerance ({} ms).", task_name, duration);
                     else
-                        self->println("[DONE] {}: Converged in {} iterations.", task_name, meta.iterations);
+                        self->println("[DONE] {}: Converged in {} iterations ({} ms).", task_name, meta.iterations, duration);
                 } else {
-                    self->println("[FAIL] {}: {} (after {} iterations).", 
+                    self->println("[FAIL] {}: {} (after {} iterations, {} ms).", 
                                   task_name, 
                                   to_string(static_cast<cg_error_type>(meta.error_code)), 
-                                  meta.iterations);
+                                  meta.iterations,
+                                  duration);
                 }
 
                 auto it = std::find(s.active_solvers.begin(), s.active_solvers.end(), solver);
                 if (it != s.active_solvers.end())
                     s.active_solvers.erase(it);
                 s.task_names.erase(solver->id());
+                s.start_times.erase(solver->id());
 
                 spawn_next();
 
@@ -332,7 +340,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 }
             } else {
                 // Progress report: order the next iteration batch
-                self->mail(cg_next_step_atom_v, s.batch_size).send(solver);
+                self->mail(cg_next_step_atom_v, s.num_iterations).send(solver);
             }
         }
     };
@@ -342,7 +350,9 @@ void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
     std::cout << "loading\n";
     {
-        auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
+         //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
+        //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/unsymmetric", CGS_SOLVER);
+         auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
 
         std::cout << "loaded\n";
         if (tasks_vec.empty()) {
