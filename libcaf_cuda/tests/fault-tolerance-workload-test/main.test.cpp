@@ -20,16 +20,7 @@ namespace fs = std::filesystem;
 
 constexpr uint32_t WORKLOAD_SEED = 42;
 
-template <class Inspector>
-bool inspect(Inspector& f, SolverType& x) {
-    auto val = static_cast<int>(x);
-    if (f.apply(val)) {
-        if constexpr (Inspector::is_loading)
-            x = static_cast<SolverType>(val);
-        return true;
-    }
-    return false;
-}
+
 
 CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_ATOM(workload_test, get_work_atom)
@@ -42,15 +33,19 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_ATOM(workload_test, shutdown_atom)
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
+    CAF_ADD_TYPE_ID(workload_test, (MatrixData))
     CAF_ADD_TYPE_ID(workload_test, (std::vector<MatrixTask>))
-    CAF_ADD_TYPE_ID(workload_test, (std::vector<caf::actor>))
     CAF_ADD_TYPE_ID(workload_test, (std::shared_ptr<MatrixData>))
 CAF_END_TYPE_ID_BLOCK(workload_test)
+
+
 
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(MatrixData)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<MatrixData>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(MatrixTask)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<MatrixTask>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(SolverType)
+
 
 /**
  * Error codes for solver_result_meta.error_code
@@ -239,74 +234,90 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 // ---------------------------- SUPERVISOR ACTOR ----------------------------
 
 struct supervisor_state {
-    caf::actor solver;
+    std::deque<MatrixTask> queue;
+    std::vector<caf::actor> active_solvers;
+    int max_active = 4; // Admission control limit to be mindful of GPU memory
     int batch_size = 50;
-    int max_steps = 20; 
-    int current_step = 0;
 };
 
-behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::shared_ptr<MatrixData> data) {
+behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<MatrixTask> tasks) {
     auto& st = self->state();
+    for (auto& t : tasks)
+        st.queue.push_back(std::move(t));
+
+    auto spawn_next = [self]() {
+        auto& s = self->state();
+        while (s.active_solvers.size() < static_cast<size_t>(s.max_active) && !s.queue.empty()) {
+            auto task = std::move(s.queue.front());
+            s.queue.pop_front();
+
+            auto solver = self->spawn(fault_tolerant_cg_actor<float>,
+                                    create_in_arg(task.data->row_ptr),
+                                    create_in_arg(task.data->col_indices),
+                                    create_in_arg(task.data->values),
+                                    create_in_arg(task.data->b),
+                                    create_in_out_arg(task.data->x_guess),
+                                    (int)task.data->row_ptr.size() - 1,
+                                    (int)task.data->values.size(),
+                                    1e-5f, 2000, 0, 1, actor_cast<actor>(self));
+            
+            s.active_solvers.push_back(solver);
+            self->mail(start_atom_v).send(solver);
+        }
+    };
+
+    spawn_next();
     
-    st.solver = self->spawn(fault_tolerant_cg_actor<float>,
-                            create_in_arg(data->row_ptr),
-                            create_in_arg(data->col_indices),
-                            create_in_arg(data->values),
-                            create_in_arg(data->b),
-                            create_in_out_arg(data->x_guess),
-                            (int)data->row_ptr.size() - 1,
-                            (int)data->values.size(),
-                            1e-5f, 2000, 0, 1, actor_cast<actor>(self));
-
-    self->mail(start_atom_v).send(st.solver);
-
     return {
         [=](gpu_done_atom, std::vector<float>& solution, solver_result_meta meta) {
             auto& s = self->state();
+            auto solver = actor_cast<caf::actor>(self->current_sender());
             
-            // Check if this was just initialization or a real iteration report
             if (meta.iterations == 0 && meta.error_code == CG_SUCCESS) {
-                self->println("Supervisor: Solver ready. Triggering first batch of {} iterations.", s.batch_size);
-                self->mail(cg_next_step_atom_v, s.batch_size).send(s.solver);
+                // Initialization report: trigger the first batch
+                self->mail(cg_next_step_atom_v, s.batch_size).send(solver);
                 return;
             }
 
-            self->println("Supervisor Report - Iterations: {}, Code: {}, Converged: {}", 
-                          meta.iterations, meta.error_code, meta.converged);
+            if (meta.converged || meta.error_code != CG_SUCCESS) {
+                if (meta.converged) {
+                    self->println("Task completed successfully after {} iterations.", meta.iterations);
+                } else {
+                    self->println("Task failed with error code {} after {} iterations.", 
+                                  meta.error_code, meta.iterations);
+                }
 
-            if (meta.converged) {
-                self->println("Supervisor: Solution reached. Terminating.");
-                self->quit();
-            } else if (meta.error_code != CG_SUCCESS) {
-                self->println("Supervisor: Termination due to error code: {}. Diagnostic required.", meta.error_code);
-                self->quit();
-            } else if (s.current_step >= s.max_steps) {
-                self->println("Supervisor: Reached max steps without convergence.");
-                self->quit();
+                auto it = std::find(s.active_solvers.begin(), s.active_solvers.end(), solver);
+                if (it != s.active_solvers.end()) s.active_solvers.erase(it);
+
+                spawn_next();
+
+                if (s.active_solvers.empty() && s.queue.empty()) {
+                    self->println("All tasks in the batch have been processed.");
+                    self->quit();
+                }
             } else {
-                // Solver is healthy but not done; proceed to next step
-                s.current_step++;
-                self->println("Supervisor: Progress OK. Ordering step {}.", s.current_step);
-                self->mail(cg_next_step_atom_v, s.batch_size).send(s.solver);
+                // Progress report: order the next iteration batch
+                self->mail(cg_next_step_atom_v, s.batch_size).send(solver);
             }
         }
     };
 }
 
-
 void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
-
-    // Example testing data setup
-    auto data = std::make_shared<MatrixData>();
-    data->row_ptr = {0, 1, 2};
-    data->col_indices = {0, 1};
-    data->values = {10.0f, 10.0f};
-    data->b = {100.0f, 100.0f};
-    data->x_guess = {0.0f, 0.0f};
-
-    sys.spawn(supervisor_actor, data);
-    
+     auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
+     if (tasks_vec.empty()) {
+         std::cerr << "No matrices found. Running dummy test task." << std::endl;
+         auto data = std::make_shared<MatrixData>();
+         data->row_ptr = {0, 1, 2};
+         data->col_indices = {0, 1};
+         data->values = {10.0f, 10.0f};
+         data->b = {100.0f, 100.0f};
+         data->x_guess = {0.0f, 0.0f};
+         tasks_vec.push_back({"dummy_task", CGS_SOLVER, data});
+     }
+    sys.spawn(supervisor_actor, std::move(tasks_vec));
     sys.await_all_actors_done();
     manager::shutdown();
 }
