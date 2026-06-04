@@ -59,6 +59,18 @@ enum cg_error_type : int {
   CG_RESIDUAL_FACTOR_FAIL = 5
 };
 
+std::string to_string(cg_error_type err) {
+  switch (err) {
+    case CG_SUCCESS: return "Success";
+    case CG_MAX_ITER: return "Maximum Iterations Reached";
+    case CG_NAN_INF: return "Stability Check Failed (NaN/Inf Detected)";
+    case CG_STAGNATION: return "Stagnation Detected (Residual stopped changing)";
+    case CG_BREAKDOWN: return "Solver Breakdown (Division by zero/near-zero)";
+    case CG_RESIDUAL_FACTOR_FAIL: return "Residual Factor Check Failed";
+    default: return "Unknown Error (" + std::to_string(static_cast<int>(err)) + ")";
+  }
+}
+
 // ---------------------------- FAULT TOLERANT SOLVER ----------------------------
 
 template <class T = float>
@@ -202,7 +214,7 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
         else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
         st.current_rho = runner.copy_to_host(st.y_tmp)[0];
 
-        if (std::abs(st.old_rho - st.current_rho) < 1e-18) { 
+        if (std::abs(st.old_rho - st.current_rho) < 1e-15) { 
           code = CG_STAGNATION; 
           break; 
         }
@@ -241,7 +253,8 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 struct supervisor_state {
     std::deque<MatrixTask> queue;
     std::vector<caf::actor> active_solvers;
-    int max_active = 2; // Admission control limit to be mindful of GPU memory
+    std::unordered_map<caf::actor_id, std::string> task_names;
+    int max_active = 4; // Admission control limit to be mindful of GPU memory
     int batch_size = 50;
     int stream = 0;
     int device = 0;
@@ -257,7 +270,8 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
         while (s.active_solvers.size() < static_cast<size_t>(s.max_active) && !s.queue.empty()) {
             auto task = std::move(s.queue.front());
             s.queue.pop_front();
-            std::cout << "[SUPE] making new solver \n";
+            std::string path = task.path;
+            self->println("[SUPE] Starting solver for: {}", path);
             auto solver = self->spawn(fault_tolerant_cg_actor<float>,
                                     task.data,
                                     create_in_arg(task.data->row_ptr),
@@ -267,7 +281,8 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     create_in_out_arg(task.data->x_guess),
                                     (int)task.data->row_ptr.size() - 1,
                                     (int)task.data->values.size(),
-                                    1e-5f, 8000, s.device, (++s.stream)%32, actor_cast<actor>(self));
+                                    1e-5f, 32000, s.device, (++s.stream)%32, actor_cast<actor>(self));
+            s.task_names[solver->id()] = std::move(path);
             
             s.active_solvers.push_back(solver);
             self->mail(start_atom_v).send(solver);
@@ -287,16 +302,27 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 return;
             }
 
+            std::string task_name = s.task_names.count(solver->id()) 
+                                    ? s.task_names[solver->id()] 
+                                    : "Unknown Task";
+
             if (meta.converged || meta.error_code != CG_SUCCESS) {
                 if (meta.converged) {
-                    self->println("Task completed successfully after {} iterations.", meta.iterations);
+                    if (meta.iterations == 0)
+                        self->println("[DONE] {}: Initial guess satisfied tolerance.", task_name);
+                    else
+                        self->println("[DONE] {}: Converged in {} iterations.", task_name, meta.iterations);
                 } else {
-                    self->println("Task failed with error code {} after {} iterations.", 
-                                  meta.error_code, meta.iterations);
+                    self->println("[FAIL] {}: {} (after {} iterations).", 
+                                  task_name, 
+                                  to_string(static_cast<cg_error_type>(meta.error_code)), 
+                                  meta.iterations);
                 }
 
                 auto it = std::find(s.active_solvers.begin(), s.active_solvers.end(), solver);
-                if (it != s.active_solvers.end()) s.active_solvers.erase(it);
+                if (it != s.active_solvers.end())
+                    s.active_solvers.erase(it);
+                s.task_names.erase(solver->id());
 
                 spawn_next();
 
@@ -315,25 +341,23 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
 void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
     std::cout << "loading\n";
-     //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
-     
-    auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
+    {
+        auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
 
-    
-     
-     std::cout << "loaded\n";
-     if (tasks_vec.empty()) {
-         std::cerr << "No matrices found. Running dummy test task." << std::endl;
-         auto data = std::make_shared<MatrixData>();
-         data->row_ptr = {0, 1, 2};
-         data->col_indices = {0, 1};
-         data->values = {10.0f, 10.0f};
-         data->b = {100.0f, 100.0f};
-         data->x_guess = {0.0f, 0.0f};
-         tasks_vec.push_back({"dummy_task", CGS_SOLVER, data});
-     }
-    sys.spawn(supervisor_actor, tasks_vec);
-    sys.await_all_actors_done();
+        std::cout << "loaded\n";
+        if (tasks_vec.empty()) {
+            std::cerr << "No matrices found. Running dummy test task." << std::endl;
+            auto data = std::make_shared<MatrixData>();
+            data->row_ptr = {0, 1, 2};
+            data->col_indices = {0, 1};
+            data->values = {10.0f, 10.0f};
+            data->b = {100.0f, 100.0f};
+            data->x_guess = {0.0f, 0.0f};
+            tasks_vec.push_back({"dummy_task", CGS_SOLVER, data});
+        }
+        sys.spawn(supervisor_actor, std::move(tasks_vec));
+        sys.await_all_actors_done();
+    }
     manager::shutdown();
 }
 CAF_MAIN(id_block::cuda, id_block::workload_test)
