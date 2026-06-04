@@ -32,15 +32,19 @@ include_directories(
 set(STABILITY_KERNEL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/stability_kernels.cu")
 set(STABILITY_KERNEL_CUBIN "${CMAKE_CURRENT_BINARY_DIR}/stability_kernels.cubin")
 
+# Target CUDA architecture. 'native' targets the current machine's GPU (requires CUDA 11.6+).
+# You can override this with -DCUDA_ARCH=sm_XX if needed.
+set(CUDA_ARCH "native" CACHE STRING "Target CUDA architecture (e.g., native, sm_70, sm_75, sm_80, sm_86)")
+
 add_custom_command(
   OUTPUT ${STABILITY_KERNEL_CUBIN}
   COMMAND ${CUDAToolkit_NVCC_EXECUTABLE}
           -cubin
-          -arch=sm_80
+          -arch=${CUDA_ARCH}
           -o ${STABILITY_KERNEL_CUBIN}
           ${STABILITY_KERNEL_SRC}
   DEPENDS ${STABILITY_KERNEL_SRC}
-  COMMENT "Compiling CUDA kernel ${STABILITY_KERNEL_SRC} to ${STABILITY_KERNEL_CUBIN}"
+  COMMENT "Compiling CUDA kernel ${STABILITY_KERNEL_SRC} for architecture: ${CUDA_ARCH}"
   VERBATIM
 )
 
