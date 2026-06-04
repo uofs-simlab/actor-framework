@@ -366,8 +366,25 @@ void caf_main(actor_system& sys) {
             data->x_guess = {0.0f, 0.0f};
             tasks_vec.push_back({"dummy_task", CGS_SOLVER, data});
         }
+
+        auto benchmark_start = std::chrono::steady_clock::now();
+
         sys.spawn(supervisor_actor, std::move(tasks_vec));
         sys.await_all_actors_done();
+
+        auto benchmark_end = std::chrono::steady_clock::now();
+        std::chrono::duration<double> total_time = benchmark_end - benchmark_start;
+        int num_gpus = manager::get().get_num_devices();
+
+        std::cout << "\n";
+        std::cout << "=====================================\n";
+        std::cout << "IRREGULAR WORKLOAD BENCHMARK (CAF)\n";
+        std::cout << "=====================================\n";
+        std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
+        std::cout << "GPUs:               " << num_gpus << "\n";
+        std::cout << "Admission Control:  " << 4 << "\n"; 
+        std::cout << "Total Runtime:      " << total_time.count() << " s\n";
+        std::cout << "=====================================\n";
     }
     manager::shutdown();
 }
