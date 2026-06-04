@@ -296,7 +296,9 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                         }
                     }
                 },
-                [=] (caf::cuda::mem_ptr<int> matrixA, caf::cuda::mem_ptr<int> matrixB) {
+               
+        },
+         [=] (caf::cuda::mem_ptr<int> matrixA, caf::cuda::mem_ptr<int> matrixB) {
                     mmul_command.free_memory(matrixA,stream_ids[1]);
                     mmul_command.free_memory(matrixB,stream_ids[1]);
                 }
