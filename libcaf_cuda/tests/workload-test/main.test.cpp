@@ -39,6 +39,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_ATOM(workload_test, work_tick_atom)
     CAF_ADD_ATOM(workload_test, add_work_atom)
     CAF_ADD_ATOM(workload_test, steal_work_atom)
+    CAF_ADD_ATOM(workload_test, shutdown_atom)
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
     CAF_ADD_TYPE_ID(workload_test, (std::vector<MatrixTask>))
@@ -150,6 +151,9 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
             }
             return sec::no_context;
         },
+        [=](shutdown_atom) {
+            self->quit();
+        },
         [=](std::vector<float>& solution, solver_result_meta meta) {
             auto task_end = std::chrono::steady_clock::now();
             std::chrono::duration<double> task_duration = task_end - self->state().task_start;
@@ -237,9 +241,12 @@ behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self,
             }
         },
         [=](int done) {
-            self->state().completed += done;
-            if (self->state().completed >= self->state().total_tasks) {
-                self->println("\n[DONE] All {} tasks processed.", self->state().total_tasks);
+            auto& st = self->state();
+            st.completed += done;
+            if (st.completed >= st.total_tasks) {
+                self->println("\n[DONE] All {} tasks processed.", st.total_tasks);
+                for (auto& worker : st.workers)
+                    self->mail(shutdown_atom_v).send(worker);
                 self->quit();
             }
         }
