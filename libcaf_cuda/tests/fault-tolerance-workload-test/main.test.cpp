@@ -88,14 +88,17 @@ struct ft_cg_state {
   T current_rho = 0;
   T old_rho = 0;
   bool initialized = false;
+  std::shared_ptr<MatrixData> pinned_data;
 };
 
 template <class T = float>
 behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
+                                 std::shared_ptr<MatrixData> data,
                                  in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
                                  int n, int nnz, T tol, int max_iter,
                                  int dev_num, int stream, caf::actor supervisor) {
   auto& s = self->state();
+  s.pinned_data = std::move(data);
   s.h_row_ptr = std::move(rp); s.h_col_ind = std::move(ci);
   s.h_values = std::move(val); s.h_b = std::move(b_in); s.h_x = std::move(x_in);
   s.n = n; s.nnz = nnz; s.tol = tol; s.max_iter = max_iter;
@@ -106,10 +109,12 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
       auto& st = self->state();
       if (st.initialized) return;
 
-      command_runner<T> runner;
-      auto res = runner.transfer_memory(st.device_id, st.stream_id, st.h_row_ptr, st.h_col_ind, st.h_values, st.h_b, st.h_x);
-      st.A_rp = std::get<0>(res); st.A_ci = std::get<1>(res); st.A_val = std::get<2>(res);
-      st.b = std::get<3>(res); st.x = std::get<4>(res);
+      command_runner<> runner;
+      st.A_rp = runner.transfer_memory(st.device_id, st.stream_id, st.h_row_ptr);
+      st.A_ci = runner.transfer_memory(st.device_id, st.stream_id, st.h_col_ind);
+      st.A_val = runner.transfer_memory(st.device_id, st.stream_id, st.h_values);
+      st.b = runner.transfer_memory(st.device_id, st.stream_id, st.h_b);
+      st.x = runner.transfer_memory(st.device_id, st.stream_id, st.h_x);
 
       st.d_ptr = platform::create()->schedule(st.stream_id, st.device_id);
       st.d_ptr->enable_cublas(); st.d_ptr->enable_cusparse();
@@ -118,13 +123,12 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
       // Load stability kernel from file as requested
       st.stab_prog = mgr.create_program_from_cubin("stability_kernels.cubin", "check_stability", st.d_ptr);
 
-      command_runner<out<T>> work_runner;
-      st.r = work_runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
-      st.p = work_runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
-      st.w = work_runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
-      st.y_tmp = work_runner.transfer_memory(st.device_id, st.stream_id, out<T>(1));
-      st.d_err = command_runner<in_out<int>>{}.transfer_memory(st.device_id, st.stream_id, in_out<int>(0));
-
+      st.r = runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
+      st.p = runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
+      st.w = runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
+      st.y_tmp = runner.transfer_memory(st.device_id, st.stream_id, out<T>(1));
+      st.d_err = runner.transfer_memory(st.device_id, st.stream_id, out<int>(1));
+      
       size_t ws_sz = st.d_ptr->spmv_csr_buffer_size(st.stream_id, st.n, st.n, st.nnz, st.A_rp, st.A_ci, st.A_val, st.x, st.w);
       if (ws_sz > 0) st.spmv_ws = command_runner<out<char>>{}.transfer_memory(st.device_id, st.stream_id, out<char>{static_cast<int>(ws_sz)});
 
@@ -236,7 +240,7 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 struct supervisor_state {
     std::deque<MatrixTask> queue;
     std::vector<caf::actor> active_solvers;
-    int max_active = 4; // Admission control limit to be mindful of GPU memory
+    int max_active = 1; // Admission control limit to be mindful of GPU memory
     int batch_size = 50;
 };
 
@@ -252,6 +256,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             s.queue.pop_front();
 
             auto solver = self->spawn(fault_tolerant_cg_actor<float>,
+                                    task.data,
                                     create_in_arg(task.data->row_ptr),
                                     create_in_arg(task.data->col_indices),
                                     create_in_arg(task.data->values),
@@ -306,7 +311,9 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
 
 void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
+    std::cout << "loading\n";
      auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
+     std::cout << "loaded\n";
      if (tasks_vec.empty()) {
          std::cerr << "No matrices found. Running dummy test task." << std::endl;
          auto data = std::make_shared<MatrixData>();
@@ -317,7 +324,7 @@ void caf_main(actor_system& sys) {
          data->x_guess = {0.0f, 0.0f};
          tasks_vec.push_back({"dummy_task", CGS_SOLVER, data});
      }
-    sys.spawn(supervisor_actor, std::move(tasks_vec));
+    sys.spawn(supervisor_actor, tasks_vec);
     sys.await_all_actors_done();
     manager::shutdown();
 }
