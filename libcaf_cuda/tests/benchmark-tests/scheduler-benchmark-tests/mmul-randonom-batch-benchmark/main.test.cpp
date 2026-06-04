@@ -204,7 +204,7 @@ caf::behavior gpu_device_actor(caf::stateful_actor<device_actor_state>* self,
 // Manages 1 stream and pulls work from the Device Actor.
 struct worker_state {
     int device_id;
-    int stream_id;
+    std::vector<int> stream_ids;
     caf::cuda::program_ptr program;
     caf::actor device_actor;
     caf::actor supervisor;
@@ -215,12 +215,12 @@ struct worker_state {
 
 caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                               caf::actor supervisor, caf::actor device_actor, caf::cuda::program_ptr program,
-                              int dev_id, int stream_id, int max_in_flight_tasks) {
+                              int dev_id, std::vector<int> stream_ids, int max_in_flight_tasks) {
     self->state().supervisor = supervisor;
     self->state().device_actor = device_actor;
     self->state().program = program;
     self->state().device_id = dev_id;
-    self->state().stream_id = stream_id;
+    self->state().stream_ids = std::move(stream_ids);
     self->state().max_in_flight_tasks = max_in_flight_tasks;
 
     // Trigger initial work requests up to max_in_flight_tasks
@@ -238,23 +238,38 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
             st.in_flight_tasks_count++; // Mark as pending immediately
             self->mail(get_work_atom_v).request(st.device_actor, infinite).then(
                 [=](int N, in<int> matrixA, in<int> matrixB) {
-                    // GPU Pipeline: Transfer -> Kernel -> Copyback
-                    auto arg1 = mmul_command.transfer_memory(st.device_id, st.stream_id, std::move(matrixA));
-                    auto arg2 = mmul_command.transfer_memory(st.device_id, st.stream_id, std::move(matrixB));
+                    auto& st = self->state(); // Access state via self
+                    int s_h2d = st.stream_ids[0];
+                    int s_ker = st.stream_ids[1];
+                    int s_d2h = st.stream_ids[2];
+
+                    auto h2d_done = mmul_command.create_event(st.device_id);
+                    auto kernel_done = mmul_command.create_event(st.device_id);
+
+                    // Stage 1: H2D Transfer
+                    auto arg1 = mmul_command.transfer_memory(st.device_id, s_h2d, std::move(matrixA));
+                    auto arg2 = mmul_command.transfer_memory(st.device_id, s_h2d, std::move(matrixB));
+                    mmul_command.record_event(h2d_done, s_h2d, st.device_id);
 
                     const int THREADS = 32;
                     const int BLOCKS = (N + THREADS - 1) / THREADS;
                     caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
-                    auto result = mmul_kernel.run_async(st.program, dims, st.stream_id, 0, st.device_id,
+                    // Stage 2: Kernel Execution (Wait for H2D to finish)
+                    mmul_command.wait_event(h2d_done, s_ker, st.device_id);
+                    auto result = mmul_kernel.run_async(st.program, dims, s_ker, 0, st.device_id,
                                                        arg1, arg2,
                                                        caf::cuda::create_out_arg<int>(N * N),
                                                        caf::cuda::create_in_arg<int>(N));
+                    mmul_command.record_event(kernel_done, s_ker, st.device_id);
 
+                    // Stage 3: D2H Copyback (Wait for Kernel to finish)
+                    mmul_command.wait_event(kernel_done, s_d2h, st.device_id);
                     auto bufferC = std::get<2>(result);
                     auto self_hdl = caf::actor_cast<caf::actor>(self);
 
-                    mmul_command.copy_to_host_async(bufferC, [self_hdl, N_task = N](std::vector<int>&&) {
+                    // Capturing events in the lambda ensures they aren't destroyed too early
+                    mmul_command.copy_to_host_async(bufferC, s_d2h, [self_hdl, N_task = N, h2d_done, kernel_done](std::vector<int>&&) {
                         caf::anon_mail(task_done_atom_v, N_task).send(self_hdl); // Pass N back to self
                     });
                 },
@@ -263,13 +278,14 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                     st.in_flight_tasks_count--; // Revert pending status on failure
                     if (err == sec::runtime_error) {
                         // Not enough memory, retry after a delay
-                        self->println("Worker {}: Not enough memory, retrying for work...", st.stream_id);
+                        self->println("Worker (dev:{}): Not enough memory, retrying for work...", st.device_id);
                         self->delayed_anon_send(self, 100ms, request_work_atom_v);
                     } else if (err == sec::end_of_stream) {
                         st.draining = true; // Mark as draining, let in-flight finish
                         if (st.in_flight_tasks_count == 0) {
                             self->mail(worker_done_atom_v).send(st.device_actor);
-                            mmul_command.release_stream_for_actor(st.stream_id);
+                            for (auto id : st.stream_ids)
+                                mmul_command.release_stream_for_actor(id);
                             self->quit();
                         }
                     }
@@ -284,7 +300,8 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
             
             if (st.draining && st.in_flight_tasks_count == 0) {
                 self->mail(worker_done_atom_v).send(st.device_actor);
-                mmul_command.release_stream_for_actor(st.stream_id);
+                for (auto id : st.stream_ids)
+                    mmul_command.release_stream_for_actor(id);
                 self->quit();
             } else if (!st.draining) {
                 self->mail(request_work_atom_v).send(self); // Request next task if capacity allows
@@ -316,12 +333,17 @@ caf::behavior supervisor_actor_fun(
     caf::cuda::manager& mgr = caf::cuda::manager::get();
     int num_gpus = mgr.get_num_devices();
     auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+    
+    int next_stream_base = 0;
 
     for (int i = 0; i < num_gpus; ++i) {
         auto broker = self->spawn(gpu_device_actor, pool, pool_actor, workers_per_gpu, i, max_in_flight_tasks_per_worker);
         
-        for (int j = 0; j < workers_per_gpu; ++j)
-            self->spawn(mmul_worker_fun, self, broker, program, i, (i * 1000) + j, max_in_flight_tasks_per_worker);
+        for (int j = 0; j < workers_per_gpu; ++j) {
+            std::vector<int> streams = {next_stream_base, next_stream_base + 1, next_stream_base + 2};
+            self->spawn(mmul_worker_fun, self, broker, program, i, streams, max_in_flight_tasks_per_worker);
+            next_stream_base += 3;
+        }
     }
 
     return {

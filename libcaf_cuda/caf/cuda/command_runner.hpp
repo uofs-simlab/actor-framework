@@ -264,6 +264,13 @@ public:
         cmd->run_async(std::move(callback));
     }
 
+    // Asynchronous copy back with explicit stream/actor ID
+    template <typename T, typename F>
+    void copy_to_host_async(mem_ptr<T> ptr, int stream_id, F callback) {
+        auto cmd = caf::make_counted<copy_back_command<T>>(std::move(ptr), stream_id);
+        cmd->run_async(std::move(callback));
+    }
+
     // Asynchronous copy back to user-provided buffer
     template <typename T, typename F>
     void copy_to_host_async(mem_ptr<T> ptr, T* dst, size_t count, F callback) {

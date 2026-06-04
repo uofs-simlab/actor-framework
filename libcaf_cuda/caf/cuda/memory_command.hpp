@@ -87,7 +87,12 @@ private:
 template <typename T>
 class copy_back_command : public caf::ref_counted {
 public:
-  copy_back_command(mem_ptr<T> ptr) : ptr_(std::move(ptr)) {
+  copy_back_command(mem_ptr<T> ptr) : ptr_(std::move(ptr)), stream_id_(-1) {
+    if (!ptr_)
+      throw std::runtime_error("copy_back_command: null mem_ptr");
+  }
+
+  copy_back_command(mem_ptr<T> ptr, int stream_id) : ptr_(std::move(ptr)), stream_id_(stream_id) {
     if (!ptr_)
       throw std::runtime_error("copy_back_command: null mem_ptr");
   }
@@ -105,7 +110,7 @@ public:
       throw std::runtime_error("Cannot copy a read-only buffer back to host");
 
     CHECK_CUDA(cuCtxPushCurrent(ptr_->get_ctx()));
-    CUstream s = ptr_->stream();
+    CUstream s = resolve_stream();
 
     if (ptr_->is_scalar()) {
       // For scalars, the value is already on the host.
@@ -138,7 +143,7 @@ public:
                             ptr_->is_scalar(), *ptr_->host_scalar_ptr()};
 
     CHECK_CUDA(cuCtxPushCurrent(ptr_->get_ctx()));
-    CUstream s = ptr_->stream();
+    CUstream s = resolve_stream();
 
     if (!ptr_->is_scalar()) {
       size_t bytes = ptr_->size() * sizeof(T);
@@ -176,7 +181,7 @@ public:
                             ptr_->is_scalar(), *ptr_->host_scalar_ptr()};
 
     CHECK_CUDA(cuCtxPushCurrent(ptr_->get_ctx()));
-    CUstream s = ptr_->stream();
+    CUstream s = resolve_stream();
 
     if (!ptr_->is_scalar()) {
       size_t bytes = count * sizeof(T);
@@ -197,7 +202,16 @@ public:
   }
 
 private:
+  CUstream resolve_stream() {
+    if (stream_id_ == -1)
+      return ptr_->stream();
+    auto plat = platform::create();
+    auto dev = plat->schedule(stream_id_, ptr_->deviceID());
+    return dev->get_stream_for_actor(stream_id_);
+  }
+
   mem_ptr<T> ptr_;
+  int stream_id_;
 };
 
 } // namespace caf::cuda
