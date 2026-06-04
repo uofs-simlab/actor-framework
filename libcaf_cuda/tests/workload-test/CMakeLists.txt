@@ -45,20 +45,20 @@ target_link_libraries(test
 )
 
 
-# 5) Declare your executable
-add_executable(hot-potatoe hot-potatoe.cpp sparse_utils.cpp)
+# # 5) Declare your executable
+# add_executable(hot-potatoe hot-potatoe.cpp sparse_utils.cpp)
 
-target_compile_definitions(hot-potatoe PRIVATE CAF_ENABLE_LOGGING)
+# target_compile_definitions(hot-potatoe PRIVATE CAF_ENABLE_LOGGING)
 
-target_link_libraries(hot-potatoe
-  PRIVATE
-    "${CAF_BUILD}/libcaf_core/libcaf_core.so"
-    "${CAF_BUILD}/libcaf_io/libcaf_io.so"
-    "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
-    CUDA::nvrtc
-    CUDA::cublas
-    CUDA::cusparse
-)
+# target_link_libraries(hot-potatoe
+#   PRIVATE
+#     "${CAF_BUILD}/libcaf_core/libcaf_core.so"
+#     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
+#     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
+#     CUDA::nvrtc
+#     CUDA::cublas
+#     CUDA::cusparse
+# )
 
 
 # FindThreads is required for std::thread in the native version
