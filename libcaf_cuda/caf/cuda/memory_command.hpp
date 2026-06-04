@@ -214,4 +214,34 @@ private:
   int stream_id_;
 };
 
+// ===========================================================================
+// FREE MEMORY COMMAND
+// Handles freeing memory on a given stream.
+// ===========================================================================
+template <typename T>
+class free_memory_command : public caf::ref_counted {
+public:
+  free_memory_command(mem_ptr<T> ptr, int stream_id = -1)
+      : ptr_(std::move(ptr)), stream_id_(stream_id) {
+    if (!ptr_)
+      throw std::runtime_error("free_memory_command: null mem_ptr");
+  }
+
+  void enqueue() {
+    ptr_->free_on(resolve_stream());
+  }
+
+private:
+  CUstream resolve_stream() {
+    if (stream_id_ == -1)
+      return ptr_->stream();
+    auto plat = platform::create();
+    auto dev = plat->schedule(stream_id_, ptr_->deviceID());
+    return dev->get_stream_for_actor(stream_id_);
+  }
+
+  mem_ptr<T> ptr_;
+  int stream_id_;
+};
+
 } // namespace caf::cuda

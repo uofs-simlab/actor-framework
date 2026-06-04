@@ -278,6 +278,13 @@ public:
         cmd->run_async(dst, count, std::move(callback));
     }
 
+    // Enqueue an asynchronous free operation on the given stream
+    template <typename T>
+    void free_memory(mem_ptr<T> ptr, int stream_id = -1) {
+        free_memory_command<T> cmd(std::move(ptr), stream_id);
+        cmd.enqueue();
+    }
+
 
   // -------------------------------
   // Destroy streams for a given actor ID

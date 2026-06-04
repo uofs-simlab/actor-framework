@@ -126,6 +126,18 @@ public:
     ctx = nullptr;
   }
 
+  // Enqueues a free operation on the specified stream and invalidates this reference.
+  void free_on(CUstream s) {
+    if (!is_scalar_ && memory_) {
+      if (ctx) {
+        CHECK_CUDA(cuCtxPushCurrent(ctx));
+        CHECK_CUDA(cuMemFreeAsync(memory_, s));
+        CHECK_CUDA(cuCtxPopCurrent(nullptr));
+      }
+      memory_ = 0;
+    }
+  }
+
   //copies gpu memory back to cpu memory in the form of an std::vector
   std::vector<T> copy_to_host() const {
 	  if (access_ == IN)
