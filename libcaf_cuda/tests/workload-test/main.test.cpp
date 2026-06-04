@@ -43,6 +43,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
     CAF_ADD_TYPE_ID(workload_test, (std::vector<MatrixTask>))
+    CAF_ADD_TYPE_ID(workload_test, (std::vector<caf::actor>))
     CAF_ADD_TYPE_ID(workload_test, (std::shared_ptr<MatrixData>))
 CAF_END_TYPE_ID_BLOCK(workload_test)
 
@@ -152,6 +153,7 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
             return sec::no_context;
         },
         [=](shutdown_atom) {
+            self->mail(worker_done_atom_v).send(self->state().supervisor);
             self->quit();
         },
         [=](std::vector<float>& solution, solver_result_meta meta) {
@@ -183,13 +185,16 @@ struct supervisor_state {
     int batches_remaining;
     int batch_size;
     double mean_arrival_ms;
+    caf::actor parent;
+    int workers_shutdown = 0;
 };
 
 behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, 
                               std::vector<MatrixTask> matrix_pool,
-                              int num_streams, int num_batches, int batch_size, double mean_arrival_ms) {
+                              int num_streams, int num_batches, int batch_size, double mean_arrival_ms, caf::actor parent) {
     auto& st = self->state();
     st.matrix_pool = std::move(matrix_pool);
+    st.parent = std::move(parent);
     st.total_tasks = num_batches * batch_size;
     st.batches_remaining = num_batches;
     st.batch_size = batch_size;
@@ -244,9 +249,15 @@ behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self,
             auto& st = self->state();
             st.completed += done;
             if (st.completed >= st.total_tasks) {
-                self->println("\n[DONE] All {} tasks processed.", st.total_tasks);
+                self->println("\n[DONE] All {} tasks processed. Terminating workers...", st.total_tasks);
                 for (auto& worker : st.workers)
                     self->mail(shutdown_atom_v).send(worker);
+            }
+        },
+        [=](worker_done_atom) {
+            auto& st = self->state();
+            if (++st.workers_shutdown == (int)st.workers.size()) {
+                self->mail(worker_done_atom_v).send(st.parent);
                 self->quit();
             }
         }
@@ -285,9 +296,15 @@ void caf_main(actor_system& sys) {
     std::cout << "[INFO] Mean arrival:     " << mean_arrival_ms << " ms\n";
 
     auto start = std::chrono::steady_clock::now();
+    scoped_actor self{sys};
 
-    sys.spawn(supervisor_actor_fun, std::move(tasks_vec), num_streams, num_batches, batch_size, mean_arrival_ms);
-    sys.await_all_actors_done();
+    self->spawn(supervisor_actor_fun, std::move(tasks_vec), num_streams, num_batches, batch_size, mean_arrival_ms, actor_cast<actor>(self));
+    
+    self->receive(
+        [&](worker_done_atom) {
+            std::cout << "[INFO] Supervisor signaled completion. Shutting down...\n";
+        }
+    );
 
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = end - start;
