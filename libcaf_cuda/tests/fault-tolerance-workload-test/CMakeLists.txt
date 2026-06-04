@@ -28,6 +28,24 @@ include_directories(
   "${CAF_SRC}/libcaf_cuda"
 )
 
+# --- CUDA Kernel Compilation ---
+set(STABILITY_KERNEL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/stability_kernels.cu")
+set(STABILITY_KERNEL_CUBIN "${CMAKE_CURRENT_BINARY_DIR}/stability_kernels.cubin")
+
+add_custom_command(
+  OUTPUT ${STABILITY_KERNEL_CUBIN}
+  COMMAND ${CUDAToolkit_NVCC_EXECUTABLE}
+          -cubin
+          -arch=sm_80
+          -o ${STABILITY_KERNEL_CUBIN}
+          ${STABILITY_KERNEL_SRC}
+  DEPENDS ${STABILITY_KERNEL_SRC}
+  COMMENT "Compiling CUDA kernel ${STABILITY_KERNEL_SRC} to ${STABILITY_KERNEL_CUBIN}"
+  VERBATIM
+)
+
+add_custom_target(stability_kernels_cubin ALL DEPENDS ${STABILITY_KERNEL_CUBIN})
+
 
 # 5) Declare your executable
 add_executable(test main.test.cpp sparse_utils.cpp)
