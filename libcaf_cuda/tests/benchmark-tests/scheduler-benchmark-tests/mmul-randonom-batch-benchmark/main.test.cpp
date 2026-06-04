@@ -237,12 +237,13 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
 
             st.in_flight_tasks_count++; // Mark as pending immediately
             self->mail(get_work_atom_v).request(st.device_actor, infinite).then(
-                [=](int N, in<int> matrixA, in<int> matrixB) {
+                [=](int N, in<int> matrixA, in<int> matrixB) mutable {
                     auto& st = self->state(); // Access state via self
                     int s_h2d = st.stream_ids[0];
                     int s_ker = st.stream_ids[1];
                     int s_d2h = st.stream_ids[2];
 
+                    // Create fresh events for this specific task pipeline
                     auto h2d_done = mmul_command.create_event(st.device_id);
                     auto kernel_done = mmul_command.create_event(st.device_id);
 
@@ -250,7 +251,7 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                     auto arg1 = mmul_command.transfer_memory(st.device_id, s_h2d, std::move(matrixA));
                     auto arg2 = mmul_command.transfer_memory(st.device_id, s_h2d, std::move(matrixB));
                     mmul_command.record_event(h2d_done, s_h2d, st.device_id);
-
+                  
                     const int THREADS = 32;
                     const int BLOCKS = (N + THREADS - 1) / THREADS;
                     caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
@@ -262,14 +263,19 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                                                        caf::cuda::create_out_arg<int>(N * N),
                                                        caf::cuda::create_in_arg<int>(N));
                     mmul_command.record_event(kernel_done, s_ker, st.device_id);
+                      mmul.command.add_callback(s_ker, [arg1, arg2]() {
+                        anon_mail(arg1,arg2).send(self);
+                    });
+
 
                     // Stage 3: D2H Copyback (Wait for Kernel to finish)
                     mmul_command.wait_event(kernel_done, s_d2h, st.device_id);
                     auto bufferC = std::get<2>(result);
                     auto self_hdl = caf::actor_cast<caf::actor>(self);
 
-                    // Capturing events in the lambda ensures they aren't destroyed too early
-                    mmul_command.copy_to_host_async(bufferC, s_d2h, [self_hdl, N_task = N, h2d_done, kernel_done](std::vector<int>&&) {
+                  
+                    mmul_command.copy_to_host_async(bufferC, s_d2h, 
+                      [self_hdl, N_task = N,result](std::vector<int>&&) {
                         caf::anon_mail(task_done_atom_v, N_task).send(self_hdl); // Pass N back to self
                     });
                 },
@@ -289,6 +295,10 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                             self->quit();
                         }
                     }
+                },
+                [=] (caf::cuda::mem_ptr<int> matrixA, caf::cuda::mem_ptr<int> matrixB) {
+                    mmul_command.free_memory(matrixA,stream_ids[1]);
+                    mmul_command.free_memory(matrixB,stream_ids[1]);
                 }
             );
         },
