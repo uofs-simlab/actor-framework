@@ -214,7 +214,7 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
         else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
         st.current_rho = runner.copy_to_host(st.y_tmp)[0];
 
-        if (std::abs(st.old_rho - st.current_rho) < 1e-15) { 
+        if (std::abs(st.old_rho - st.current_rho) < 1e-12) { 
           code = CG_STAGNATION; 
           break; 
         }
@@ -281,7 +281,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     create_in_out_arg(task.data->x_guess),
                                     (int)task.data->row_ptr.size() - 1,
                                     (int)task.data->values.size(),
-                                    1e-5f, 32000, s.device, (++s.stream)%32, actor_cast<actor>(self));
+                                    1e-4f, 64000, s.device, (++s.stream)%32, actor_cast<actor>(self));
             s.task_names[solver->id()] = std::move(path);
             
             s.active_solvers.push_back(solver);
