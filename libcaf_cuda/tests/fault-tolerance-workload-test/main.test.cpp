@@ -158,6 +158,7 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 
       // Execute exactly the number of iterations requested by the supervisor
       while (step_count < num_iters && st.iterations < st.max_iter && st.current_rho > threshold) {
+        // std::cout << "iterations = " << st.iterations << ", current_rho = " << st.current_rho << std::endl;
         st.iterations++;
         step_count++;
 
@@ -240,8 +241,10 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 struct supervisor_state {
     std::deque<MatrixTask> queue;
     std::vector<caf::actor> active_solvers;
-    int max_active = 1; // Admission control limit to be mindful of GPU memory
+    int max_active = 2; // Admission control limit to be mindful of GPU memory
     int batch_size = 50;
+    int stream = 0;
+    int device = 0;
 };
 
 behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<MatrixTask> tasks) {
@@ -254,7 +257,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
         while (s.active_solvers.size() < static_cast<size_t>(s.max_active) && !s.queue.empty()) {
             auto task = std::move(s.queue.front());
             s.queue.pop_front();
-
+            std::cout << "[SUPE] making new solver \n";
             auto solver = self->spawn(fault_tolerant_cg_actor<float>,
                                     task.data,
                                     create_in_arg(task.data->row_ptr),
@@ -264,7 +267,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     create_in_out_arg(task.data->x_guess),
                                     (int)task.data->row_ptr.size() - 1,
                                     (int)task.data->values.size(),
-                                    1e-5f, 2000, 0, 1, actor_cast<actor>(self));
+                                    1e-5f, 8000, s.device, (++s.stream)%32, actor_cast<actor>(self));
             
             s.active_solvers.push_back(solver);
             self->mail(start_atom_v).send(solver);
@@ -312,7 +315,12 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
 void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
     std::cout << "loading\n";
-     auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
+     //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
+     
+    auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
+
+    
+     
      std::cout << "loaded\n";
      if (tasks_vec.empty()) {
          std::cerr << "No matrices found. Running dummy test task." << std::endl;
