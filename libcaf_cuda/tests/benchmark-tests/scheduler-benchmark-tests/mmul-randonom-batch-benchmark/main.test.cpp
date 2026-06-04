@@ -263,7 +263,7 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                                                        caf::cuda::create_out_arg<int>(N * N),
                                                        caf::cuda::create_in_arg<int>(N));
                     mmul_command.record_event(kernel_done, s_ker, st.device_id);
-                      mmul.command.add_callback(s_ker, [arg1, arg2]() {
+                      mmul_command.add_callback(s_ker, st.device_id, [arg1, arg2, self]() {
                         anon_mail(arg1,arg2).send(self);
                     });
 
@@ -274,8 +274,8 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                     auto self_hdl = caf::actor_cast<caf::actor>(self);
 
                   
-                    mmul_command.copy_to_host_async(bufferC, s_d2h, 
-                      [self_hdl, N_task = N,result](std::vector<int>&&) {
+                    mmul_command.copy_to_host_async(bufferC, s_d2h,
+                      [self_hdl, N_task = N](std::vector<int>&&) {
                         caf::anon_mail(task_done_atom_v, N_task).send(self_hdl); // Pass N back to self
                     });
                 },
@@ -295,14 +295,12 @@ caf::behavior mmul_worker_fun(caf::stateful_actor<worker_state>* self,
                             self->quit();
                         }
                     }
-                },
-               
-        },
-         [=] (caf::cuda::mem_ptr<int> matrixA, caf::cuda::mem_ptr<int> matrixB) {
-                    mmul_command.free_memory(matrixA,stream_ids[1]);
-                    mmul_command.free_memory(matrixB,stream_ids[1]);
                 }
             );
+        },
+        [=](caf::cuda::mem_ptr<int> matrixA, caf::cuda::mem_ptr<int> matrixB) {
+            mmul_command.free_memory(matrixA, stream_ids[1]);
+            mmul_command.free_memory(matrixB, stream_ids[1]);
         },
         [=](task_done_atom, int N_completed) {
             auto& st = self->state();
