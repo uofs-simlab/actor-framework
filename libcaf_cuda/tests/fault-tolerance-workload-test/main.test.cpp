@@ -52,276 +52,181 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<MatrixData>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(MatrixTask)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<MatrixTask>)
 
-// ---------------------------- WORKER ACTOR ----------------------------
-struct worker_state {
-    caf::actor supervisor;
-    std::vector<caf::actor> peers;
-    std::deque<MatrixTask> work_queue;
-    int device_id;
-    int stream_id;
-    std::string current_matrix_path;
-    std::chrono::steady_clock::time_point task_start;
-    caf::actor cg_facade;
-    bool stealing = false;
-};
-
-behavior sparse_worker_fun(stateful_actor<worker_state>* self,
-                           caf::actor supervisor, int dev_id, int stream_id) {
-    auto& st = self->state();
-    st.supervisor = supervisor;
-    st.device_id = dev_id;
-    st.stream_id = stream_id;
-    st.cg_facade = self->spawn<sparse_cg_facade<float>, linked>(0);
-
-    return {
-        [=](std::vector<caf::actor>& peers) {
-            self->state().peers = std::move(peers);
-        },
-        [=](add_work_atom, std::vector<MatrixTask>& batch) {
-            auto& st = self->state();
-            bool was_idle = st.work_queue.empty() && !st.stealing;
-            for (auto& t : batch)
-                st.work_queue.push_back(std::move(t));
-            
-            if (was_idle)
-                self->mail(request_work_atom_v).send(self);
-        },
-        [=](request_work_atom) {
-            auto& st = self->state();
-            if (!st.work_queue.empty()) {
-                auto task = std::move(st.work_queue.front());
-                st.work_queue.pop_front();
-
-                auto& data = *task.data;
-                st.current_matrix_path = task.path;
-                st.task_start = std::chrono::steady_clock::now();
-
-                if (task.type == CGS_SOLVER) {
-                    self->mail(create_in_arg((const std::vector<int32_t>&)data.row_ptr),
-                               create_in_arg((const std::vector<int32_t>&)data.col_indices),
-                               create_in_arg(data.values), create_in_arg(data.b),
-                               create_in_out_arg(data.x_guess), matrix_format::csr,
-                               (int)data.row_ptr.size() - 1, (int)data.values.size(),
-                               1e-5f, 2000, st.device_id, st.stream_id).send(st.cg_facade);
-                } else {
-                    auto solver = self->spawn<sparse_bicgstab_actor<float>>(
-                        create_in_arg((const std::vector<int32_t>&)data.row_ptr),
-                        create_in_arg((const std::vector<int32_t>&)data.col_indices),
-                        create_in_arg(data.values), create_in_arg(data.b),
-                        create_in_out_arg(data.x_guess), matrix_format::csr,
-                        (int)data.row_ptr.size() - 1, (int)data.values.size(),
-                        1e-5f, 2000, st.device_id, st.stream_id, actor_cast<actor>(self));
-                    self->mail(start_atom_v).send(solver);
-                }
-            } else {
-                // Idle: try to steal from a random peer
-                if (st.peers.empty() || st.stealing) return;
-                
-                st.stealing = true;
-                static std::mt19937 prng(std::random_device{}());
-                std::uniform_int_distribution<size_t> dist(0, st.peers.size() - 1);
-                auto victim = st.peers[dist(prng)];
-
-                if (victim == self) {
-                    st.stealing = false;
-                    self->mail(request_work_atom_v).delay(std::chrono::milliseconds(10)).send(self);
-                    return;
-                }
-
-                self->mail(steal_work_atom_v).request(victim, std::chrono::seconds(1)).then(
-                    [=](MatrixTask& stolen_task) {
-                        auto& st = self->state();
-                        st.work_queue.push_back(std::move(stolen_task));
-                        st.stealing = false;
-                        self->mail(request_work_atom_v).send(self);
-                    },
-                    [=](const error&) {
-                        auto& st = self->state();
-                        st.stealing = false;
-                        self->mail(request_work_atom_v).delay(std::chrono::milliseconds(50)).send(self);
-                    }
-                );
-            }
-        },
-        [=](steal_work_atom) -> result<MatrixTask> {
-            auto& st = self->state();
-            if (st.work_queue.size() > 1) {
-                auto task = std::move(st.work_queue.back());
-                st.work_queue.pop_back();
-                return task;
-            }
-            return sec::no_context;
-        },
-        [=](shutdown_atom) {
-            self->mail(worker_done_atom_v).send(self->state().supervisor);
-            self->quit();
-        },
-        [=](std::vector<float>& solution, solver_result_meta meta) {
-            auto task_end = std::chrono::steady_clock::now();
-            std::chrono::duration<double> task_duration = task_end - self->state().task_start;
-            self->println("Worker {}: Round-trip for {} (BICSTAB_SOLVER) took {} s (Iters: {})", 
-                          self->state().stream_id, self->state().current_matrix_path, task_duration.count(), meta.iterations);
-            self->mail(1).send(self->state().supervisor);
-            self->mail(request_work_atom_v).send(self);
-        },
-        [=](uint32_t /*r_id*/, int /*index*/, std::vector<float>& solution, solver_result_meta meta) {
-            auto task_end = std::chrono::steady_clock::now();
-            std::chrono::duration<double> task_duration = task_end - self->state().task_start;
-            self->println("Worker {}: Round-trip for {} (CGS_SOLVER_OPTIMIZED) took {} s (Iters: {})", 
-                          self->state().stream_id, self->state().current_matrix_path, task_duration.count(), meta.iterations);
-            self->mail(1).send(self->state().supervisor);
-            self->mail(request_work_atom_v).send(self);
-        }
-    };
+const char* check_stability_src = R"(
+extern "C" __global__
+void check_stability(int n, const float* x, const float* r, int* err) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < n) {
+    if (isnan(x[idx]) || isinf(x[idx]) || isnan(r[idx]) || isinf(r[idx]))
+      *err = 1;
+  }
 }
+)";
 
-// ---------------------------- SUPERVISOR ACTOR ----------------------------
-struct supervisor_state {
-    std::vector<MatrixTask> matrix_pool;
-    std::vector<caf::actor> workers;
-    std::mt19937 rng;
-    int total_tasks;
-    int completed = 0;
-    int batches_remaining;
-    int batch_size;
-    double mean_arrival_ms;
-    caf::actor parent;
-    int workers_shutdown = 0;
+/**
+ * Error codes for solver_result_meta.error_code
+ */
+enum cg_error_type : int {
+  CG_SUCCESS = 0,
+  CG_MAX_ITER = 1,
+  CG_NAN_INF = 2,
+  CG_STAGNATION = 3,
+  CG_BREAKDOWN = 4
+  CG_RESIDUAL_FACTOR_FAIL = 5
 };
 
-behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, 
-                              std::vector<MatrixTask> matrix_pool,
-                              int num_streams, int num_batches, int batch_size, double mean_arrival_ms, caf::actor parent) {
-    auto& st = self->state();
-    st.matrix_pool = std::move(matrix_pool);
-    st.parent = std::move(parent);
-    st.total_tasks = num_batches * batch_size;
-    st.batches_remaining = num_batches;
-    st.batch_size = batch_size;
-    st.mean_arrival_ms = mean_arrival_ms;
-    st.rng.seed(WORKLOAD_SEED);
-    
-    manager& mgr = manager::get();
-    int num_gpus = mgr.get_num_devices();
+// ---------------------------- FAULT TOLERANT SOLVER ----------------------------
 
-    // Initializing workers
-    for (int i = 0; i < num_gpus; ++i) {
-        for (int j = 0; j < num_streams; ++j) {
-            st.workers.push_back(self->spawn(sparse_worker_fun, self, i, (i * 100) + j));
+template <class T = float>
+struct ft_cg_state {
+  // Host Data
+  in<int> h_row_ptr, h_col_ind;
+  in<T> h_values, h_b;
+  in_out<T> h_x;
+
+  // GPU Buffers
+  mem_ptr<int> A_rp, A_ci, d_err;
+  mem_ptr<T> A_val, b, x, r, p, w, y_tmp;
+  mem_ptr<char> spmv_ws;
+
+  // Config
+  int n, nnz, max_iter;
+  int iterations = 0;
+  T tol;
+  int device_id, stream_id;
+
+  // Supervision & Monitoring
+  caf::actor supervisor;
+  device_ptr d_ptr;
+  program_ptr stab_prog;
+
+  T initial_rho = 0;
+  T current_rho = 0;
+};
+
+template <class T = float>
+behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
+                                 in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
+                                 int n, int nnz, T tol, int max_iter,
+                                 int dev_num, int stream, caf::actor supervisor) {
+  auto& s = self->state();
+  s.h_row_ptr = std::move(rp); s.h_col_ind = std::move(ci);
+  s.h_values = std::move(val); s.h_b = std::move(b_in); s.h_x = std::move(x_in);
+  s.n = n; s.nnz = nnz; s.tol = tol; s.max_iter = max_iter;
+  s.device_id = dev_num; s.stream_id = stream; s.supervisor = supervisor;
+
+  return {
+    [self](start_atom) {
+      auto& st = self->state();
+      command_runner<T> runner;
+
+      // Setup and transfer memory
+      auto res = runner.transfer_memory(st.device_id, st.stream_id, st.h_row_ptr, st.h_col_ind, st.h_values, st.h_b, st.h_x);
+      st.A_rp = std::get<0>(res); st.A_ci = std::get<1>(res); st.A_val = std::get<2>(res);
+      st.b = std::get<3>(res); st.x = std::get<4>(res);
+
+      st.d_ptr = platform::create()->schedule(st.stream_id, st.device_id);
+      st.d_ptr->enable_cublas(); st.d_ptr->enable_cusparse();
+      auto& mgr = manager::get();
+      st.stab_prog = mgr.create_program(check_stability_src, "check_stability", st.d_ptr);
+
+      command_runner<out<T>> work_runner;
+      st.r = work_runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
+      st.p = work_runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
+      st.w = work_runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
+      st.y_tmp = work_runner.transfer_memory(st.device_id, st.stream_id, out<T>(1));
+      st.d_err = command_runner<in_out<int>>{}.transfer_memory(st.device_id, st.stream_id, in_out<int>(0));
+
+      // SpMV workspace allocation
+      size_t ws_sz = st.d_ptr->spmv_csr_buffer_size(st.stream_id, st.n, st.n, st.nnz, st.A_rp, st.A_ci, st.A_val, st.x, st.w);
+      if (ws_sz > 0) st.spmv_ws = command_runner<out<char>>{}.transfer_memory(st.device_id, st.stream_id, out<char>{static_cast<int>(ws_sz)});
+
+      // Initial r = b - Ax, initial rho = r*r
+      st.d_ptr->spmv_csr(st.stream_id, st.n, st.n, st.nnz, T{1}, st.A_rp, st.A_ci, st.A_val, st.x, T{0}, st.w, st.spmv_ws);
+      if constexpr (std::is_same_v<T, double>) st.d_ptr->dcopy(st.stream_id, st.n, st.b, st.r);
+      else st.d_ptr->scopy(st.stream_id, st.n, st.b, st.r);
+      if constexpr (std::is_same_v<T, double>) st.d_ptr->daxpy(st.stream_id, st.n, -1.0, st.w, st.r);
+      else st.d_ptr->saxpy(st.stream_id, st.n, -1.0f, st.w, st.r);
+      if constexpr (std::is_same_v<T, double>) st.d_ptr->ddot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
+      else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
+
+      st.initial_rho = runner.copy_to_host(st.y_tmp)[0];
+      st.current_rho = st.initial_rho;
+      T threshold = st.tol * st.tol;
+      T old_rho = 0;
+      int code = CG_SUCCESS;
+
+      // SIMPLE TIGHT LOOP (Synchronous execution within handler to avoid overhead)
+      while (st.iterations < st.max_iter && st.current_rho > threshold) {
+        st.iterations++;
+        if (st.iterations > 1) {
+          T beta = st.current_rho / old_rho;
+          if constexpr (std::is_same_v<T, double>) {
+            st.d_ptr->dcopy(st.stream_id, st.n, st.r, st.w);
+            st.d_ptr->daxpy(st.stream_id, st.n, beta, st.p, st.w);
+            st.d_ptr->dcopy(st.stream_id, st.n, st.w, st.p);
+          } else {
+            st.d_ptr->scopy(st.stream_id, st.n, st.r, st.w);
+            st.d_ptr->saxpy(st.stream_id, st.n, static_cast<float>(beta), st.p, st.w);
+            st.d_ptr->scopy(st.stream_id, st.n, st.w, st.p);
+          }
+        } else {
+          if constexpr (std::is_same_v<T, double>) st.d_ptr->dcopy(st.stream_id, st.n, st.r, st.p);
+          else st.d_ptr->scopy(st.stream_id, st.n, st.r, st.p);
         }
+        st.d_ptr->spmv_csr(st.stream_id, st.n, st.n, st.nnz, T{1}, st.A_rp, st.A_ci, st.A_val, st.p, T{0}, st.w, st.spmv_ws);
+        if constexpr (std::is_same_v<T, double>) st.d_ptr->ddot(st.stream_id, st.n, st.p, st.w, st.y_tmp);
+        else st.d_ptr->sdot(st.stream_id, st.n, st.p, st.w, st.y_tmp);
+        T dot_pw = runner.copy_to_host(st.y_tmp)[0];
+        
+        if (std::abs(dot_pw) < 1e-25) { code = CG_BREAKDOWN; break; }
+        
+        T alpha = st.current_rho / dot_pw;
+        if constexpr (std::is_same_v<T, double>) {
+          st.d_ptr->daxpy(st.stream_id, st.n, alpha, st.p, st.x);
+          st.d_ptr->daxpy(st.stream_id, st.n, -alpha, st.w, st.r);
+        } else {
+          st.d_ptr->saxpy(st.stream_id, st.n, static_cast<float>(alpha), st.p, st.x);
+          st.d_ptr->saxpy(st.stream_id, st.n, static_cast<float>(-alpha), st.w, st.r);
+        }
+        old_rho = st.current_rho;
+        if constexpr (std::is_same_v<T, double>) st.d_ptr->ddot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
+        else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
+        st.current_rho = runner.copy_to_host(st.y_tmp)[0];
+        
+        if (std::abs(old_rho - st.current_rho) < 1e-18) { code = CG_STAGNATION; break; }
+      }
+
+      // POST-LOOP FAULT CHECKS
+      bool converged = (st.current_rho <= threshold);
+      if (code == CG_SUCCESS) {
+        if (!converged) code = CG_MAX_ITER;
+        // Residual decrease check: fail if residual didn't decrease by factor of 10
+        if (st.initial_rho > 0 && (st.current_rho / st.initial_rho) > 0.1) code = CG_RESIDUAL_FACTOR_FAIL;
+      }
+
+      // Launch NaN/Inf stability kernel
+      nd_range range((st.n + 255) / 256, 1, 1, 256, 1, 1);
+      st.d_ptr->launch_kernel_mem_ref(st.stab_prog->get_kernel(st.d_ptr->getId()), range,
+                                      std::make_tuple(in<int>(st.n), st.x, st.r, st.d_err), st.stream_id);
+      
+      int err_flag = runner.copy_to_host(st.d_err)[0];
+      if (err_flag != 0 || std::isnan(st.current_rho) || std::isinf(st.current_rho)) code = CG_NAN_INF;
+
+      solver_result_meta meta(st.device_id, st.stream_id, st.iterations, converged, code);
+      runner.copy_to_host_async(st.x, [self, meta, supervisor = st.supervisor](std::vector<T> sol) {
+        anon_mail(std::move(sol), meta).send(supervisor);
+        self->quit();
+      });
     }
-
-    // Inform workers of their peers
-    for (auto& w : st.workers)
-        self->mail(st.workers).send(w);
-
-    // Start the production cycle
-    self->mail(work_tick_atom_v).send(self);
-
-    return {
-        [=](work_tick_atom) {
-            auto& st = self->state();
-            if (st.batches_remaining > 0) {
-                auto batch = generate_batch(st.matrix_pool, st.rng, st.batch_size);
-                st.batches_remaining--;
-
-                // Partition this specific batch among workers
-                size_t tasks_per_worker = batch.size() / st.workers.size();
-                for (size_t i = 0; i < st.workers.size(); ++i) {
-                    auto start = batch.begin() + i * tasks_per_worker;
-                    auto end = (i == st.workers.size() - 1) ? batch.end() : start + tasks_per_worker;
-                    
-                    std::vector<MatrixTask> segment;
-                    for (auto it = start; it != end; ++it)
-                        segment.push_back(std::move(*it));
-                    
-                    self->mail(add_work_atom_v, std::move(segment)).send(st.workers[i]);
-                }
-
-                if (st.batches_remaining > 0) {
-                    auto delay = generate_random_interval(st.rng, st.mean_arrival_ms);
-                    self->println("[SUPERVISOR] Next batch in {}ms", delay.count());
-                    self->mail(work_tick_atom_v).delay(delay).send(self);
-                }
-            }
-        },
-        [=](int done) {
-            auto& st = self->state();
-            st.completed += done;
-            if (st.completed >= st.total_tasks) {
-                self->println("\n[DONE] All {} tasks processed. Terminating workers...", st.total_tasks);
-                for (auto& worker : st.workers)
-                    self->mail(shutdown_atom_v).send(worker);
-            }
-        },
-        [=](worker_done_atom) {
-            auto& st = self->state();
-            if (++st.workers_shutdown == (int)st.workers.size()) {
-                self->mail(worker_done_atom_v).send(st.parent);
-                self->quit();
-            }
-        }
-    };
+  };
 }
+
+
 
 void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
-    
-    int num_streams = 8;
-    int num_batches = 25;
-    int batch_size = 100;
-    double mean_arrival_ms = 1000.0;
-
-    // // Basic command line argument parsing similar to native
-    // auto& args = sys.config().remainder;
-    // if (args.size() > 0) num_streams = std::max(1, std::stoi(args[0]));
-    // if (args.size() > 1) num_batches = std::max(1, std::stoi(args[1]));
-    // if (args.size() > 2) batch_size = std::max(1, std::stoi(args[2]));
-    // if (args.size() > 3) mean_arrival_ms = std::stod(args[3]);
-
-    std::cout << "[INFO] Loading matrices into memory...\n";
-    auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd", CGS_SOLVER);
-    //scan("/scratch/nqr159/matrix-collection/matrices/unsymmetric", BICSTAB_SOLVER);
-    
-    if (tasks_vec.empty()) {
-        std::cerr << "No matrix files found in search paths.\n";
-        manager::shutdown();
-        return;
-    }
-
-    std::cout << "[INFO] Matrix pool size: " << tasks_vec.size() << "\n";
-    std::cout << "[INFO] Streams/GPU:      " << num_streams << "\n";
-    std::cout << "[INFO] Batches:          " << num_batches << "\n";
-    std::cout << "[INFO] Batch size:       " << batch_size << "\n";
-    std::cout << "[INFO] Mean arrival:     " << mean_arrival_ms << " ms\n";
-
-    auto start = std::chrono::steady_clock::now();
-    scoped_actor self{sys};
-
-    self->spawn(supervisor_actor_fun, std::move(tasks_vec), num_streams, num_batches, batch_size, mean_arrival_ms, actor_cast<actor>(self));
-    
-    self->receive(
-        [&](worker_done_atom) {
-            std::cout << "[INFO] Supervisor signaled completion. Shutting down...\n";
-        }
-    );
-
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-
-    int total_tasks = num_batches * batch_size;
-
-    std::cout << "\n===== BENCHMARK COMPLETE =====\n";
-    std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
-    std::cout << "Streams per GPU:    " << num_streams << "\n";
-    std::cout << "Batches:            " << num_batches << "\n";
-    std::cout << "Batch Size:         " << batch_size << "\n";
-    std::cout << "Mean Arrival (ms):  " << mean_arrival_ms << "\n";
-    std::cout << "Tasks Processed:    " << total_tasks << "\n";
-    std::cout << "Total Runtime:      " << elapsed.count() << " s\n";
-    std::cout << "Throughput:         " << total_tasks / elapsed.count() << " tasks/s\n";
-    std::cout << "==============================\n";
-
+   
     manager::shutdown();
 }
 CAF_MAIN(id_block::cuda,id_block::workload_test)
