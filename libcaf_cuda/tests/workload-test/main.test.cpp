@@ -37,6 +37,8 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_ATOM(workload_test, request_work_atom)
     CAF_ADD_ATOM(workload_test, worker_done_atom)
     CAF_ADD_ATOM(workload_test, work_tick_atom)
+    CAF_ADD_ATOM(workload_test, add_work_atom)
+    CAF_ADD_ATOM(workload_test, steal_work_atom)
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
     CAF_ADD_TYPE_ID(workload_test, (std::vector<MatrixTask>))
@@ -48,179 +50,120 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<MatrixData>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(MatrixTask)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<MatrixTask>)
 
-// ---------------------------- GLOBAL TASK POOL ----------------------------
-struct pending_request {
-    caf::response_promise promise;
-    size_t requested_size;
-};
-
-struct pool_state {
-    std::vector<MatrixTask> matrix_pool;
-    std::deque<MatrixTask> work_buffer;
-    std::vector<pending_request> pending_requests;
-    std::mt19937 rng;
-    int batches_remaining;
-    int batch_size;
-    double mean_arrival_ms;
-    bool production_finished = false;
-};
-
-behavior global_task_pool(stateful_actor<pool_state>* self, 
-                          std::vector<MatrixTask> matrix_pool,
-                          int num_batches, int batch_size, double mean_arrival_ms) {
-    auto& st = self->state();
-    st.matrix_pool = std::move(matrix_pool);
-    st.batches_remaining = num_batches;
-    st.batch_size = batch_size;
-    st.mean_arrival_ms = mean_arrival_ms;
-    st.rng.seed(WORKLOAD_SEED);
-
-    self->mail(work_tick_atom_v).send(self);
-
-    return {
-        [=](work_tick_atom) {
-            auto& st = self->state();
-            if (st.batches_remaining > 0) {
-                auto tasks = generate_batch(st.matrix_pool, st.rng, st.batch_size);
-                for (auto& t : tasks)
-                    st.work_buffer.push_back(std::move(t));
-                st.batches_remaining--;
-
-                // Satisfy pending requests from the new work
-                while (!st.pending_requests.empty() && !st.work_buffer.empty()) {
-                    auto req = std::move(st.pending_requests.front());
-                    st.pending_requests.erase(st.pending_requests.begin());
-
-                    size_t count = std::min(req.requested_size, st.work_buffer.size());
-                    std::vector<MatrixTask> batch;
-                    for (size_t i = 0; i < count; ++i) {
-                        batch.push_back(std::move(st.work_buffer.front()));
-                        st.work_buffer.pop_front();
-                    }
-                    req.promise.deliver(std::move(batch));
-                }
-
-                if (st.batches_remaining > 0) {
-                    auto interval = generate_random_interval(st.rng, st.mean_arrival_ms);
-                    std::cout << "[PRODUCER] going to sleep for " << interval.count() << " ms\n";
-                    self->mail(work_tick_atom_v).delay(interval).send(self);
-                } else {
-                    st.production_finished = true;
-                    // If the buffer is empty and no more batches are coming, signal EOS to anyone waiting
-                    if (st.work_buffer.empty()) {
-                        for (auto& req : st.pending_requests)
-                            req.promise.deliver(sec::end_of_stream);
-                        st.pending_requests.clear();
-                    }
-                }
-            }
-        },
-        [=](get_work_atom, size_t batch_size) -> result<std::vector<MatrixTask>> {
-            auto& st = self->state();
-            if (!st.work_buffer.empty()) {
-                size_t count = std::min(batch_size, st.work_buffer.size());
-                std::vector<MatrixTask> batch;
-                for (size_t i = 0; i < count; ++i) {
-                    batch.push_back(std::move(st.work_buffer.front()));
-                    st.work_buffer.pop_front();
-                }
-                return batch;
-            }
-
-            if (st.production_finished)
-                return sec::end_of_stream;
-
-            auto promise = self->make_response_promise();
-            st.pending_requests.push_back({promise, batch_size});
-            return promise;
-        }
-    };
-}
-
 // ---------------------------- WORKER ACTOR ----------------------------
 struct worker_state {
-    caf::actor global_pool;
     caf::actor supervisor;
+    std::vector<caf::actor> peers;
+    std::deque<MatrixTask> work_queue;
     int device_id;
     int stream_id;
-    std::shared_ptr<MatrixData> current_data;
     std::string current_matrix_path;
     std::chrono::steady_clock::time_point task_start;
-    SolverType current_solver_type;
     caf::actor cg_facade;
+    bool stealing = false;
 };
 
 behavior sparse_worker_fun(stateful_actor<worker_state>* self,
-                           caf::actor supervisor, caf::actor global_pool, int dev_id, int stream_id) {
+                           caf::actor supervisor, int dev_id, int stream_id) {
     auto& st = self->state();
     st.supervisor = supervisor;
-    st.global_pool = global_pool;
     st.device_id = dev_id;
     st.stream_id = stream_id;
     st.cg_facade = self->spawn<sparse_cg_facade<float>, linked>(0);
 
-    self->mail(request_work_atom_v).send(self);
-
     return {
-        [=](request_work_atom) {
-            self->mail(get_work_atom_v, size_t{1}).request(self->state().global_pool, infinite).then(
-                [=](std::vector<MatrixTask>& batch) {
-                    if (batch.empty()) {
-                        self->mail(request_work_atom_v).send(self);
-                        return;
-                    }
-                    auto& task = batch.front();
-                    auto& data = *task.data;
-
-                    self->state().current_matrix_path = task.path;
-                    self->state().current_solver_type = task.type;
-                    self->state().task_start = std::chrono::steady_clock::now();
-                    self->state().current_data = task.data;
-
-                    if (task.type == CGS_SOLVER) {
-                        // Use the optimized CG facade. It responds with (r_id, index, solution, meta)
-                        self->mail(create_in_arg((const std::vector<int32_t>&)data.row_ptr),
-                                   create_in_arg((const std::vector<int32_t>&)data.col_indices),
-                                   create_in_arg(data.values), create_in_arg(data.b),
-                                   create_in_out_arg(data.x_guess), matrix_format::csr,
-                                   (int)data.row_ptr.size() - 1, (int)data.values.size(),
-                                   1e-5f, 2000, dev_id, stream_id).send(self->state().cg_facade);
-                    } else {
-                        // BiCGSTAB still uses the standard stateful actor. It responds with (solution, meta)
-                        auto solver = self->spawn<sparse_bicgstab_actor<float>>(
-                            create_in_arg((const std::vector<int32_t>&)data.row_ptr),
-                            create_in_arg((const std::vector<int32_t>&)data.col_indices),
-                            create_in_arg(data.values), create_in_arg(data.b),
-                            create_in_out_arg(data.x_guess), matrix_format::csr,
-                            (int)data.row_ptr.size() - 1, (int)data.values.size(),
-                            1e-5f, 2000, dev_id, stream_id, actor_cast<actor>(self));
-                        self->mail(start_atom_v).send(solver);
-                    }
-                },
-                [=](error& err) {
-                    if (err == sec::end_of_stream)
-                        self->quit();
-                }
-            );
+        [=](std::vector<caf::actor>& peers) {
+            self->state().peers = std::move(peers);
         },
-        // Result handler for standard stateful actors (e.g., BiCGSTAB)
+        [=](add_work_atom, std::vector<MatrixTask>& batch) {
+            auto& st = self->state();
+            bool was_idle = st.work_queue.empty() && !st.stealing;
+            for (auto& t : batch)
+                st.work_queue.push_back(std::move(t));
+            
+            if (was_idle)
+                self->mail(request_work_atom_v).send(self);
+        },
+        [=](request_work_atom) {
+            auto& st = self->state();
+            if (!st.work_queue.empty()) {
+                auto task = std::move(st.work_queue.front());
+                st.work_queue.pop_front();
+
+                auto& data = *task.data;
+                st.current_matrix_path = task.path;
+                st.task_start = std::chrono::steady_clock::now();
+
+                if (task.type == CGS_SOLVER) {
+                    self->mail(create_in_arg((const std::vector<int32_t>&)data.row_ptr),
+                               create_in_arg((const std::vector<int32_t>&)data.col_indices),
+                               create_in_arg(data.values), create_in_arg(data.b),
+                               create_in_out_arg(data.x_guess), matrix_format::csr,
+                               (int)data.row_ptr.size() - 1, (int)data.values.size(),
+                               1e-5f, 2000, st.device_id, st.stream_id).send(st.cg_facade);
+                } else {
+                    auto solver = self->spawn<sparse_bicgstab_actor<float>>(
+                        create_in_arg((const std::vector<int32_t>&)data.row_ptr),
+                        create_in_arg((const std::vector<int32_t>&)data.col_indices),
+                        create_in_arg(data.values), create_in_arg(data.b),
+                        create_in_out_arg(data.x_guess), matrix_format::csr,
+                        (int)data.row_ptr.size() - 1, (int)data.values.size(),
+                        1e-5f, 2000, st.device_id, st.stream_id, actor_cast<actor>(self));
+                    self->mail(start_atom_v).send(solver);
+                }
+            } else {
+                // Idle: try to steal from a random peer
+                if (st.peers.empty() || st.stealing) return;
+                
+                st.stealing = true;
+                static std::mt19937 prng(std::random_device{}());
+                std::uniform_int_distribution<size_t> dist(0, st.peers.size() - 1);
+                auto victim = st.peers[dist(prng)];
+
+                if (victim == self) {
+                    st.stealing = false;
+                    self->mail(request_work_atom_v).delay(std::chrono::milliseconds(10)).send(self);
+                    return;
+                }
+
+                self->mail(steal_work_atom_v).request(victim, std::chrono::seconds(1)).then(
+                    [=](MatrixTask& stolen_task) {
+                        auto& st = self->state();
+                        st.work_queue.push_back(std::move(stolen_task));
+                        st.stealing = false;
+                        self->mail(request_work_atom_v).send(self);
+                    },
+                    [=](const error&) {
+                        auto& st = self->state();
+                        st.stealing = false;
+                        self->mail(request_work_atom_v).delay(std::chrono::milliseconds(50)).send(self);
+                    }
+                );
+            }
+        },
+        [=](steal_work_atom) -> result<MatrixTask> {
+            auto& st = self->state();
+            if (st.work_queue.size() > 1) {
+                auto task = std::move(st.work_queue.back());
+                st.work_queue.pop_back();
+                return task;
+            }
+            return sec::no_context;
+        },
         [=](std::vector<float>& solution, solver_result_meta meta) {
             auto task_end = std::chrono::steady_clock::now();
             std::chrono::duration<double> task_duration = task_end - self->state().task_start;
-            self->println("Worker {}: Round-trip time (Spawn to Result) for {} (BICSTAB_SOLVER) took {} s (Iters: {})", 
+            self->println("Worker {}: Round-trip for {} (BICSTAB_SOLVER) took {} s (Iters: {})", 
                           self->state().stream_id, self->state().current_matrix_path, task_duration.count(), meta.iterations);
             self->mail(1).send(self->state().supervisor);
-            self->state().current_data.reset();
             self->mail(request_work_atom_v).send(self);
         },
-        // Result handler for the optimized facade actor
         [=](uint32_t /*r_id*/, int /*index*/, std::vector<float>& solution, solver_result_meta meta) {
             auto task_end = std::chrono::steady_clock::now();
             std::chrono::duration<double> task_duration = task_end - self->state().task_start;
-            self->println("Worker {}: Round-trip time (Spawn to Result) for {} (CGS_SOLVER_OPTIMIZED) took {} s (Iters: {})", 
+            self->println("Worker {}: Round-trip for {} (CGS_SOLVER_OPTIMIZED) took {} s (Iters: {})", 
                           self->state().stream_id, self->state().current_matrix_path, task_duration.count(), meta.iterations);
             self->mail(1).send(self->state().supervisor);
-            self->state().current_data.reset();
             self->mail(request_work_atom_v).send(self);
         }
     };
@@ -228,30 +171,75 @@ behavior sparse_worker_fun(stateful_actor<worker_state>* self,
 
 // ---------------------------- SUPERVISOR ACTOR ----------------------------
 struct supervisor_state {
+    std::vector<MatrixTask> matrix_pool;
+    std::vector<caf::actor> workers;
+    std::mt19937 rng;
     int total_tasks;
     int completed = 0;
+    int batches_remaining;
+    int batch_size;
+    double mean_arrival_ms;
 };
 
 behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self, 
                               std::vector<MatrixTask> matrix_pool,
                               int num_streams, int num_batches, int batch_size, double mean_arrival_ms) {
-    self->state().total_tasks = num_batches * batch_size;
-    auto pool = self->spawn(global_task_pool, std::move(matrix_pool), num_batches, batch_size, mean_arrival_ms);
+    auto& st = self->state();
+    st.matrix_pool = std::move(matrix_pool);
+    st.total_tasks = num_batches * batch_size;
+    st.batches_remaining = num_batches;
+    st.batch_size = batch_size;
+    st.mean_arrival_ms = mean_arrival_ms;
+    st.rng.seed(WORKLOAD_SEED);
     
     manager& mgr = manager::get();
     int num_gpus = mgr.get_num_devices();
 
+    // Initializing workers
     for (int i = 0; i < num_gpus; ++i) {
         for (int j = 0; j < num_streams; ++j) {
-            self->spawn(sparse_worker_fun, self, pool, i, (i * 100) + j);
+            st.workers.push_back(self->spawn(sparse_worker_fun, self, i, (i * 100) + j));
         }
     }
 
+    // Inform workers of their peers
+    for (auto& w : st.workers)
+        self->mail(st.workers).send(w);
+
+    // Start the production cycle
+    self->mail(work_tick_atom_v).send(self);
+
     return {
+        [=](work_tick_atom) {
+            auto& st = self->state();
+            if (st.batches_remaining > 0) {
+                auto batch = generate_batch(st.matrix_pool, st.rng, st.batch_size);
+                st.batches_remaining--;
+
+                // Partition this specific batch among workers
+                size_t tasks_per_worker = batch.size() / st.workers.size();
+                for (size_t i = 0; i < st.workers.size(); ++i) {
+                    auto start = batch.begin() + i * tasks_per_worker;
+                    auto end = (i == st.workers.size() - 1) ? batch.end() : start + tasks_per_worker;
+                    
+                    std::vector<MatrixTask> segment;
+                    for (auto it = start; it != end; ++it)
+                        segment.push_back(std::move(*it));
+                    
+                    self->mail(add_work_atom_v, std::move(segment)).send(st.workers[i]);
+                }
+
+                if (st.batches_remaining > 0) {
+                    auto delay = generate_random_interval(st.rng, st.mean_arrival_ms);
+                    self->println("[SUPERVISOR] Next batch in {}ms", delay.count());
+                    self->mail(work_tick_atom_v).delay(delay).send(self);
+                }
+            }
+        },
         [=](int done) {
             self->state().completed += done;
             if (self->state().completed >= self->state().total_tasks) {
-                std::cout << "\n[DONE] All " << self->state().total_tasks << " tasks processed.\n";
+                self->println("\n[DONE] All {} tasks processed.", self->state().total_tasks);
                 self->quit();
             }
         }
