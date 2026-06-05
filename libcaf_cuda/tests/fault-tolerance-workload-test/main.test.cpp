@@ -263,9 +263,10 @@ struct supervisor_state {
     std::deque<MatrixTask> queue;
     std::vector<caf::actor> active_solvers;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> start_times;
+    std::unordered_map<std::string, int> task_streams;
+    std::deque<int> available_streams;
     int max_active = 4; // Admission control limit to be mindful of GPU memory. If Illegal memory access that means two or more actors are using the same stream
     int num_iterations = 50;
-    int stream = 0;
     int device = 0;
 };
 
@@ -274,13 +275,21 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
     for (auto& t : tasks)
         st.queue.push_back(std::move(t));
 
+    // Initialize the pool with 32 distinct stream IDs
+    for (int i = 0; i < 32; ++i)
+        st.available_streams.push_back(i);
+
     auto spawn_next = [self]() {
         auto& s = self->state();
-        while (s.active_solvers.size() < static_cast<size_t>(s.max_active) && !s.queue.empty()) {
+        while (s.active_solvers.size() < static_cast<size_t>(s.max_active) && !s.queue.empty() && !s.available_streams.empty()) {
             auto task = std::move(s.queue.front());
             s.queue.pop_front();
             std::string path = task.path;
-            self->println("[SUPE] Starting solver for: {}", path);
+
+            int stream_id = s.available_streams.front();
+            s.available_streams.pop_front();
+
+            self->println("[SUPE] Starting solver for: {} (Stream: {})", path, stream_id);
             auto solver = self->spawn(fault_tolerant_cg_actor<float>,
                                     path,
                                     task.data,
@@ -291,10 +300,11 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     create_in_out_arg(task.data->x_guess),
                                     (int)task.data->row_ptr.size() - 1,
                                     (int)task.data->values.size(),
-                                    1e-5f, 128000, s.device, (++s.stream)%32, actor_cast<actor>(self));
+                                    1e-5f, 128000, s.device, stream_id, actor_cast<actor>(self));
 
             s.start_times[path] = std::chrono::steady_clock::now();
             s.active_solvers.push_back(solver);
+            s.task_streams[path] = stream_id;
             self->mail(start_atom_v).send(solver);
         }
     };
@@ -327,6 +337,13 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 if (it != s.active_solvers.end())
                     s.active_solvers.erase(it);
                 s.start_times.erase(task_name);
+
+                // Reclaim the stream ID and put it back in the pool
+                auto stream_it = s.task_streams.find(task_name);
+                if (stream_it != s.task_streams.end()) {
+                    s.available_streams.push_back(stream_it->second);
+                    s.task_streams.erase(stream_it);
+                }
 
                 spawn_next();
 
