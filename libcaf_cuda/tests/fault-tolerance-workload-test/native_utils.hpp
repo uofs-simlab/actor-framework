@@ -88,4 +88,5 @@ private:
 };
 
 int solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream);
+int solve_pcg_jacobi_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream);
 void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>& queue);

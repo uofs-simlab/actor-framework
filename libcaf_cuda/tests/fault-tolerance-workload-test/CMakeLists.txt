@@ -14,7 +14,8 @@ set(CAF_BUILD "${CAF_SRC}/build")
 set(CMAKE_CXX_COMPILER "/usr/bin/g++")
 set(CMAKE_C_COMPILER "/usr/bin/gcc")
 
-project(CUDA_ACTORS)
+# Enable CUDA as a first-class language for the project
+project(CUDA_ACTORS LANGUAGES CXX CUDA)
 
 find_package(CUDA REQUIRED)
 find_package(CUDAToolkit REQUIRED)
@@ -87,7 +88,7 @@ target_link_libraries(test
 find_package(Threads REQUIRED)
 
 # 6) Declare the native benchmark executable (raw CUDA/cuBLAS/cuSPARSE)
-add_executable(workload-native main.native.cpp sparse_utils.cpp native_utils.cpp)
+add_executable(workload-native main.native.cpp sparse_utils.cpp native_utils.cu)
 
 target_link_libraries(workload-native
   PRIVATE
@@ -98,7 +99,7 @@ target_link_libraries(workload-native
 )
 
 # 7) Declare the native sorted benchmark executable
-add_executable(workload-native-sorted main.native_sorted.cpp sparse_utils.cpp native_utils.cpp)
+add_executable(workload-native-sorted main.native_sorted.cpp sparse_utils.cpp native_utils.cu)
 
 target_link_libraries(workload-native-sorted
   PRIVATE
