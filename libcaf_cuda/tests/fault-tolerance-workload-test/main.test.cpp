@@ -349,7 +349,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
 
                 if (s.active_solvers.empty() && s.queue.empty()) {
                     self->println("All tasks in the batch have been processed.");
-                    caf::cuda::manager::shutdown();
+                    //caf::cuda::manager::shutdown();
                     self->quit();
                 }
             } else if (meta.iterations == 0 && meta.error_code == CG_SUCCESS) {
