@@ -223,8 +223,8 @@ void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>
     while (queue.wait_pop(task)) {
         std::cout << "[WORKER " << worker_id << "] Starting: " << task.path << " (NNZ: " << task.data->nnz << ")" << std::endl;
         auto start_task = std::chrono::steady_clock::now();
-        int iterations = solve_pcg_jacobi_async(cublas, cusparse, task, stream);
-        // int iterations = solve_cg_async(cublas, cusparse, task, stream);
+        //int iterations = solve_pcg_jacobi_async(cublas, cusparse, task, stream);
+         int iterations = solve_cg_async(cublas, cusparse, task, stream);
         CHECK_CUDA(cudaStreamSynchronize(stream));
         auto end_task = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_task - start_task).count();

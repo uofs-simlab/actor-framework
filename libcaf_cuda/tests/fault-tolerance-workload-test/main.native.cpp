@@ -17,7 +17,7 @@ void producer(ThreadSafeQueue<MatrixTask>& queue, const std::vector<MatrixTask>&
 int main(int argc, char** argv)
 {
     constexpr uint32_t WORKLOAD_SEED = 42;
-    int num_streams = 1;
+    int num_streams = 4;
     if (argc > 1) num_streams = std::max(1, std::atoi(argv[1]));
 
     std::cout << "[INFO] Loading matrices...\n";

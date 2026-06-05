@@ -265,15 +265,15 @@ struct supervisor_state {
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> start_times;
     std::unordered_map<std::string, int> task_streams;
     std::deque<int> available_streams;
-    int max_active = 4; // Admission control limit to be mindful of GPU memory. If Illegal memory access that means two or more actors are using the same stream
+    int max_active = 1; // Admission control limit to be mindful of GPU memory. If Illegal memory access that means two or more actors are using the same stream
     int num_iterations = 50;
     int device = 0;
 };
 
-behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<MatrixTask> tasks) {
+behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<MatrixTask> tasks, int initial_max_active) {
     auto& st = self->state();
-    for (auto& t : tasks)
-        st.queue.push_back(std::move(t));
+    st.queue.insert(st.queue.end(), std::make_move_iterator(tasks.begin()), std::make_move_iterator(tasks.end()));
+    st.max_active = initial_max_active;
 
     // Initialize the pool with 32 distinct stream IDs
     for (int i = 0; i < 32; ++i)
@@ -300,7 +300,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     create_in_out_arg(task.data->x_guess),
                                     (int)task.data->row_ptr.size() - 1,
                                     (int)task.data->values.size(),
-                                    1e-5f, 128000, s.device, stream_id, actor_cast<actor>(self));
+                                    1e-5f, 16000, s.device, stream_id, actor_cast<actor>(self));
 
             s.start_times[path] = std::chrono::steady_clock::now();
             s.active_solvers.push_back(solver);
@@ -368,10 +368,10 @@ void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
     std::cout << "loading\n";
     {
-         //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
+         auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
         //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/unsymmetric", CGS_SOLVER);
          //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/unsymmetric", CGS_SOLVER);
-         auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/mixed", CGS_SOLVER);
+         //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/mixed", CGS_SOLVER);
 
         std::cout << "loaded\n";
         if (tasks_vec.empty()) {
@@ -386,8 +386,9 @@ void caf_main(actor_system& sys) {
         }
 
         auto benchmark_start = std::chrono::steady_clock::now();
+        int admission_control_limit = 4; // The desired admission control limit
 
-        sys.spawn(supervisor_actor, std::move(tasks_vec));
+        sys.spawn(supervisor_actor, std::move(tasks_vec), admission_control_limit);
         sys.await_all_actors_done();
 
         auto benchmark_end = std::chrono::steady_clock::now();
@@ -400,7 +401,7 @@ void caf_main(actor_system& sys) {
         std::cout << "=====================================\n";
         std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
         std::cout << "GPUs:               " << num_gpus << "\n";
-        std::cout << "Admission Control:  " << 4 << "\n"; 
+        std::cout << "Admission Control:  " << admission_control_limit << "\n";
         std::cout << "Total Runtime:      " << total_time.count() << " s\n";
         std::cout << "=====================================\n";
     }
