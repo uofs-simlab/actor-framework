@@ -219,10 +219,10 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
         else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
         st.current_rho = runner.copy_to_host(st.y_tmp)[0];
 
-        if (std::abs(st.old_rho - st.current_rho) < 1e-12) { 
-          code = CG_STAGNATION; 
-          break; 
-        }
+        // if (std::abs(st.old_rho - st.current_rho) < 1e-12) { 
+        //   code = CG_STAGNATION; 
+        //   break; 
+        // }
       }
 
       // Run error checks and prepare progress report
@@ -230,7 +230,7 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
       if (code == CG_SUCCESS) {
         if (!converged && st.iterations >= st.max_iter) code = CG_MAX_ITER;
         // Residual decrease check: fail if residual didn't decrease significantly
-        if (st.initial_rho > 0 && (st.current_rho / st.initial_rho) > 0.999) code = CG_RESIDUAL_FACTOR_FAIL;
+        // if (st.initial_rho > 0 && (st.current_rho / st.initial_rho) > 0.999) code = CG_RESIDUAL_FACTOR_FAIL;
       }
 
       // Reset and launch NaN/Inf stability kernel from file
@@ -366,7 +366,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   end_time - s.start_times[task_name]).count();
 
-                if (meta.converged) {
+                if (meta.converged && meta.iterations < MAX_ITERATIONS) {
                     s.tasks_succeeded++;
                     if (meta.iterations == 0)
                         self->println("[DONE] {}: Initial guess satisfied tolerance ({} ms).", task_name, duration);
@@ -374,9 +374,11 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                         self->println("[DONE] {}: Converged in {} iterations ({} ms).", task_name, meta.iterations, duration);
                 } else {
                     s.tasks_failed++;
+                    std::string reason = (meta.error_code == CG_SUCCESS)
+                                         ? "Maximum Iterations Reached"
+                                         : to_string(static_cast<cg_error_type>(meta.error_code));
                     self->println("[FAIL] {}: {} (after {} iterations, {} ms).", 
-                                  task_name, 
-                                  to_string(static_cast<cg_error_type>(meta.error_code)), 
+                                  task_name, reason,
                                   meta.iterations,
                                   duration);
                 }

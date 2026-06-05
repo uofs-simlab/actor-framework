@@ -5,6 +5,7 @@
 #include <thread>
 #include <filesystem>
 #include <algorithm>
+#include <atomic>
 #include "native_utils.hpp"
 
 void producer(ThreadSafeQueue<MatrixTask>& queue, const std::vector<MatrixTask>& matrix_pool) {
@@ -35,6 +36,8 @@ int main(int argc, char** argv)
     std::cout << "[INFO] Matrix pool size: " << matrix_pool.size() << "\n";
     std::cout << "[INFO] Streams/GPU: " << num_streams << "\n";
 
+    std::atomic<int> tasks_succeeded{0};
+    std::atomic<int> tasks_failed{0};
     ThreadSafeQueue<MatrixTask> work_queue;
     auto benchmark_start = std::chrono::steady_clock::now();
     std::thread producer_thread(producer, std::ref(work_queue), std::cref(matrix_pool));
@@ -42,7 +45,7 @@ int main(int argc, char** argv)
     std::vector<std::thread> workers;
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
         for (int stream = 0; stream < num_streams; ++stream) {
-            workers.emplace_back(gpu_stream_worker, gpu, gpu * num_streams + stream, std::ref(work_queue));
+            workers.emplace_back(gpu_stream_worker, gpu, gpu * num_streams + stream, std::ref(work_queue), std::ref(tasks_succeeded), std::ref(tasks_failed));
         }
     }
 
@@ -61,6 +64,8 @@ int main(int argc, char** argv)
     std::cout << "GPUs:               " << num_gpus << "\n";
     std::cout << "Streams per GPU:    " << num_streams << "\n";
     std::cout << "Worker Threads:     " << num_gpus * num_streams << "\n";
+    std::cout << "Tasks Succeeded:    " << tasks_succeeded.load() << "\n";
+    std::cout << "Tasks Failed:       " << tasks_failed.load() << "\n";
     std::cout << "Total Runtime:      " << total_time.count() << " s\n";
     std::cout << "=====================================\n";
 
