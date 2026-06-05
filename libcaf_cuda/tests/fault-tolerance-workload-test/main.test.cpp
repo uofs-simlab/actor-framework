@@ -31,6 +31,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_ATOM(workload_test, work_tick_atom)
     CAF_ADD_ATOM(workload_test, add_work_atom)
     CAF_ADD_ATOM(workload_test, steal_work_atom)
+    CAF_ADD_ATOM(workload_test, update_stream_atom)
     CAF_ADD_ATOM(workload_test, shutdown_atom)
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
@@ -252,6 +253,9 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
           self->quit();
       });
     },
+    [=](update_stream_atom, int new_stream) {
+      self->state().stream_id = new_stream;
+    },
     [=](shutdown_atom) {
       self->quit();
     }
@@ -260,11 +264,19 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 
 // ---------------------------- SUPERVISOR ACTOR ----------------------------
 
+struct suspended_task {
+  caf::actor solver;
+  std::string path;
+  int last_batch_size;
+};
+
 struct supervisor_state {
   std::deque<MatrixTask> queue;
+  std::deque<suspended_task> suspended_queue;
   std::vector<caf::actor> active_solvers;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> start_times;
   std::unordered_map<std::string, int> task_streams;
+  std::unordered_map<caf::actor, int> actor_batch_sizes;
   std::deque<int> available_streams;
   int max_active = 1; // Admission control limit to be mindful of GPU memory.
   int num_iterations = MAX_ITERATIONS / 2;
@@ -282,7 +294,8 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
 
     auto spawn_next = [self]() {
         auto& s = self->state();
-        while (s.active_solvers.size() < static_cast<size_t>(s.max_active) && !s.queue.empty() && !s.available_streams.empty()) {
+        while (s.active_solvers.size() < static_cast<size_t>(s.max_active) && !s.available_streams.empty()) {
+          if (!s.queue.empty()) {
             auto task = std::move(s.queue.front());
             s.queue.pop_front();
             std::string path = task.path;
@@ -306,7 +319,28 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             s.start_times[path] = std::chrono::steady_clock::now();
             s.active_solvers.push_back(solver);
             s.task_streams[path] = stream_id;
+            s.actor_batch_sizes[solver] = s.num_iterations;
             self->mail(start_atom_v).send(solver);
+          } else if (!s.suspended_queue.empty()) {
+            auto suspended = std::move(s.suspended_queue.front());
+            s.suspended_queue.pop_front();
+
+            int stream_id = s.available_streams.front();
+            s.available_streams.pop_front();
+
+            int next_batch = std::max(1, suspended.last_batch_size / 2);
+            self->println("[SUPE] Resuming solver for: {} (Stream: {}, Batch: {})", 
+                          suspended.path, stream_id, next_batch);
+
+            self->mail(update_stream_atom_v, stream_id).send(suspended.solver);
+            self->mail(cg_next_step_atom_v, next_batch).send(suspended.solver);
+
+            s.active_solvers.push_back(suspended.solver);
+            s.task_streams[suspended.path] = stream_id;
+            s.actor_batch_sizes[suspended.solver] = next_batch;
+          } else {
+            break;
+          }
         }
     };
 
@@ -338,6 +372,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 if (it != s.active_solvers.end())
                     s.active_solvers.erase(it);
                 s.start_times.erase(task_name);
+                s.actor_batch_sizes.erase(solver);
 
                 // Reclaim the stream ID and put it back in the pool
                 auto stream_it = s.task_streams.find(task_name);
@@ -348,17 +383,30 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
 
                 spawn_next();
 
-                if (s.active_solvers.empty() && s.queue.empty()) {
-                    self->println("All tasks in the batch have been processed.");
+                if (s.active_solvers.empty() && s.queue.empty() && s.suspended_queue.empty()) {
+                    self->println("All tasks in the pool have been processed.");
                     //caf::cuda::manager::shutdown();
                     self->quit();
                 }
-            } else if (meta.iterations == 0 && meta.error_code == CG_SUCCESS) {
-                // Initialization report (not yet converged): trigger the first batch
+            } else if (meta.iterations == 0) {
+                // Just finished initialization: trigger the first iteration batch immediately.
                 self->mail(cg_next_step_atom_v, s.num_iterations).send(solver);
             } else {
-                // Progress report: order the next iteration batch
-                self->mail(cg_next_step_atom_v, s.num_iterations).send(solver);
+                // Not done: Suspend the actor to allow others to use the stream
+                auto it = std::find(s.active_solvers.begin(), s.active_solvers.end(), solver);
+                if (it != s.active_solvers.end())
+                    s.active_solvers.erase(it);
+
+                int stream_id = s.task_streams[task_name];
+                s.available_streams.push_back(stream_id);
+                s.task_streams.erase(task_name);
+
+                int last_batch = s.actor_batch_sizes[solver];
+                s.suspended_queue.push_back({solver, task_name, last_batch});
+
+                self->println("[SUPE] Suspending solver for: {} (Reclaimed Stream: {})", task_name, stream_id);
+
+                spawn_next();
             }
         }
        
@@ -402,10 +450,10 @@ void caf_main(actor_system& sys) {
         std::cout << "=====================================\n";
         std::cout << "IRREGULAR WORKLOAD BENCHMARK (CAF)\n";
         std::cout << "=====================================\n";
-        std::cout << "Seed:                " << WORKLOAD_SEED << "\n";
-        std::cout << "GPUs:                " << num_gpus << "\n";
-        std::cout << "Admission Control:   " << admission_control_limit << "\n";
-        std::cout << "Total Runtime:       " << total_time.count() << " s\n";
+        std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
+        std::cout << "GPUs:               " << num_gpus << "\n";
+        std::cout << "Admission Control:  " << admission_control_limit << "\n";
+        std::cout << "Total Runtime:      " << total_time.count() << " s\n";
         std::cout << "=====================================\n";
     }
     manager::shutdown();
