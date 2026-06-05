@@ -87,9 +87,20 @@ target_link_libraries(test
 find_package(Threads REQUIRED)
 
 # 6) Declare the native benchmark executable (raw CUDA/cuBLAS/cuSPARSE)
-add_executable(workload-native main.native.cpp sparse_utils.cpp)
+add_executable(workload-native main.native.cpp sparse_utils.cpp native_utils.cpp)
 
 target_link_libraries(workload-native
+  PRIVATE
+    CUDA::cudart
+    CUDA::cublas
+    CUDA::cusparse
+    Threads::Threads
+)
+
+# 7) Declare the native sorted benchmark executable
+add_executable(workload-native-sorted main.native_sorted.cpp sparse_utils.cpp native_utils.cpp)
+
+target_link_libraries(workload-native-sorted
   PRIVATE
     CUDA::cudart
     CUDA::cublas
