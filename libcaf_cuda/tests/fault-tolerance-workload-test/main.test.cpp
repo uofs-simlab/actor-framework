@@ -76,6 +76,7 @@ std::string to_string(cg_error_type err) {
 template <class T = float>
 struct ft_cg_state {
   // Host Data
+  std::string path;
   in<int> h_row_ptr, h_col_ind;
   in<T> h_values, h_b;
   in_out<T> h_x;
@@ -105,12 +106,14 @@ struct ft_cg_state {
 
 template <class T = float>
 behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
+                                 std::string path,
                                  std::shared_ptr<MatrixData> data,
                                  in<int> rp, in<int> ci, in<T> val, in<T> b_in, in_out<T> x_in,
                                  int n, int nnz, T tol, int max_iter,
                                  int dev_num, int stream, caf::actor supervisor) {
   auto& s = self->state();
   s.pinned_data = std::move(data);
+  s.path = std::move(path);
   s.h_row_ptr = std::move(rp); s.h_col_ind = std::move(ci);
   s.h_values = std::move(val); s.h_b = std::move(b_in); s.h_x = std::move(x_in);
   s.n = n; s.nnz = nnz; s.tol = tol; s.max_iter = max_iter;
@@ -158,7 +161,7 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 
       // Notify supervisor that setup is complete and report initial status
       solver_result_meta meta(st.device_id, st.stream_id, 0, false, CG_SUCCESS);
-      self->mail(gpu_done_atom_v, std::vector<T>{}, meta).send(st.supervisor);
+      self->mail(gpu_done_atom_v, st.path, actor_cast<actor>(self), std::vector<T>{}, meta).send(st.supervisor);
     },
 
     [=](cg_next_step_atom, int num_iters) {
@@ -237,13 +240,19 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
       int err_flag = runner.copy_to_host(st.d_err)[0];
       if (err_flag != 0 || std::isnan(st.current_rho) || std::isinf(st.current_rho)) code = CG_NAN_INF;
 
+      if (code != CG_SUCCESS) converged = false;
+
       solver_result_meta meta(st.device_id, st.stream_id, st.iterations, converged, code);
       
       // Report current solution and metadata to the supervisor
-      runner.copy_to_host_async(st.x, [=, supervisor = st.supervisor](std::vector<T> sol) {
-        self->mail(gpu_done_atom_v, std::move(sol), meta).send(supervisor);
-        if (converged || code != CG_SUCCESS) self->quit();
+      runner.copy_to_host_async(st.x, [=, supervisor = st.supervisor, path = st.path, self_h = actor_cast<actor>(self)](std::vector<T> sol) {
+        anon_mail(gpu_done_atom_v, path, self_h, std::move(sol), meta).send(supervisor);
+        if (converged || code != CG_SUCCESS)
+          self->quit();
       });
+    },
+    [=](shutdown_atom) {
+      self->quit();
     }
   };
 }
@@ -253,8 +262,7 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 struct supervisor_state {
     std::deque<MatrixTask> queue;
     std::vector<caf::actor> active_solvers;
-    std::unordered_map<caf::actor_id, std::string> task_names;
-    std::unordered_map<caf::actor_id, std::chrono::steady_clock::time_point> start_times;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> start_times;
     int max_active = 4; // Admission control limit to be mindful of GPU memory. If Illegal memory access that means two or more actors are using the same stream
     int num_iterations = 50;
     int stream = 0;
@@ -274,6 +282,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             std::string path = task.path;
             self->println("[SUPE] Starting solver for: {}", path);
             auto solver = self->spawn(fault_tolerant_cg_actor<float>,
+                                    path,
                                     task.data,
                                     create_in_arg(task.data->row_ptr),
                                     create_in_arg(task.data->col_indices),
@@ -283,9 +292,8 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     (int)task.data->row_ptr.size() - 1,
                                     (int)task.data->values.size(),
                                     1e-5f, 128000, s.device, (++s.stream)%32, actor_cast<actor>(self));
-            s.task_names[solver->id()] = std::move(path);
-            
-            s.start_times[solver->id()] = std::chrono::steady_clock::now();
+
+            s.start_times[path] = std::chrono::steady_clock::now();
             s.active_solvers.push_back(solver);
             self->mail(start_atom_v).send(solver);
         }
@@ -294,24 +302,13 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
     spawn_next();
     
     return {
-        [=](gpu_done_atom, std::vector<float>& solution, solver_result_meta meta) {
+        [=](gpu_done_atom, const std::string& task_name, caf::actor solver, std::vector<float>& solution, solver_result_meta meta) {
             auto& s = self->state();
-            auto solver = actor_cast<caf::actor>(self->current_sender());
-            
-            if (meta.iterations == 0 && meta.error_code == CG_SUCCESS) {
-                // Initialization report: trigger the first batch
-                self->mail(cg_next_step_atom_v, s.num_iterations).send(solver);
-                return;
-            }
-
-            std::string task_name = s.task_names.count(solver->id()) 
-                                    ? s.task_names[solver->id()] 
-                                    : "Unknown Task";
 
             if (meta.converged || meta.error_code != CG_SUCCESS) {
                 auto end_time = std::chrono::steady_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  end_time - s.start_times[solver->id()]).count();
+                                  end_time - s.start_times[task_name]).count();
 
                 if (meta.converged) {
                     if (meta.iterations == 0)
@@ -329,20 +326,24 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 auto it = std::find(s.active_solvers.begin(), s.active_solvers.end(), solver);
                 if (it != s.active_solvers.end())
                     s.active_solvers.erase(it);
-                s.task_names.erase(solver->id());
-                s.start_times.erase(solver->id());
+                s.start_times.erase(task_name);
 
                 spawn_next();
 
                 if (s.active_solvers.empty() && s.queue.empty()) {
                     self->println("All tasks in the batch have been processed.");
+                    caf::cuda::manager::shutdown();
                     self->quit();
                 }
+            } else if (meta.iterations == 0 && meta.error_code == CG_SUCCESS) {
+                // Initialization report (not yet converged): trigger the first batch
+                self->mail(cg_next_step_atom_v, s.num_iterations).send(solver);
             } else {
                 // Progress report: order the next iteration batch
                 self->mail(cg_next_step_atom_v, s.num_iterations).send(solver);
             }
         }
+       
     };
 }
 
