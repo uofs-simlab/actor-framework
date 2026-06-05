@@ -268,6 +268,7 @@ struct suspended_task {
   caf::actor solver;
   std::string path;
   int last_batch_size;
+  int stream_id;
 };
 
 struct supervisor_state {
@@ -325,25 +326,31 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             s.task_streams[path] = stream_id;
             s.actor_batch_sizes[solver] = s.num_iterations;
             self->mail(start_atom_v).send(solver);
-          } else if (!s.suspended_queue.empty()) {
-            auto suspended = std::move(s.suspended_queue.front());
-            s.suspended_queue.pop_front();
-
-            int stream_id = s.available_streams.front();
-            s.available_streams.pop_front();
-
-            int next_batch = std::max(1, suspended.last_batch_size / 2);
-            self->println("[INFO] Resuming solver for: {} (Stream: {}, Batch: {})", 
-                          suspended.path, stream_id, next_batch);
-
-            self->mail(update_stream_atom_v, stream_id).send(suspended.solver);
-            self->mail(cg_next_step_atom_v, next_batch).send(suspended.solver);
-
-            s.active_solvers.push_back(suspended.solver);
-            s.task_streams[suspended.path] = stream_id;
-            s.actor_batch_sizes[suspended.solver] = next_batch;
           } else {
-            break;
+            bool resumed = false;
+            for (auto it = s.suspended_queue.begin(); it != s.suspended_queue.end(); ++it) {
+              auto stream_it = std::find(s.available_streams.begin(), s.available_streams.end(), it->stream_id);
+              if (stream_it != s.available_streams.end()) {
+                auto suspended = std::move(*it);
+                s.suspended_queue.erase(it);
+                int stream_id = suspended.stream_id;
+                s.available_streams.erase(stream_it);
+
+                int next_batch = std::max(1, suspended.last_batch_size / 2);
+                self->println("[INFO] Resuming solver for: {} (Stream: {}, Batch: {})", 
+                              suspended.path, stream_id, next_batch);
+
+                // Resume on the same stream ID. No update_stream_atom_v needed.
+                self->mail(cg_next_step_atom_v, next_batch).send(suspended.solver);
+
+                s.active_solvers.push_back(suspended.solver);
+                s.task_streams[suspended.path] = stream_id;
+                s.actor_batch_sizes[suspended.solver] = next_batch;
+                resumed = true;
+                break;
+              }
+            }
+            if (!resumed) break;
           }
         }
     };
@@ -424,7 +431,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 s.task_streams.erase(task_name);
 
                 int last_batch = s.actor_batch_sizes[solver];
-                s.suspended_queue.push_back({solver, task_name, last_batch});
+                s.suspended_queue.push_back({solver, task_name, last_batch, stream_id});
 
                 self->println("[INFO] Suspending solver for: {} (Reclaimed Stream: {})", task_name, stream_id);
 
