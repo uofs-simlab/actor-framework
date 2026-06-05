@@ -281,12 +281,16 @@ struct supervisor_state {
   int max_active = 1; // Admission control limit to be mindful of GPU memory.
   int num_iterations = MAX_ITERATIONS / 2;
   int device = 0;
+  int tasks_succeeded = 0;
+  int tasks_failed = 0;
+  std::chrono::steady_clock::time_point benchmark_start;
 };
 
-behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<MatrixTask> tasks, int initial_max_active) {
+behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<MatrixTask> tasks, int initial_max_active, std::chrono::steady_clock::time_point start_time) {
     auto& st = self->state();
     st.queue.insert(st.queue.end(), std::make_move_iterator(tasks.begin()), std::make_move_iterator(tasks.end()));
     st.max_active = initial_max_active;
+    st.benchmark_start = start_time;
 
     // Initialize the pool with 32 distinct stream IDs
     for (int i = 0; i < 32; ++i)
@@ -303,7 +307,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             int stream_id = s.available_streams.front();
             s.available_streams.pop_front();
 
-            self->println("[SUPE] Starting solver for: {} (Stream: {})", path, stream_id);
+            self->println("[INFO] Starting solver for: {} (Stream: {})", path, stream_id);
             auto solver = self->spawn(fault_tolerant_cg_actor<float>,
                                     path,
                                     task.data,
@@ -329,7 +333,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             s.available_streams.pop_front();
 
             int next_batch = std::max(1, suspended.last_batch_size / 2);
-            self->println("[SUPE] Resuming solver for: {} (Stream: {}, Batch: {})", 
+            self->println("[INFO] Resuming solver for: {} (Stream: {}, Batch: {})", 
                           suspended.path, stream_id, next_batch);
 
             self->mail(update_stream_atom_v, stream_id).send(suspended.solver);
@@ -356,11 +360,13 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                   end_time - s.start_times[task_name]).count();
 
                 if (meta.converged) {
+                    s.tasks_succeeded++;
                     if (meta.iterations == 0)
                         self->println("[DONE] {}: Initial guess satisfied tolerance ({} ms).", task_name, duration);
                     else
                         self->println("[DONE] {}: Converged in {} iterations ({} ms).", task_name, meta.iterations, duration);
                 } else {
+                    s.tasks_failed++;
                     self->println("[FAIL] {}: {} (after {} iterations, {} ms).", 
                                   task_name, 
                                   to_string(static_cast<cg_error_type>(meta.error_code)), 
@@ -385,7 +391,23 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
 
                 if (s.active_solvers.empty() && s.queue.empty() && s.suspended_queue.empty()) {
                     self->println("All tasks in the pool have been processed.");
-                    //caf::cuda::manager::shutdown();
+
+                    auto benchmark_end = std::chrono::steady_clock::now();
+                    std::chrono::duration<double> total_time = benchmark_end - s.benchmark_start;
+                    int num_gpus = manager::get().get_num_devices();
+
+                    std::cout << "\n";
+                    std::cout << "=====================================\n";
+                    std::cout << "IRREGULAR WORKLOAD BENCHMARK (CAF)\n";
+                    std::cout << "=====================================\n";
+                    std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
+                    std::cout << "GPUs:               " << num_gpus << "\n";
+                    std::cout << "Admission Control:  " << s.max_active << "\n";
+                    std::cout << "Tasks Succeeded:    " << s.tasks_succeeded << "\n";
+                    std::cout << "Tasks Failed:       " << s.tasks_failed << "\n";
+                    std::cout << "Total Runtime:      " << total_time.count() << " s\n";
+                    std::cout << "=====================================\n";
+
                     self->quit();
                 }
             } else if (meta.iterations == 0) {
@@ -404,7 +426,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 int last_batch = s.actor_batch_sizes[solver];
                 s.suspended_queue.push_back({solver, task_name, last_batch});
 
-                self->println("[SUPE] Suspending solver for: {} (Reclaimed Stream: {})", task_name, stream_id);
+                self->println("[INFO] Suspending solver for: {} (Reclaimed Stream: {})", task_name, stream_id);
 
                 spawn_next();
             }
@@ -440,21 +462,8 @@ void caf_main(actor_system& sys) {
         auto benchmark_start = std::chrono::steady_clock::now();
         int admission_control_limit = 4; // The desired admission control limit
 
-        sys.spawn(supervisor_actor, std::move(tasks_vec), admission_control_limit);
+        sys.spawn(supervisor_actor, std::move(tasks_vec), admission_control_limit, benchmark_start);
         sys.await_all_actors_done();
-
-        auto benchmark_end = std::chrono::steady_clock::now();
-        std::chrono::duration<double> total_time = benchmark_end - benchmark_start;
-
-        std::cout << "\n";
-        std::cout << "=====================================\n";
-        std::cout << "IRREGULAR WORKLOAD BENCHMARK (CAF)\n";
-        std::cout << "=====================================\n";
-        std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
-        std::cout << "GPUs:               " << num_gpus << "\n";
-        std::cout << "Admission Control:  " << admission_control_limit << "\n";
-        std::cout << "Total Runtime:      " << total_time.count() << " s\n";
-        std::cout << "=====================================\n";
     }
     manager::shutdown();
 }
