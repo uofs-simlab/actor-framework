@@ -200,8 +200,12 @@ void report_workload_stats() {
 
     int total_iters = 0;
     int success_count = 0;
+    int failed_count = 0;
     std::vector<double> completions;
     completions.reserve(global_stats.size());
+
+    // Ensure total_jobs is not zero to avoid division by zero
+    size_t total_jobs = global_stats.size();
 
     for (const auto& s : global_stats) {
         total_iters += s.iterations;
@@ -210,8 +214,11 @@ void report_workload_stats() {
     }
 
     std::sort(completions.begin(), completions.end());
-    double mean = std::accumulate(completions.begin(), completions.end(), 0.0) / completions.size();
-    double median = completions[completions.size() / 2];
+    failed_count = total_jobs - success_count;
+    double success_percentage = (total_jobs > 0) ? (100.0 * success_count / total_jobs) : 0.0;
+    double failed_percentage = (total_jobs > 0) ? (100.0 * failed_count / total_jobs) : 0.0;
+    double mean = (total_jobs > 0) ? std::accumulate(completions.begin(), completions.end(), 0.0) / total_jobs : 0.0;
+    double median = (total_jobs > 0) ? completions[total_jobs / 2] : 0.0;
     double p95 = completions[static_cast<size_t>(completions.size() * 0.95)];
 
     auto max_finish = std::max_element(global_stats.begin(), global_stats.end(), [](const JobStats& a, const JobStats& b) {
@@ -221,10 +228,10 @@ void report_workload_stats() {
     std::cout << "\n" << std::string(45, '=') << "\n";
     std::cout << "          WORKLOAD PERFORMANCE REPORT\n";
     std::cout << std::string(45, '=') << "\n";
-    std::cout << std::left << std::setw(25) << "Total Jobs:" << global_stats.size() << "\n";
+    std::cout << std::left << std::setw(25) << "Total Jobs:" << total_jobs << "\n";
+    std::cout << std::left << std::setw(25) << "Succeeded Jobs:" << success_count << " (" << std::fixed << std::setprecision(2) << success_percentage << "%)\n";
+    std::cout << std::left << std::setw(25) << "Failed Jobs:" << failed_count << " (" << std::fixed << std::setprecision(2) << failed_percentage << "%)\n";
     std::cout << std::left << std::setw(25) << "Total Iterations:" << total_iters << "\n";
-    std::cout << std::left << std::setw(25) << "Success Rate:" << std::fixed << std::setprecision(2) 
-              << (100.0 * success_count / global_stats.size()) << "%\n";
     std::cout << std::left << std::setw(25) << "Makespan:" << max_finish->finish_relative_ms / 1000.0 << " s\n";
     std::cout << std::left << std::setw(25) << "Mean Completion:" << mean << " ms\n";
     std::cout << std::left << std::setw(25) << "Median Completion:" << median << " ms\n";
@@ -242,9 +249,9 @@ void report_workload_stats() {
             [](double val, const JobStats& s) {
                 return val < s.finish_relative_ms;
             });
-        size_t count = std::distance(global_stats.begin(), it);
-        std::cout << "  T + " << std::setw(8) << std::fixed << std::setprecision(0) << threshold 
-                  << " ms: " << std::setw(4) << (100 * count / global_stats.size()) << "% complete\n";
+        size_t count = std::distance(global_stats.begin(), it); // Number of jobs completed by this threshold
+        std::cout << "  T + " << std::setw(5) << std::fixed << std::setprecision(0) << threshold 
+                  << " ms | Progress: " << std::setw(3) << ((total_jobs > 0) ? (100 * count / total_jobs) : 0) << "%\n";
     }
     std::cout << std::string(45, '=') << "\n\n";
 }
