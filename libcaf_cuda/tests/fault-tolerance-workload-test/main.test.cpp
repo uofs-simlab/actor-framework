@@ -299,6 +299,7 @@ struct supervisor_state {
   std::unordered_map<std::string, resource_slot> task_resources;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> enqueue_times;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> pick_times;
+  std::unordered_map<std::string, double> cumulative_active_ms;
   std::unordered_map<caf::actor, int> actor_batch_sizes;
   std::deque<resource_slot> available_slots;
   int max_active = 1; // Admission control limit to be mindful of GPU memory.
@@ -331,6 +332,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             s.queue.pop_front();
             std::string path = task.path;
 
+            s.cumulative_active_ms[path] = 0;
             s.enqueue_times[path] = task.enqueue_time;
             s.pick_times[path] = std::chrono::steady_clock::now();
 
@@ -367,6 +369,8 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 s.suspended_queue.erase(it);
                 resource_slot slot = *slot_it;
                 s.available_slots.erase(slot_it);
+
+                s.pick_times[suspended.path] = std::chrono::steady_clock::now();
 
                 // Cap the minimum batch size to MAX_ITERATIONS / 8
                 int next_batch = std::max(MAX_ITERATIONS / 8, suspended.last_batch_size / 2);
@@ -416,9 +420,19 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                   duration);
                 }
 
-                record_job(task_name, s.enqueue_times[task_name], s.pick_times[task_name], end_time, meta.iterations, meta.converged);
+                // Final active slice
+                auto active_slice = std::chrono::duration<double, std::milli>(end_time - s.pick_times[task_name]).count();
+                s.cumulative_active_ms[task_name] += active_slice;
+
+                // We override pick_time in record_job to simulate a single continuous run that equals 
+                // the actual time spent on the GPU.
+                auto simulated_pick = end_time - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                std::chrono::duration<double, std::milli>(s.cumulative_active_ms[task_name]));
+
+                record_job(task_name, s.enqueue_times[task_name], simulated_pick, end_time, meta.iterations, meta.converged);
                 s.enqueue_times.erase(task_name);
                 s.pick_times.erase(task_name);
+                s.cumulative_active_ms.erase(task_name);
 
                 auto it = std::find(s.active_solvers.begin(), s.active_solvers.end(), solver);
                 if (it != s.active_solvers.end())
@@ -447,6 +461,11 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             } else {
                 // Not done: Suspend the actor to allow others to use the stream
                 auto it = std::find(s.active_solvers.begin(), s.active_solvers.end(), solver);
+                
+                // Record the time spent in this active slice before suspending
+                auto active_slice = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s.pick_times[task_name]).count();
+                s.cumulative_active_ms[task_name] += active_slice;
+
                 if (it != s.active_solvers.end())
                     s.active_solvers.erase(it);
 

@@ -200,6 +200,7 @@ void report_workload_stats() {
 
     int total_iters = 0;
     int success_count = 0;
+    double wasted_gpu_time_ms = 0;
     int failed_count = 0;
     std::vector<double> completions;
     completions.reserve(global_stats.size());
@@ -210,6 +211,8 @@ void report_workload_stats() {
     for (const auto& s : global_stats) {
         total_iters += s.iterations;
         if (s.success) success_count++;
+        else wasted_gpu_time_ms += (s.completion_time_ms - s.wait_time_ms);
+        
         completions.push_back(s.completion_time_ms);
     }
 
@@ -232,12 +235,13 @@ void report_workload_stats() {
     std::cout << std::left << std::setw(25) << "Succeeded Jobs:" << success_count << " (" << std::fixed << std::setprecision(2) << success_percentage << "%)\n";
     std::cout << std::left << std::setw(25) << "Failed Jobs:" << failed_count << " (" << std::fixed << std::setprecision(2) << failed_percentage << "%)\n";
     std::cout << std::left << std::setw(25) << "Total Iterations:" << total_iters << "\n";
+    std::cout << std::left << std::setw(25) << "Cumul. Wasted GPU Time:" << wasted_gpu_time_ms / 1000.0 << " s (all streams)\n";
     std::cout << std::left << std::setw(25) << "Makespan:" << max_finish->finish_relative_ms / 1000.0 << " s\n";
     std::cout << std::left << std::setw(25) << "Mean Completion:" << mean << " ms\n";
     std::cout << std::left << std::setw(25) << "Median Completion:" << median << " ms\n";
     std::cout << std::left << std::setw(25) << "95th Percentile:" << p95 << " ms\n";
     
-    std::cout << "\nThroughput Timeline (Fraction vs Wall-clock):\n";
+    std::cout << "\nThroughput Timeline (Job Completion & Success vs Wall-clock):\n";
     std::sort(global_stats.begin(), global_stats.end(), [](const JobStats& a, const JobStats& b) {
         return a.finish_relative_ms < b.finish_relative_ms;
     });
@@ -249,9 +253,15 @@ void report_workload_stats() {
             [](double val, const JobStats& s) {
                 return val < s.finish_relative_ms;
             });
-        size_t count = std::distance(global_stats.begin(), it); // Number of jobs completed by this threshold
+        size_t total_at_t = std::distance(global_stats.begin(), it);
+        size_t success_at_t = 0;
+        for (auto s_it = global_stats.begin(); s_it != it; ++s_it) {
+            if (s_it->success) success_at_t++;
+        }
+
         std::cout << "  T + " << std::setw(5) << std::fixed << std::setprecision(0) << threshold 
-                  << " ms | Progress: " << std::setw(3) << ((total_jobs > 0) ? (100 * count / total_jobs) : 0) << "%\n";
+                  << " ms | Total Progress: " << std::setw(3) << (100 * total_at_t / total_jobs) 
+                  << "% | Successful solves: " << std::setw(3) << (100 * success_at_t / total_jobs) << "%\n";
     }
     std::cout << std::string(45, '=') << "\n\n";
 }
