@@ -15,6 +15,8 @@ using namespace caf;
 using namespace caf::cuda;
 namespace fs = std::filesystem;
 
+constexpr uint32_t WORKLOAD_SEED = 42;
+
 template <class Inspector>
 bool inspect(Inspector& f, SolverType& x) {
     auto val = static_cast<int>(x);
@@ -153,7 +155,7 @@ behavior producer_actor(stateful_actor<producer_state>* self,
     st.batch_size = batch_size;
     st.mean_arrival_ms = mean_ms;
     st.supervisor = std::move(supervisor);
-    st.rng.seed(42);
+    st.rng.seed(WORKLOAD_SEED);
 
     return {
         [=](work_tick_atom) {
@@ -188,6 +190,7 @@ struct supervisor_state {
     size_t total_expected;
     size_t completed = 0;
     bool initialized = false;
+    actor parent;
 };
 
 // ============================================================
@@ -197,8 +200,10 @@ struct supervisor_state {
 behavior supervisor_actor(stateful_actor<supervisor_state>* self,
                           size_t total_tasks,
                           int num_gpus,
-                          int streams_per_gpu) {
+                          int streams_per_gpu,
+                          actor parent) {
     self->state().total_expected = total_tasks;
+    self->state().parent = std::move(parent);
 
     return {
         [=](add_work_atom, std::vector<MatrixTask>& batch) {
@@ -263,6 +268,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
 
             if (s.completed >= s.total_expected) {
                 self->println("[INFO] All {} tasks completed. Shutting down.", s.total_expected);
+                self->mail(worker_done_atom_v).send(s.parent);
                 self->quit();
             }
         }
@@ -290,18 +296,48 @@ void caf_main(actor_system& sys) {
     manager& mgr = manager::get();
     int gpus = mgr.get_num_devices();
 
-    auto supervisor = sys.spawn(supervisor_actor,
+    std::cout << "[INFO] Streams/GPU:      " << streams << "\n";
+    std::cout << "[INFO] Batches:          " << batches << "\n";
+    std::cout << "[INFO] Batch size:       " << batch_size << "\n";
+    std::cout << "[INFO] Mean arrival:     " << mean_arrival << " ms\n";
+
+    auto start = std::chrono::steady_clock::now();
+    scoped_actor self{sys};
+
+    auto supervisor = self->spawn(supervisor_actor,
               static_cast<size_t>(batches * batch_size),
               gpus,
-              streams);
+              streams,
+              actor_cast<actor>(self));
 
-    auto producer = sys.spawn(producer_actor,
+    auto producer = self->spawn(producer_actor,
                              std::move(tasks), batches, batch_size, mean_arrival,
                              supervisor);
 
     anon_mail(work_tick_atom_v).send(producer);
 
-    sys.await_all_actors_done();
+    self->receive(
+        [&](worker_done_atom) {
+            std::cout << "[INFO] Supervisor signaled completion. Shutting down...\n";
+        }
+    );
+
+    auto end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+
+    int total_tasks = batches * batch_size;
+
+    std::cout << "\n===== BENCHMARK COMPLETE =====\n";
+    std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
+    std::cout << "Streams per GPU:    " << streams << "\n";
+    std::cout << "Batches:            " << batches << "\n";
+    std::cout << "Batch Size:         " << batch_size << "\n";
+    std::cout << "Mean Arrival (ms):  " << mean_arrival << "\n";
+    std::cout << "Tasks Processed:    " << total_tasks << "\n";
+    std::cout << "Total Runtime:      " << elapsed.count() << " s\n";
+    std::cout << "Throughput:         " << total_tasks / elapsed.count() << " tasks/s\n";
+    std::cout << "==============================\n";
+
     manager::shutdown();
 }
 
