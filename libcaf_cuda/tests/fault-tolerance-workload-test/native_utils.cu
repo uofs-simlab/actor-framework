@@ -222,20 +222,23 @@ void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>
 
     MatrixTask task;
     while (queue.wait_pop(task)) {
+        auto pick_time = std::chrono::steady_clock::now();
         std::cout << "[WORKER " << worker_id << "] Starting: " << task.path << " (NNZ: " << task.data->nnz << ")" << std::endl;
-        auto start_task = std::chrono::steady_clock::now();
 
         int iterations = solve_cg_async(cublas, cusparse, task, stream);
         CHECK_CUDA(cudaStreamSynchronize(stream));
 
-        auto end_task = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_task - start_task).count();
+        auto finish_time = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish_time - pick_time).count();
 
-        if (iterations < MAX_ITERATIONS) {
+        bool success = (iterations >= 0 && iterations < MAX_ITERATIONS);
+        if (success) {
             succeeded++;
         } else {
             failed++;
         }
+
+        record_job(task.path, task.enqueue_time, pick_time, finish_time, iterations, success);
 
         std::cout << "[WORKER " << worker_id << "] Done: " << task.path << " (" << iterations << " iters, " << duration << " ms)." << std::endl;
     }
