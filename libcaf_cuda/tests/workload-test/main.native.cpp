@@ -326,22 +326,22 @@ void gpu_stream_worker(
 
 int main(int argc, char** argv)
 {
-    int num_streams = 8;
+    int num_streams = 4;
     int num_batches = 25;
     int batch_size = 100;
     double mean_arrival_ms = 1000.0;
 
-    if (argc > 1)
-        num_streams = std::max(1, std::atoi(argv[1]));
+    // if (argc > 1)
+    //     num_streams = std::max(1, std::atoi(argv[1]));
 
-    if (argc > 2)
-        num_batches = std::max(1, std::atoi(argv[2]));
+    // if (argc > 2)
+    //     num_batches = std::max(1, std::atoi(argv[2]));
 
-    if (argc > 3)
-        batch_size = std::max(1, std::atoi(argv[3]));
+    // if (argc > 3)
+    //     batch_size = std::max(1, std::atoi(argv[3]));
 
-    if (argc > 4)
-        mean_arrival_ms = std::atof(argv[4]);
+    // if (argc > 4)
+    //     mean_arrival_ms = std::atof(argv[4]);
 
     std::cout << "[INFO] Loading matrices...\n";
 

@@ -15,6 +15,17 @@ using namespace caf;
 using namespace caf::cuda;
 namespace fs = std::filesystem;
 
+template <class Inspector>
+bool inspect(Inspector& f, SolverType& x) {
+    auto val = static_cast<int>(x);
+    if (f.apply(val)) {
+        if constexpr (Inspector::is_loading)
+            x = static_cast<SolverType>(val);
+        return true;
+    }
+    return false;
+}
+
 // ============================================================
 // TYPE BLOCK (unchanged + extended)
 // ============================================================
@@ -22,7 +33,6 @@ namespace fs = std::filesystem;
 CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
 
     CAF_ADD_ATOM(workload_test, get_work_atom)
-    CAF_ADD_ATOM(workload_test, start_atom)
     CAF_ADD_ATOM(workload_test, started_atom)
     CAF_ADD_ATOM(workload_test, neighbor_atom)
     CAF_ADD_ATOM(workload_test, request_work_atom)
@@ -77,7 +87,7 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
             s.stream_id = stream;
 
             // Alert master that we have begun work
-            self->send(s.supervisor, started_atom_v);
+            self->mail(started_atom_v).send(s.supervisor);
 
             // Execute solver
             auto& d = *s.task.data;
@@ -103,7 +113,7 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
             s.neighbor_received = true;
 
             if (s.solve_done && s.neighbor) {
-                self->send(s.neighbor, start_atom_v, s.device_id, s.stream_id);
+                self->mail(start_atom_v, s.device_id, s.stream_id).send(s.neighbor);
                 self->quit();
             }
         },
@@ -112,7 +122,7 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
             auto& s = self->state();
             s.solve_done = true;
             if (s.neighbor_received && s.neighbor) {
-                self->send(s.neighbor, start_atom_v, s.device_id, s.stream_id);
+                self->mail(start_atom_v, s.device_id, s.stream_id).send(s.neighbor);
                 self->quit();
             }
         }
@@ -150,12 +160,12 @@ behavior producer_actor(stateful_actor<producer_state>* self,
             auto& s = self->state();
             if (s.batches_sent < s.num_batches) {
                 auto batch = generate_batch(s.matrix_pool, s.rng, s.batch_size);
-                self->send(s.supervisor, add_work_atom_v, std::move(batch));
+                self->mail(add_work_atom_v, std::move(batch)).send(s.supervisor);
                 s.batches_sent++;
 
                 if (s.batches_sent < s.num_batches) {
                     auto delay = generate_random_interval(s.rng, s.mean_arrival_ms);
-                    self->delayed_send(self, delay, work_tick_atom_v);
+                    self->mail(work_tick_atom_v).delay(delay).send(self);
                 }
             }
         }
@@ -207,7 +217,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
                     if (!s.pending_queue.empty()) {
                         auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
                         s.pending_queue.pop_front();
-                        self->send(w, start_atom_v, dev, stream);
+                        self->mail(start_atom_v, dev, stream).send(w);
                     } else {
                         s.available_slots.push_back({dev, stream});
                     }
@@ -219,7 +229,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
                     s.available_slots.pop_front();
                     auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
                     s.pending_queue.pop_front();
-                    self->send(w, start_atom_v, slot.device_id, slot.stream_id);
+                    self->mail(start_atom_v, slot.device_id, slot.stream_id).send(w);
                 }
             }
         },
@@ -229,9 +239,9 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
             if (!s.pending_queue.empty()) {
                 auto next_worker = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
                 s.pending_queue.pop_front();
-                self->send(self->current_sender(), neighbor_atom_v, next_worker);
+                self->mail(neighbor_atom_v, next_worker).send(actor_cast<actor>(self->current_sender()));
             } else {
-                self->send(self->current_sender(), neighbor_atom_v, actor_cast<actor>(self));
+                self->mail(neighbor_atom_v, actor_cast<actor>(self)).send(actor_cast<actor>(self->current_sender()));
             }
         },
 
@@ -246,7 +256,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
             if (!s.pending_queue.empty()) {
                 auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
                 s.pending_queue.pop_front();
-                self->send(w, start_atom_v, dev, stream);
+                self->mail(start_atom_v, dev, stream).send(w);
             } else {
                 s.available_slots.push_back({dev, stream});
             }
@@ -267,7 +277,7 @@ void caf_main(actor_system& sys) {
 
     manager::init(sys, manager_config(true, true));
 
-    int streams = 8;
+    int streams = 4;
     int batches = 25;
     int batch_size = 100;
     double mean_arrival = 1000.0;
@@ -289,10 +299,10 @@ void caf_main(actor_system& sys) {
                              std::move(tasks), batches, batch_size, mean_arrival,
                              supervisor);
 
-    anon_send(producer, work_tick_atom_v);
+    anon_mail(work_tick_atom_v).send(producer);
 
     sys.await_all_actors_done();
     manager::shutdown();
 }
 
-CAF_MAIN(id_block::cuda, workload_test)
+CAF_MAIN(id_block::cuda, id_block::workload_test)

@@ -43,7 +43,6 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
     CAF_ADD_TYPE_ID(workload_test, (std::vector<MatrixTask>))
-    CAF_ADD_TYPE_ID(workload_test, (std::vector<caf::actor>))
     CAF_ADD_TYPE_ID(workload_test, (std::shared_ptr<MatrixData>))
 CAF_END_TYPE_ID_BLOCK(workload_test)
 
@@ -267,7 +266,7 @@ behavior supervisor_actor_fun(stateful_actor<supervisor_state>* self,
 void caf_main(actor_system& sys) {
     manager::init(sys, manager_config(true, true));
     
-    int num_streams = 8;
+    int num_streams = 4;
     int num_batches = 25;
     int batch_size = 100;
     double mean_arrival_ms = 1000.0;
