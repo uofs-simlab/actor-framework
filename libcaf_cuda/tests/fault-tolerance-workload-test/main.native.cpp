@@ -8,8 +8,9 @@
 #include <atomic>
 #include "native_utils.hpp"
 
-void producer(ThreadSafeQueue<MatrixTask>& queue, const std::vector<MatrixTask>& matrix_pool) {
-    for (const auto& task : matrix_pool) {
+void producer(ThreadSafeQueue<MatrixTask>& queue, std::vector<MatrixTask> matrix_pool) {
+    for (auto& task : matrix_pool) {
+        task.enqueue_time = std::chrono::steady_clock::now();
         queue.push(task);
     }
     queue.signal_shutdown();
@@ -39,8 +40,9 @@ int main(int argc, char** argv)
     std::atomic<int> tasks_succeeded{0};
     std::atomic<int> tasks_failed{0};
     ThreadSafeQueue<MatrixTask> work_queue;
-    auto benchmark_start = std::chrono::steady_clock::now();
-    std::thread producer_thread(producer, std::ref(work_queue), std::cref(matrix_pool));
+    
+    init_benchmark_timer();
+    std::thread producer_thread(producer, std::ref(work_queue), matrix_pool);
     
     std::vector<std::thread> workers;
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
@@ -52,22 +54,7 @@ int main(int argc, char** argv)
     producer_thread.join();
     for (auto& worker : workers) worker.join();
 
-    auto benchmark_end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> total_time = benchmark_end - benchmark_start;
-
-    std::cout << "All tasks in the pool have been processed." << std::endl;
-    std::cout << "\n";
-    std::cout << "=====================================\n";
-    std::cout << "IRREGULAR WORKLOAD BENCHMARK\n";
-    std::cout << "=====================================\n";
-    std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
-    std::cout << "GPUs:               " << num_gpus << "\n";
-    std::cout << "Streams per GPU:    " << num_streams << "\n";
-    std::cout << "Worker Threads:     " << num_gpus * num_streams << "\n";
-    std::cout << "Tasks Succeeded:    " << tasks_succeeded.load() << "\n";
-    std::cout << "Tasks Failed:       " << tasks_failed.load() << "\n";
-    std::cout << "Total Runtime:      " << total_time.count() << " s\n";
-    std::cout << "=====================================\n";
+    report_workload_stats();
 
     return 0;
 }

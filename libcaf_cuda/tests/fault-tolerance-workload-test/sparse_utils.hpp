@@ -44,9 +44,25 @@ struct MatrixTask {
     std::string path;
     SolverType type;
     std::shared_ptr<MatrixData> data;
+    std::chrono::steady_clock::time_point enqueue_time;
 };
 
+struct JobStats {
+    std::string task_name;
+    double wait_time_ms;       // Time spent in queue
+    double completion_time_ms; // Total turnaround time (enqueue to finish)
+    int iterations;
+    bool success;
+    double finish_relative_ms; // Wall-clock timestamp relative to benchmark start
+};
 
+void init_benchmark_timer();
+void record_job(const std::string& name,
+                std::chrono::steady_clock::time_point enqueue_time,
+                std::chrono::steady_clock::time_point pick_time,
+                std::chrono::steady_clock::time_point finish_time,
+                int iterations, bool success);
+void report_workload_stats();
 
 struct Partition {
     size_t begin;

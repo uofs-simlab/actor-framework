@@ -297,6 +297,8 @@ struct supervisor_state {
   std::vector<caf::actor> active_solvers;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> start_times;
   std::unordered_map<std::string, resource_slot> task_resources;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> enqueue_times;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> pick_times;
   std::unordered_map<caf::actor, int> actor_batch_sizes;
   std::deque<resource_slot> available_slots;
   int max_active = 1; // Admission control limit to be mindful of GPU memory.
@@ -328,6 +330,9 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
             auto task = std::move(s.queue.front());
             s.queue.pop_front();
             std::string path = task.path;
+
+            s.enqueue_times[path] = task.enqueue_time;
+            s.pick_times[path] = std::chrono::steady_clock::now();
 
             resource_slot slot = s.available_slots.front();
             s.available_slots.pop_front();
@@ -411,6 +416,10 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                   duration);
                 }
 
+                record_job(task_name, s.enqueue_times[task_name], s.pick_times[task_name], end_time, meta.iterations, meta.converged);
+                s.enqueue_times.erase(task_name);
+                s.pick_times.erase(task_name);
+
                 auto it = std::find(s.active_solvers.begin(), s.active_solvers.end(), solver);
                 if (it != s.active_solvers.end())
                     s.active_solvers.erase(it);
@@ -429,21 +438,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 if (s.active_solvers.empty() && s.queue.empty() && s.suspended_queue.empty()) {
                     self->println("All tasks in the pool have been processed.");
 
-                    auto benchmark_end = std::chrono::steady_clock::now();
-                    std::chrono::duration<double> total_time = benchmark_end - s.benchmark_start;
-
-                    std::cout << "\n";
-                    std::cout << "=====================================\n";
-                    std::cout << "IRREGULAR WORKLOAD BENCHMARK (CAF)\n";
-                    std::cout << "=====================================\n";
-                    std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
-                    std::cout << "GPUs:               " << s.num_gpus << "\n";
-                    std::cout << "Admission Control:  " << s.max_active << "\n";
-                    std::cout << "Tasks Succeeded:    " << s.tasks_succeeded << "\n";
-                    std::cout << "Tasks Failed:       " << s.tasks_failed << "\n";
-                    std::cout << "Total Runtime:      " << total_time.count() << " s\n";
-                    std::cout << "=====================================\n";
-
+                    report_workload_stats();
                     self->quit();
                 }
             } else if (meta.iterations == 0) {
@@ -494,6 +489,11 @@ void caf_main(actor_system& sys) {
             data->b = {100.0f, 100.0f};
             data->x_guess = {0.0f, 0.0f};
             tasks_vec.push_back({"dummy_task", CGS_SOLVER, data});
+        }
+
+        init_benchmark_timer();
+        for (auto& task : tasks_vec) {
+            task.enqueue_time = std::chrono::steady_clock::now();
         }
 
         auto benchmark_start = std::chrono::steady_clock::now();

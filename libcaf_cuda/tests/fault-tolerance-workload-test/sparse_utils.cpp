@@ -3,6 +3,12 @@
 #include <stdexcept>
 #include <filesystem>
 #include <random>
+#include <mutex>
+#include <algorithm>
+#include <iomanip>
+#include <iostream>
+#include <numeric>
+
 namespace fs = std::filesystem;
 
 SparseMatrixCOO load_binary_coo(const std::string& filepath) {
@@ -161,4 +167,84 @@ std::vector<MatrixTask> generate_batch(
     }
 
     return batch;
+}
+
+static std::vector<JobStats> global_stats;
+static std::mutex stats_mutex;
+static std::chrono::steady_clock::time_point benchmark_start_tp;
+
+void init_benchmark_timer() {
+    benchmark_start_tp = std::chrono::steady_clock::now();
+}
+
+void record_job(const std::string& name,
+                std::chrono::steady_clock::time_point enqueue_time,
+                std::chrono::steady_clock::time_point pick_time,
+                std::chrono::steady_clock::time_point finish_time,
+                int iterations, bool success) {
+    std::lock_guard<std::mutex> lock(stats_mutex);
+    
+    auto wait = std::chrono::duration<double, std::milli>(pick_time - enqueue_time).count();
+    auto total = std::chrono::duration<double, std::milli>(finish_time - enqueue_time).count();
+    auto finish_rel = std::chrono::duration<double, std::milli>(finish_time - benchmark_start_tp).count();
+
+    global_stats.push_back({name, wait, total, iterations, success, finish_rel});
+}
+
+void report_workload_stats() {
+    std::lock_guard<std::mutex> lock(stats_mutex);
+    if (global_stats.empty()) {
+        std::cout << "No job statistics recorded.\n";
+        return;
+    }
+
+    int total_iters = 0;
+    int success_count = 0;
+    std::vector<double> completions;
+    completions.reserve(global_stats.size());
+
+    for (const auto& s : global_stats) {
+        total_iters += s.iterations;
+        if (s.success) success_count++;
+        completions.push_back(s.completion_time_ms);
+    }
+
+    std::sort(completions.begin(), completions.end());
+    double mean = std::accumulate(completions.begin(), completions.end(), 0.0) / completions.size();
+    double median = completions[completions.size() / 2];
+    double p95 = completions[static_cast<size_t>(completions.size() * 0.95)];
+
+    auto max_finish = std::max_element(global_stats.begin(), global_stats.end(), [](const JobStats& a, const JobStats& b) {
+        return a.finish_relative_ms < b.finish_relative_ms;
+    });
+
+    std::cout << "\n" << std::string(45, '=') << "\n";
+    std::cout << "          WORKLOAD PERFORMANCE REPORT\n";
+    std::cout << std::string(45, '=') << "\n";
+    std::cout << std::left << std::setw(25) << "Total Jobs:" << global_stats.size() << "\n";
+    std::cout << std::left << std::setw(25) << "Total Iterations:" << total_iters << "\n";
+    std::cout << std::left << std::setw(25) << "Success Rate:" << std::fixed << std::setprecision(2) 
+              << (100.0 * success_count / global_stats.size()) << "%\n";
+    std::cout << std::left << std::setw(25) << "Makespan:" << max_finish->finish_relative_ms / 1000.0 << " s\n";
+    std::cout << std::left << std::setw(25) << "Mean Completion:" << mean << " ms\n";
+    std::cout << std::left << std::setw(25) << "Median Completion:" << median << " ms\n";
+    std::cout << std::left << std::setw(25) << "95th Percentile:" << p95 << " ms\n";
+    
+    std::cout << "\nThroughput Timeline (Fraction vs Wall-clock):\n";
+    std::sort(global_stats.begin(), global_stats.end(), [](const JobStats& a, const JobStats& b) {
+        return a.finish_relative_ms < b.finish_relative_ms;
+    });
+    
+    double total_time = max_finish->finish_relative_ms;
+    for (int i = 1; i <= 10; ++i) {
+        double threshold = (total_time / 10.0) * i;
+        auto it = std::upper_bound(global_stats.begin(), global_stats.end(), threshold, 
+            [](double val, const JobStats& s) {
+                return val < s.finish_relative_ms;
+            });
+        size_t count = std::distance(global_stats.begin(), it);
+        std::cout << "  T + " << std::setw(8) << std::fixed << std::setprecision(0) << threshold 
+                  << " ms: " << std::setw(4) << (100 * count / global_stats.size()) << "% complete\n";
+    }
+    std::cout << std::string(45, '=') << "\n\n";
 }
