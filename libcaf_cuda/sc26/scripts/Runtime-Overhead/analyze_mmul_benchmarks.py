@@ -122,7 +122,7 @@ for s, d, a, l, pct, sp in zip(
 plt.figure()
 
 plt.plot(sizes, driver_means, marker='o', label="CUDA (Driver)")
-plt.plot(sizes, actor_means, marker='s', label="CUDA Actors")
+plt.plot(sizes, actor_means, marker='s', label="Command-Runner")
 plt.plot(sizes, latency_means, marker='^', label="Actor-Facade")
 
 plt.xlabel("Matrix Size (N)")
