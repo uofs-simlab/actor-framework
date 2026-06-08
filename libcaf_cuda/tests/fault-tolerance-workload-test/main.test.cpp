@@ -91,6 +91,7 @@ struct ft_cg_state {
   // Config
   int n, nnz, max_iter;
   int iterations = 0;
+  int strikes = 0;
   T tol;
   int device_id, stream_id;
 
@@ -219,18 +220,22 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
         else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
         st.current_rho = runner.copy_to_host(st.y_tmp)[0];
 
-        // if (std::abs(st.old_rho - st.current_rho) < 1e-12) { 
-        //   code = CG_STAGNATION; 
-        //   break; 
-        // }
       }
 
       // Run error checks and prepare progress report
       bool converged = (st.current_rho <= threshold);
+
+      // Check for non-fatal errors that can be retried (Stagnation, Max Iter, Residual Factor)
+      if (code == CG_SUCCESS && !converged && std::abs(st.old_rho - st.current_rho) < 1e-12)
+        code = CG_STAGNATION;
+
       if (code == CG_SUCCESS) {
         if (!converged && st.iterations >= st.max_iter) code = CG_MAX_ITER;
-        // Residual decrease check: fail if residual didn't decrease significantly
-        // if (st.initial_rho > 0 && (st.current_rho / st.initial_rho) > 0.999) code = CG_RESIDUAL_FACTOR_FAIL;
+        // Residual decrease check: treat as non-fatal strike if residual didn't decrease significantly
+        if (st.initial_rho > 0 && (st.current_rho / st.initial_rho) > 0.999) code = CG_RESIDUAL_FACTOR_FAIL;
+        
+        // If we reached here with CG_SUCCESS, reset strikes as this was a productive batch
+        if (code == CG_SUCCESS) st.strikes = 0;
       }
 
       // Reset and launch NaN/Inf stability kernel from file
@@ -241,6 +246,15 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 
       int err_flag = runner.copy_to_host(st.d_err)[0];
       if (err_flag != 0 || std::isnan(st.current_rho) || std::isinf(st.current_rho)) code = CG_NAN_INF;
+
+      // Three strikes policy for non-fatal errors (Stagnation, Max Iterations, Residual Factor Failure)
+      bool is_fatal = (code == CG_NAN_INF || code == CG_BREAKDOWN);
+      if (code != CG_SUCCESS && !is_fatal) {
+        st.strikes++;
+        if (st.strikes < 3) {
+          code = CG_SUCCESS; // Reset code to SUCCESS to allow the supervisor to retry/suspend
+        }
+      }
 
       if (code != CG_SUCCESS) converged = false;
 
@@ -336,7 +350,8 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 int stream_id = suspended.stream_id;
                 s.available_streams.erase(stream_it);
 
-                int next_batch = std::max(1, suspended.last_batch_size / 2);
+                // Cap the minimum batch size to MAX_ITERATIONS / 8
+                int next_batch = std::max(MAX_ITERATIONS / 8, suspended.last_batch_size / 2);
                 self->println("[INFO] Resuming solver for: {} (Stream: {}, Batch: {})", 
                               suspended.path, stream_id, next_batch);
 
