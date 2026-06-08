@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <memory>
 #include <cstdint>
+#include <atomic>
 
 #include "caf/actorSOLVE/actorSOLVE.hpp"
 #include "sparse_utils.hpp"
@@ -182,11 +183,9 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
 // ============================================================
 // PREFETCHER ACTOR
 // ============================================================
-
-behavior prefetcher_actor(stateful_actor<bool>* self, MatrixTask task, int dev, actor supervisor) {
+behavior prefetcher_actor(stateful_actor<bool>* self, MatrixTask task, int dev, actor supervisor, int prefetch_stream) {
     auto runner = std::make_shared<command_runner<>>();
     auto& d = *task.data;
-    int prefetch_stream = 0; 
 
     auto rp = runner->transfer_memory(dev, prefetch_stream, create_in_arg(d.row_ptr));
     auto ci = runner->transfer_memory(dev, prefetch_stream, create_in_arg(d.col_indices));
@@ -276,6 +275,7 @@ struct supervisor_state {
     int num_gpus;
     int streams_per_gpu;
     bool initialized = false;
+    int prefetch_stream_counter = 0;
     actor parent;
 };
 
@@ -312,15 +312,16 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
             return;
 
         for (int i = 0; i < s.num_gpus; ++i) {
-            while (s.gpu_free_mem[i] > 2ULL * 1024 * 1024 * 1024 && !s.pending_queue.empty()) {
+            while (s.gpu_free_mem[i] > 3ULL * 1024 * 1024 * 1024 && !s.pending_queue.empty()) {
                 auto task = std::move(s.pending_queue.front());
                 s.pending_queue.pop_front();
                 
                 size_t cost = get_task_memory(task);
                 s.gpu_free_mem[i] -= cost; 
                 s.completed++;
-
-                self->spawn(prefetcher_actor, std::move(task), i, actor_cast<actor>(self));
+                
+                int p_stream = -1 - (s.prefetch_stream_counter++ % 5);
+                self->spawn(prefetcher_actor, std::move(task), i, actor_cast<actor>(self), p_stream);
             }
         }
     };
