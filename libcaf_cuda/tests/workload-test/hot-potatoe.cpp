@@ -312,7 +312,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
             return;
 
         for (int i = 0; i < s.num_gpus; ++i) {
-            while (s.gpu_free_mem[i] > 1024 * 1024 * 1024 && !s.pending_queue.empty()) {
+            while (s.gpu_free_mem[i] > 2ULL * 1024 * 1024 * 1024 && !s.pending_queue.empty()) {
                 auto task = std::move(s.pending_queue.front());
                 s.pending_queue.pop_front();
                 
