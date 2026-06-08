@@ -266,6 +266,18 @@ public:
                                     device_num, stream_id);
 
         dispatch_result(actor_cast<caf::actor>(this->current_sender()), {}, std::move(x), n, meta);
+      },
+
+      // Mode 4: mem_ptr variant (assumes data is already on the GPU)
+      [this](mem_ptr<int> rp, mem_ptr<int> ci, mem_ptr<T> val,
+             mem_ptr<T> b_in, mem_ptr<T> x_in,
+             matrix_format fmt, int n, int nnz,
+             T tol, int max_iter,
+             int device_num, int stream_id) {
+        auto [x, meta] = solve_core_mem_ptr(rp, ci, val, b_in, x_in,
+                                            fmt, n, nnz, tol, max_iter,
+                                            device_num, stream_id);
+        dispatch_result(actor_cast<caf::actor>(this->current_sender()), {}, std::move(x), n, meta);
       }
     };
   }
@@ -287,6 +299,118 @@ protected:
     auto A_values  = std::get<2>(res);
     auto b         = std::get<3>(res);
     auto x         = std::get<4>(res);
+
+    auto d_ptr = platform::create()->schedule(stream_id, device_num);
+
+    command_runner<out<T>> work_runner;
+    auto r     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto p     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto w     = work_runner.transfer_memory(device_num, stream_id, out<T>(n));
+    auto y_tmp = work_runner.transfer_memory(device_num, stream_id, create_out_arg_with_size<T>(1));
+
+    mem_ptr<char> spmv_workspace;
+    size_t ws_size = 0;
+
+    if (fmt == matrix_format::csr)
+      ws_size = d_ptr->spmv_csr_buffer_size(stream_id, n, n, nnz,
+                                            A_row_ptr, A_col_ind, A_values, x, w);
+    else if (fmt == matrix_format::csc)
+      ws_size = d_ptr->spmv_csc_buffer_size(stream_id, n, n, nnz,
+                                            A_row_ptr, A_col_ind, A_values, x, w);
+    else if (fmt == matrix_format::coo)
+      ws_size = d_ptr->spmv_coo_buffer_size(stream_id, n, n, nnz,
+                                            A_row_ptr, A_col_ind, A_values, x, w);
+
+    if (ws_size > 0) {
+      command_runner<out<char>> ws_runner;
+      spmv_workspace =
+        ws_runner.transfer_memory(device_num, stream_id,
+                                  out<char>(static_cast<int>(ws_size)));
+    }
+
+    auto execute_spmv = [&](mem_ptr<T> input_v, mem_ptr<T> output_v) {
+      switch (fmt) {
+        case matrix_format::csr:
+          d_ptr->spmv_csr(stream_id, n, n, nnz, T{1},
+                          A_row_ptr, A_col_ind, A_values,
+                          input_v, T{0}, output_v, spmv_workspace);
+          break;
+
+        case matrix_format::csc:
+          d_ptr->spmv_csc(stream_id, n, n, nnz, T{1},
+                          A_row_ptr, A_col_ind, A_values,
+                          input_v, T{0}, output_v, spmv_workspace);
+          break;
+
+        case matrix_format::coo:
+          d_ptr->spmv_coo(stream_id, n, n, nnz, T{1},
+                          A_row_ptr, A_col_ind, A_values,
+                          input_v, T{0}, output_v, spmv_workspace);
+          break;
+
+        default:
+          break;
+      }
+    };
+    auto execute_copy = [&](mem_ptr<T> src, mem_ptr<T> dst) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->dcopy(stream_id, n, src, dst); else d_ptr->scopy(stream_id, n, src, dst);
+    };
+    auto execute_axpy = [&](T alpha, mem_ptr<T> xv, mem_ptr<T> yv) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->daxpy(stream_id, n, alpha, xv, yv); else d_ptr->saxpy(stream_id, n, static_cast<float>(alpha), xv, yv);
+    };
+    auto execute_dot = [&](mem_ptr<T> xv, mem_ptr<T> yv, mem_ptr<T> rv) {
+      if constexpr (std::is_same_v<T, double>) d_ptr->ddot(stream_id, n, xv, yv, rv); else d_ptr->sdot(stream_id, n, xv, yv, rv);
+    };
+
+    execute_spmv(x, w);
+    execute_copy(b, r);
+    execute_axpy(T{-1}, w, r);
+    execute_dot(r, r, y_tmp);
+
+    T rho_val = runner.copy_to_host(y_tmp)[0];
+    T old_rho_val = T{0};
+    int iterations = 0;
+    T threshold = tol * tol;
+
+    while (rho_val > threshold && iterations < max_iter) {
+      iterations++;
+
+      if (iterations > 1) {
+        T beta_val = rho_val / old_rho_val;
+        execute_copy(r, w);
+        execute_axpy(beta_val, p, w);
+        execute_copy(w, p);
+      } else {
+       execute_copy(r, p);
+      }
+
+      execute_spmv(p, w);
+      execute_dot(p, w, y_tmp);
+
+      T alpha_val =
+        rho_val / runner.copy_to_host(y_tmp)[0];
+
+      execute_axpy(alpha_val, p, x);
+      execute_axpy(-alpha_val, w, r);
+
+      old_rho_val = rho_val;
+      execute_dot(r, r, y_tmp);
+      rho_val = runner.copy_to_host(y_tmp)[0];
+    }
+
+    return {x, solver_result_meta(device_num, stream_id, iterations, rho_val <= threshold)};
+  }
+
+  // New solve_core overload that accepts mem_ptr directly.
+  // This bypasses the initial transfer_memory call as the data is assumed
+  // to already be on the device and managed by the provided mem_ptrs.
+  virtual std::pair<mem_ptr<T>, solver_result_meta> solve_core_mem_ptr(mem_ptr<int> A_row_ptr, mem_ptr<int> A_col_ind, mem_ptr<T> A_values, mem_ptr<T> b,
+                                                                   mem_ptr<T> x,
+                                                                   matrix_format fmt, int n, int nnz,
+                                                                   T tol, int max_iter,
+                                                                   int device_num, int stream_id) {
+
+    command_runner<T> runner;
 
     auto d_ptr = platform::create()->schedule(stream_id, device_num);
 
