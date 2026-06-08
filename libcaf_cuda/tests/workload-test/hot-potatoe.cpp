@@ -168,7 +168,11 @@ behavior producer_actor(stateful_actor<producer_state>* self,
                 if (s.batches_sent < s.num_batches) {
                     auto delay = generate_random_interval(s.rng, s.mean_arrival_ms);
                     self->mail(work_tick_atom_v).delay(delay).send(self);
+                } else {
+                    self->quit();
                 }
+            } else {
+                self->quit();
             }
         }
     };
@@ -189,6 +193,8 @@ struct supervisor_state {
     
     size_t total_expected;
     size_t completed = 0;
+    int num_gpus;
+    int streams_per_gpu;
     bool initialized = false;
     actor parent;
 };
@@ -204,6 +210,14 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
                           actor parent) {
     self->state().total_expected = total_tasks;
     self->state().parent = std::move(parent);
+    self->state().num_gpus = num_gpus;
+    self->state().streams_per_gpu = streams_per_gpu;
+
+    if (total_tasks == 0) {
+        self->mail(worker_done_atom_v).send(self->state().parent);
+        self->quit();
+        return {};
+    }
 
     return {
         [=](add_work_atom, std::vector<MatrixTask>& batch) {
@@ -222,6 +236,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
                     if (!s.pending_queue.empty()) {
                         auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
                         s.pending_queue.pop_front();
+                        s.completed++;
                         self->mail(start_atom_v, dev, stream).send(w);
                     } else {
                         s.available_slots.push_back({dev, stream});
@@ -233,6 +248,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
                     auto slot = s.available_slots.front();
                     s.available_slots.pop_front();
                     auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
+                    s.completed++;
                     s.pending_queue.pop_front();
                     self->mail(start_atom_v, slot.device_id, slot.stream_id).send(w);
                 }
@@ -244,6 +260,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
             if (!s.pending_queue.empty()) {
                 auto next_worker = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
                 s.pending_queue.pop_front();
+                s.completed++;
                 self->mail(neighbor_atom_v, next_worker).send(actor_cast<actor>(self->current_sender()));
             } else {
                 self->mail(neighbor_atom_v, actor_cast<actor>(self)).send(actor_cast<actor>(self->current_sender()));
@@ -252,22 +269,18 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
 
         [=](start_atom, int dev, int stream) {
             auto& s = self->state();
-            s.completed++;
-
-            if (s.completed % 25 == 0 || s.completed == s.total_expected) {
-                self->println("[PROGRESS] Completed {}/{} tasks", s.completed, s.total_expected);
-            }
-
             if (!s.pending_queue.empty()) {
                 auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
                 s.pending_queue.pop_front();
+                s.completed++;
                 self->mail(start_atom_v, dev, stream).send(w);
             } else {
                 s.available_slots.push_back({dev, stream});
             }
 
-            if (s.completed >= s.total_expected) {
-                self->println("[INFO] All {} tasks completed. Shutting down.", s.total_expected);
+            size_t total_slots = static_cast<size_t>(s.num_gpus * s.streams_per_gpu);
+            if (s.completed == s.total_expected && s.available_slots.size() == total_slots) {
+                self->println("[INFO] All {} tasks finished. Shutting down.", s.total_expected);
                 self->mail(worker_done_atom_v).send(s.parent);
                 self->quit();
             }
@@ -292,6 +305,11 @@ void caf_main(actor_system& sys) {
         "/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd",
         CGS_SOLVER
     );
+
+    //  auto tasks = scan_for_matrices(
+    //     "/scratch/nqr159/matrix-collection/matrices/spd",
+    //     CGS_SOLVER
+    // );
 
     manager& mgr = manager::get();
     int gpus = mgr.get_num_devices();
