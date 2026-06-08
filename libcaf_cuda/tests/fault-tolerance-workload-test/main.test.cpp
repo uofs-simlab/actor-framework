@@ -282,6 +282,12 @@ struct suspended_task {
   caf::actor solver;
   std::string path;
   int last_batch_size;
+  int device_id;
+  int stream_id;
+};
+
+struct resource_slot {
+  int device_id;
   int stream_id;
 };
 
@@ -290,12 +296,12 @@ struct supervisor_state {
   std::deque<suspended_task> suspended_queue;
   std::vector<caf::actor> active_solvers;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> start_times;
-  std::unordered_map<std::string, int> task_streams;
+  std::unordered_map<std::string, resource_slot> task_resources;
   std::unordered_map<caf::actor, int> actor_batch_sizes;
-  std::deque<int> available_streams;
+  std::deque<resource_slot> available_slots;
   int max_active = 1; // Admission control limit to be mindful of GPU memory.
   int num_iterations = MAX_ITERATIONS / 2;
-  int device = 0;
+  int num_gpus = 0;
   int tasks_succeeded = 0;
   int tasks_failed = 0;
   std::chrono::steady_clock::time_point benchmark_start;
@@ -306,23 +312,28 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
     st.queue.insert(st.queue.end(), std::make_move_iterator(tasks.begin()), std::make_move_iterator(tasks.end()));
     st.max_active = initial_max_active;
     st.benchmark_start = start_time;
+    st.num_gpus = manager::get().get_num_devices();
 
-    // Initialize the pool with 32 distinct stream IDs
-    for (int i = 0; i < 32; ++i)
-        st.available_streams.push_back(i);
+    // Initialize the pool with streams interleaved across all available GPUs
+    for (int s = 0; s < 32; ++s) {
+      for (int g = 0; g < st.num_gpus; ++g) {
+        st.available_slots.push_back({g, s});
+      }
+    }
 
     auto spawn_next = [self]() {
         auto& s = self->state();
-        while (s.active_solvers.size() < static_cast<size_t>(s.max_active) && !s.available_streams.empty()) {
+        while (s.active_solvers.size() < static_cast<size_t>(s.max_active) && !s.available_slots.empty()) {
           if (!s.queue.empty()) {
             auto task = std::move(s.queue.front());
             s.queue.pop_front();
             std::string path = task.path;
 
-            int stream_id = s.available_streams.front();
-            s.available_streams.pop_front();
+            resource_slot slot = s.available_slots.front();
+            s.available_slots.pop_front();
 
-            self->println("[INFO] Starting solver for: {} (Stream: {})", path, stream_id);
+            self->println("[INFO] Starting solver for: {} (Device: {}, Stream: {})", 
+                          path, slot.device_id, slot.stream_id);
             auto solver = self->spawn(fault_tolerant_cg_actor<float>,
                                     path,
                                     task.data,
@@ -333,33 +344,35 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                                     create_in_out_arg(task.data->x_guess),
                                     (int)task.data->row_ptr.size() - 1,
                                     (int)task.data->values.size(),
-                                    1e-5f, MAX_ITERATIONS, s.device, stream_id, actor_cast<actor>(self));
+                                    1e-5f, MAX_ITERATIONS, slot.device_id, slot.stream_id, actor_cast<actor>(self));
 
             s.start_times[path] = std::chrono::steady_clock::now();
             s.active_solvers.push_back(solver);
-            s.task_streams[path] = stream_id;
+            s.task_resources[path] = slot;
             s.actor_batch_sizes[solver] = s.num_iterations;
             self->mail(start_atom_v).send(solver);
           } else {
             bool resumed = false;
             for (auto it = s.suspended_queue.begin(); it != s.suspended_queue.end(); ++it) {
-              auto stream_it = std::find(s.available_streams.begin(), s.available_streams.end(), it->stream_id);
-              if (stream_it != s.available_streams.end()) {
+              auto slot_it = std::find_if(s.available_slots.begin(), s.available_slots.end(), [&](const resource_slot& slot) {
+                return slot.device_id == it->device_id && slot.stream_id == it->stream_id;
+              });
+              if (slot_it != s.available_slots.end()) {
                 auto suspended = std::move(*it);
                 s.suspended_queue.erase(it);
-                int stream_id = suspended.stream_id;
-                s.available_streams.erase(stream_it);
+                resource_slot slot = *slot_it;
+                s.available_slots.erase(slot_it);
 
                 // Cap the minimum batch size to MAX_ITERATIONS / 8
                 int next_batch = std::max(MAX_ITERATIONS / 8, suspended.last_batch_size / 2);
-                self->println("[INFO] Resuming solver for: {} (Stream: {}, Batch: {})", 
-                              suspended.path, stream_id, next_batch);
+                self->println("[INFO] Resuming solver for: {} (Device: {}, Stream: {}, Batch: {})", 
+                              suspended.path, slot.device_id, slot.stream_id, next_batch);
 
                 // Resume on the same stream ID. No update_stream_atom_v needed.
                 self->mail(cg_next_step_atom_v, next_batch).send(suspended.solver);
 
                 s.active_solvers.push_back(suspended.solver);
-                s.task_streams[suspended.path] = stream_id;
+                s.task_resources[suspended.path] = slot;
                 s.actor_batch_sizes[suspended.solver] = next_batch;
                 resumed = true;
                 break;
@@ -404,11 +417,11 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 s.start_times.erase(task_name);
                 s.actor_batch_sizes.erase(solver);
 
-                // Reclaim the stream ID and put it back in the pool
-                auto stream_it = s.task_streams.find(task_name);
-                if (stream_it != s.task_streams.end()) {
-                    s.available_streams.push_back(stream_it->second);
-                    s.task_streams.erase(stream_it);
+                // Reclaim the device/stream slot and put it back in the pool
+                auto res_it = s.task_resources.find(task_name);
+                if (res_it != s.task_resources.end()) {
+                    s.available_slots.push_back(res_it->second);
+                    s.task_resources.erase(res_it);
                 }
 
                 spawn_next();
@@ -418,14 +431,13 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
 
                     auto benchmark_end = std::chrono::steady_clock::now();
                     std::chrono::duration<double> total_time = benchmark_end - s.benchmark_start;
-                    int num_gpus = manager::get().get_num_devices();
 
                     std::cout << "\n";
                     std::cout << "=====================================\n";
                     std::cout << "IRREGULAR WORKLOAD BENCHMARK (CAF)\n";
                     std::cout << "=====================================\n";
                     std::cout << "Seed:               " << WORKLOAD_SEED << "\n";
-                    std::cout << "GPUs:               " << num_gpus << "\n";
+                    std::cout << "GPUs:               " << s.num_gpus << "\n";
                     std::cout << "Admission Control:  " << s.max_active << "\n";
                     std::cout << "Tasks Succeeded:    " << s.tasks_succeeded << "\n";
                     std::cout << "Tasks Failed:       " << s.tasks_failed << "\n";
@@ -443,14 +455,15 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 if (it != s.active_solvers.end())
                     s.active_solvers.erase(it);
 
-                int stream_id = s.task_streams[task_name];
-                s.available_streams.push_back(stream_id);
-                s.task_streams.erase(task_name);
+                resource_slot slot = s.task_resources[task_name];
+                s.available_slots.push_back(slot);
+                s.task_resources.erase(task_name);
 
                 int last_batch = s.actor_batch_sizes[solver];
-                s.suspended_queue.push_back({solver, task_name, last_batch, stream_id});
+                s.suspended_queue.push_back({solver, task_name, last_batch, slot.device_id, slot.stream_id});
 
-                self->println("[INFO] Suspending solver for: {} (Reclaimed Stream: {})", task_name, stream_id);
+                self->println("[INFO] Suspending solver for: {} (Reclaimed Device: {}, Stream: {})", 
+                              task_name, slot.device_id, slot.stream_id);
 
                 spawn_next();
             }
@@ -484,7 +497,7 @@ void caf_main(actor_system& sys) {
         }
 
         auto benchmark_start = std::chrono::steady_clock::now();
-        int admission_control_limit = 4; // The desired admission control limit
+        int admission_control_limit = 4 * num_gpus; // 4 concurrent tasks per GPU
 
         sys.spawn(supervisor_actor, std::move(tasks_vec), admission_control_limit, benchmark_start);
         sys.await_all_actors_done();
