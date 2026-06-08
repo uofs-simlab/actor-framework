@@ -19,10 +19,10 @@ int main(int argc, char** argv)
 {
     constexpr uint32_t WORKLOAD_SEED = 42;
     int num_streams = 4;
-    if (argc > 1) num_streams = std::max(1, std::atoi(argv[1]));
+    // if (argc > 1) num_streams = std::max(num_streams, std::atoi(argv[1]));
 
     std::cout << "[INFO] Loading matrices...\n";
-    std::vector<MatrixTask> matrix_pool = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
+    std::vector<MatrixTask> matrix_pool = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/mixed", CGS_SOLVER);
 
     if (matrix_pool.empty()) {
         std::cerr << "No matrices found.\n";

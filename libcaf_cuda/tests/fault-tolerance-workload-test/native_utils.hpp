@@ -7,7 +7,10 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 #include "sparse_utils.hpp"
+
+constexpr int MAX_ITERATIONS = 16000;
 
 // ============================================================
 // Error Checking Macros
@@ -89,4 +92,4 @@ private:
 
 int solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream);
 int solve_pcg_jacobi_async(cublasHandle_t cublas, cusparseHandle_t cusparse, const MatrixTask& task, cudaStream_t stream);
-void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>& queue);
+void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>& queue, std::atomic<int>& succeeded, std::atomic<int>& failed);
