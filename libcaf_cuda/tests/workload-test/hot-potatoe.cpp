@@ -28,11 +28,13 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_ATOM(workload_test, request_work_atom)
     CAF_ADD_ATOM(workload_test, worker_done_atom)
     CAF_ADD_ATOM(workload_test, work_tick_atom)
+    CAF_ADD_ATOM(workload_test, add_work_atom)
 
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
     CAF_ADD_TYPE_ID(workload_test, (std::vector<MatrixTask>))
     CAF_ADD_TYPE_ID(workload_test, (std::shared_ptr<MatrixData>))
+    CAF_ADD_TYPE_ID(workload_test, (std::deque<MatrixTask>))
 
 CAF_END_TYPE_ID_BLOCK(workload_test)
 
@@ -118,14 +120,64 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
 }
 
 // ============================================================
+// PRODUCER ACTOR
+// ============================================================
+
+struct producer_state {
+    std::vector<MatrixTask> matrix_pool;
+    int num_batches;
+    int batch_size;
+    double mean_arrival_ms;
+    actor supervisor;
+    std::mt19937 rng;
+    int batches_sent = 0;
+};
+
+behavior producer_actor(stateful_actor<producer_state>* self,
+                       std::vector<MatrixTask> pool,
+                       int num_batches, int batch_size, 
+                       double mean_ms, actor supervisor) {
+    auto& st = self->state();
+    st.matrix_pool = std::move(pool);
+    st.num_batches = num_batches;
+    st.batch_size = batch_size;
+    st.mean_arrival_ms = mean_ms;
+    st.supervisor = std::move(supervisor);
+    st.rng.seed(42);
+
+    return {
+        [=](work_tick_atom) {
+            auto& s = self->state();
+            if (s.batches_sent < s.num_batches) {
+                auto batch = generate_batch(s.matrix_pool, s.rng, s.batch_size);
+                self->send(s.supervisor, add_work_atom_v, std::move(batch));
+                s.batches_sent++;
+
+                if (s.batches_sent < s.num_batches) {
+                    auto delay = generate_random_interval(s.rng, s.mean_arrival_ms);
+                    self->delayed_send(self, delay, work_tick_atom_v);
+                }
+            }
+        }
+    };
+}
+
+// ============================================================
 // SUPERVISOR STATE
 // ============================================================
 
+struct resource_slot {
+    int device_id;
+    int stream_id;
+};
+
 struct supervisor_state {
-    std::vector<MatrixTask> batch;
-    size_t next_task_idx = 0;
-    size_t returned_potatoes = 0;
-    size_t active_slots = 0;
+    std::deque<MatrixTask> pending_queue;
+    std::deque<resource_slot> available_slots;
+    
+    size_t total_expected;
+    size_t completed = 0;
+    bool initialized = false;
 };
 
 // ============================================================
@@ -133,43 +185,74 @@ struct supervisor_state {
 // ============================================================
 
 behavior supervisor_actor(stateful_actor<supervisor_state>* self,
-                          std::vector<MatrixTask> batch,
+                          size_t total_tasks,
                           int num_gpus,
                           int streams_per_gpu) {
-    auto& st = self->state();
-    st.batch = std::move(batch);
-
-    size_t total_slots = static_cast<size_t>(num_gpus * streams_per_gpu);
-
-    // Dynamically spawn only the first set of workers to fill the GPU slots
-    for (size_t i = 0; i < total_slots; ++i) {
-        if (st.next_task_idx < st.batch.size()) {
-            int dev = static_cast<int>(i / streams_per_gpu);
-            int stream = static_cast<int>(i % streams_per_gpu);
-            auto w = self->spawn(worker_actor, st.batch[st.next_task_idx++], actor_cast<actor>(self));
-            self->send(w, start_atom_v, dev, stream);
-            st.active_slots++;
-        }
-    }
+    self->state().total_expected = total_tasks;
 
     return {
+        [=](add_work_atom, std::vector<MatrixTask>& batch) {
+            auto& s = self->state();
+            for (auto& t : batch)
+                s.pending_queue.push_back(std::move(t));
+
+            // Bootstrapping: fill GPU slots with the first available tasks
+            if (!s.initialized) {
+                s.initialized = true;
+                size_t total_slots = static_cast<size_t>(num_gpus * streams_per_gpu);
+                for (size_t i = 0; i < total_slots; ++i) {
+                    int dev = static_cast<int>(i / streams_per_gpu);
+                    int stream = static_cast<int>(i % streams_per_gpu);
+                    
+                    if (!s.pending_queue.empty()) {
+                        auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
+                        s.pending_queue.pop_front();
+                        self->send(w, start_atom_v, dev, stream);
+                    } else {
+                        s.available_slots.push_back({dev, stream});
+                    }
+                }
+            } else {
+                // New work arrived, check if we have idle GPU slots to fill
+                while (!s.available_slots.empty() && !s.pending_queue.empty()) {
+                    auto slot = s.available_slots.front();
+                    s.available_slots.pop_front();
+                    auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
+                    s.pending_queue.pop_front();
+                    self->send(w, start_atom_v, slot.device_id, slot.stream_id);
+                }
+            }
+        },
+
         [=](started_atom) {
             auto& s = self->state();
-            // Master Decision: Assign the next available task as a neighbor to the worker that just started
-            if (s.next_task_idx < s.batch.size()) {
-                auto next_worker = self->spawn(worker_actor, s.batch[s.next_task_idx++], actor_cast<actor>(self));
+            if (!s.pending_queue.empty()) {
+                auto next_worker = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
+                s.pending_queue.pop_front();
                 self->send(self->current_sender(), neighbor_atom_v, next_worker);
             } else {
-                // No more tasks to assign: the Supervisor becomes the neighbor (to reclaim resources)
                 self->send(self->current_sender(), neighbor_atom_v, actor_cast<actor>(self));
             }
         },
 
-        [=](start_atom, int, int) {
+        [=](start_atom, int dev, int stream) {
             auto& s = self->state();
-            // Potato returned! One processing chain has finished.
-            if (++s.returned_potatoes == s.active_slots) {
-                self->println("[INFO] All {} GPU streams returned. Shutting down.", s.active_slots);
+            s.completed++;
+
+            if (s.completed % 25 == 0 || s.completed == s.total_expected) {
+                self->println("[PROGRESS] Completed {}/{} tasks", s.completed, s.total_expected);
+            }
+
+            if (!s.pending_queue.empty()) {
+                auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
+                s.pending_queue.pop_front();
+                self->send(w, start_atom_v, dev, stream);
+            } else {
+                s.available_slots.push_back({dev, stream});
+            }
+
+            if (s.completed >= s.total_expected) {
+                self->println("[INFO] All {} tasks completed. Shutting down.", s.total_expected);
                 self->quit();
             }
         }
@@ -187,24 +270,28 @@ void caf_main(actor_system& sys) {
     int streams = 8;
     int batches = 25;
     int batch_size = 100;
+    double mean_arrival = 1000.0;
 
     auto tasks = scan_for_matrices(
-        "/scratch/nqr159/matrix-collection",
+        "/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/spd",
         CGS_SOLVER
     );
-
-    auto batch = generate_batch(tasks, std::mt19937{42}, batch_size);
 
     manager& mgr = manager::get();
     int gpus = mgr.get_num_devices();
 
-    sys.spawn(supervisor_actor,
-              batch,
+    auto supervisor = sys.spawn(supervisor_actor,
+              static_cast<size_t>(batches * batch_size),
               gpus,
               streams);
 
-    sys.await_all_actors_done();
+    auto producer = sys.spawn(producer_actor,
+                             std::move(tasks), batches, batch_size, mean_arrival,
+                             supervisor);
 
+    anon_send(producer, work_tick_atom_v);
+
+    sys.await_all_actors_done();
     manager::shutdown();
 }
 
