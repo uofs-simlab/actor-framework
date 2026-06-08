@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <cstdint>
 
 #include "caf/actorSOLVE/actorSOLVE.hpp"
 #include "sparse_utils.hpp"
@@ -28,6 +29,18 @@ bool inspect(Inspector& f, SolverType& x) {
     return false;
 }
 
+struct PrefetchedTask {
+    MatrixTask task;
+    int device_id;
+    size_t memory_usage;
+    mem_ptr<int32_t> row_ptr;
+    mem_ptr<int32_t> col_indices;
+    mem_ptr<float> values;
+    mem_ptr<float> b;
+    mem_ptr<float> x_guess;
+    bool is_valid = false;
+};
+
 // ============================================================
 // TYPE BLOCK (unchanged + extended)
 // ============================================================
@@ -41,18 +54,23 @@ CAF_BEGIN_TYPE_ID_BLOCK(workload_test, caf::id_block::cuda::end)
     CAF_ADD_ATOM(workload_test, worker_done_atom)
     CAF_ADD_ATOM(workload_test, work_tick_atom)
     CAF_ADD_ATOM(workload_test, add_work_atom)
+    CAF_ADD_ATOM(workload_test, memory_report_atom)
+    CAF_ADD_ATOM(workload_test, prefetch_done_atom)
+    CAF_ADD_ATOM(workload_test, shutdown_atom)
 
     CAF_ADD_TYPE_ID(workload_test, (SolverType))
     CAF_ADD_TYPE_ID(workload_test, (MatrixTask))
     CAF_ADD_TYPE_ID(workload_test, (std::vector<MatrixTask>))
     CAF_ADD_TYPE_ID(workload_test, (std::shared_ptr<MatrixData>))
     CAF_ADD_TYPE_ID(workload_test, (std::deque<MatrixTask>))
+    CAF_ADD_TYPE_ID(workload_test, (PrefetchedTask))
 
 CAF_END_TYPE_ID_BLOCK(workload_test)
 
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(MatrixTask)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<MatrixTask>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<MatrixData>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(PrefetchedTask)
 
 // ============================================================
 // TASK ACTOR STATE
@@ -66,21 +84,30 @@ struct worker_state {
     int device_id;
     int stream_id;
 
-    caf::actor cg_facade;
-    
+    actor cg_facade;
+    PrefetchedTask pref_task;
     bool solve_done = false;
     bool neighbor_received = false;
+    size_t memory_usage = 0;
 };
 
 // ============================================================
 // TASK ACTOR
 // ============================================================
 
+size_t get_task_memory(const MatrixTask& t) {
+    if (!t.data) return 0;
+    auto& d = *t.data;
+    return (d.row_ptr.size() + d.col_indices.size()) * sizeof(int32_t) 
+           + (d.values.size() + d.b.size() + d.x_guess.size()) * sizeof(float);
+}
+
 behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor supervisor) {
     auto& st = self->state();
     st.task = std::move(t);
     st.supervisor = supervisor;
     st.cg_facade = self->spawn<sparse_cg_facade<float>, linked>(0);
+    st.memory_usage = get_task_memory(st.task);
     
     return {
         [=](start_atom, int dev, int stream) {
@@ -88,25 +115,44 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
             s.device_id = dev;
             s.stream_id = stream;
 
-            // Alert master that we have begun work
-            self->mail(started_atom_v).send(s.supervisor);
+            // Alert master that we have begun work so it can find us a neighbor
+            self->mail(started_atom_v, dev).send(s.supervisor);
 
             // Execute solver
-            auto& d = *s.task.data;
-            self->mail(
-                create_in_arg(d.row_ptr),
-                create_in_arg(d.col_indices),
-                create_in_arg(d.values),
-                create_in_arg(d.b),
-                create_in_out_arg(d.x_guess),
-                matrix_format::csr,
-                (int)d.row_ptr.size() - 1,
-                (int)d.values.size(),
-                1e-5f,
-                2000,
-                dev,
-                stream
-            ).send(s.cg_facade);
+            if (s.pref_task.is_valid) {
+                auto& pt = s.pref_task;
+                self->mail(
+                    pt.row_ptr,
+                    pt.col_indices,
+                    pt.values,
+                    pt.b,
+                    pt.x_guess,
+                    matrix_format::csr,
+                    (int)pt.task.data->row_ptr.size() - 1,
+                    (int)pt.task.data->values.size(),
+                    1e-5f, 2000, dev, stream
+                ).send(s.cg_facade);
+            } else {
+                auto& d = *s.task.data;
+                self->mail(
+                    create_in_arg(d.row_ptr),
+                    create_in_arg(d.col_indices),
+                    create_in_arg(d.values),
+                    create_in_arg(d.b),
+                    create_in_out_arg(d.x_guess),
+                    matrix_format::csr,
+                    (int)d.row_ptr.size() - 1,
+                    (int)d.values.size(),
+                    1e-5f, 2000, dev, stream
+                ).send(s.cg_facade);
+            }
+        },
+
+        [=](PrefetchedTask& pt) {
+            auto& s = self->state();
+            s.pref_task = std::move(pt);
+            s.task = s.pref_task.task;
+            s.memory_usage = s.pref_task.memory_usage;
         },
 
         [=](neighbor_atom, actor n) {
@@ -116,6 +162,7 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
 
             if (s.solve_done && s.neighbor) {
                 self->mail(start_atom_v, s.device_id, s.stream_id).send(s.neighbor);
+                self->mail(memory_report_atom_v, s.device_id, static_cast<int64_t>(s.memory_usage)).send(s.supervisor);
                 self->quit();
             }
         },
@@ -125,8 +172,39 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
             s.solve_done = true;
             if (s.neighbor_received && s.neighbor) {
                 self->mail(start_atom_v, s.device_id, s.stream_id).send(s.neighbor);
+                self->mail(memory_report_atom_v, s.device_id, static_cast<int64_t>(s.memory_usage)).send(s.supervisor);
                 self->quit();
             }
+        }
+    };
+}
+
+// ============================================================
+// PREFETCHER ACTOR
+// ============================================================
+
+behavior prefetcher_actor(stateful_actor<bool>* self, MatrixTask task, int dev, actor supervisor) {
+    auto runner = std::make_shared<command_runner<>>();
+    auto& d = *task.data;
+    int prefetch_stream = 0; 
+
+    auto rp = runner->transfer_memory(dev, prefetch_stream, create_in_arg(d.row_ptr));
+    auto ci = runner->transfer_memory(dev, prefetch_stream, create_in_arg(d.col_indices));
+    auto val = runner->transfer_memory(dev, prefetch_stream, create_in_arg(d.values));
+    auto b = runner->transfer_memory(dev, prefetch_stream, create_in_arg(d.b));
+    auto x = runner->transfer_memory(dev, prefetch_stream, create_in_out_arg(d.x_guess));
+
+    size_t mem = get_task_memory(task);
+    PrefetchedTask pt{std::move(task), dev, mem, rp, ci, val, b, x, true};
+
+    runner->add_callback(prefetch_stream, dev, [pt_moved = std::move(pt), supervisor, self_handle = actor_cast<actor>(self)]() mutable {
+        anon_mail(prefetch_done_atom_v, std::move(pt_moved)).send(supervisor);
+        anon_mail(shutdown_atom_v).send(self_handle);
+    });
+
+    return {
+        [=](shutdown_atom) {
+            self->quit();
         }
     };
 }
@@ -190,6 +268,8 @@ struct resource_slot {
 struct supervisor_state {
     std::deque<MatrixTask> pending_queue;
     std::deque<resource_slot> available_slots;
+    std::vector<std::deque<actor>> warm_workers;
+    std::vector<size_t> gpu_free_mem;
     
     size_t total_expected;
     size_t completed = 0;
@@ -212,6 +292,12 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
     self->state().parent = std::move(parent);
     self->state().num_gpus = num_gpus;
     self->state().streams_per_gpu = streams_per_gpu;
+    self->state().warm_workers.resize(num_gpus);
+
+    for (int i = 0; i < num_gpus; ++i) {
+        auto dev = manager::get().find_device(i);
+        self->state().gpu_free_mem.push_back(dev ? dev->total_memory_bytes() : 0);
+    }
 
     if (total_tasks == 0) {
         self->mail(worker_done_atom_v).send(self->state().parent);
@@ -219,13 +305,33 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
         return {};
     }
 
+    auto check_prefetch = [=]() {
+        auto& s = self->state();
+        // Only prefetch if we don't have idle slots (saturated)
+        if (!s.available_slots.empty())
+            return;
+
+        for (int i = 0; i < s.num_gpus; ++i) {
+            while (s.gpu_free_mem[i] > 1024 * 1024 * 1024 && !s.pending_queue.empty()) {
+                auto task = std::move(s.pending_queue.front());
+                s.pending_queue.pop_front();
+                
+                size_t cost = get_task_memory(task);
+                s.gpu_free_mem[i] -= cost; 
+                s.completed++;
+
+                self->spawn(prefetcher_actor, std::move(task), i, actor_cast<actor>(self));
+            }
+        }
+    };
+
     return {
         [=](add_work_atom, std::vector<MatrixTask>& batch) {
             auto& s = self->state();
             for (auto& t : batch)
                 s.pending_queue.push_back(std::move(t));
 
-            // Bootstrapping: fill GPU slots with the first available tasks
+            // Bootstrapping: fill available GPU slots first (cold start)
             if (!s.initialized) {
                 s.initialized = true;
                 size_t total_slots = static_cast<size_t>(num_gpus * streams_per_gpu);
@@ -234,45 +340,69 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
                     int stream = static_cast<int>(i % streams_per_gpu);
                     
                     if (!s.pending_queue.empty()) {
-                        auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
+                        auto t = std::move(s.pending_queue.front());
                         s.pending_queue.pop_front();
+                        s.gpu_free_mem[dev] -= get_task_memory(t);
                         s.completed++;
+
+                        auto w = self->spawn(worker_actor, std::move(t), actor_cast<actor>(self));
                         self->mail(start_atom_v, dev, stream).send(w);
                     } else {
                         s.available_slots.push_back({dev, stream});
                     }
                 }
+                check_prefetch();
             } else {
                 // New work arrived, check if we have idle GPU slots to fill
                 while (!s.available_slots.empty() && !s.pending_queue.empty()) {
                     auto slot = s.available_slots.front();
                     s.available_slots.pop_front();
-                    auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
-                    s.completed++;
+                    
+                    auto t = std::move(s.pending_queue.front());
                     s.pending_queue.pop_front();
+                    s.gpu_free_mem[slot.device_id] -= get_task_memory(t);
+                    s.completed++;
+
+                    auto w = self->spawn(worker_actor, std::move(t), actor_cast<actor>(self));
                     self->mail(start_atom_v, slot.device_id, slot.stream_id).send(w);
                 }
+                check_prefetch();
             }
         },
 
-        [=](started_atom) {
+        [=](started_atom, int dev) {
             auto& s = self->state();
-            if (!s.pending_queue.empty()) {
-                auto next_worker = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
+            if (!s.warm_workers[dev].empty()) {
+                auto next_worker = s.warm_workers[dev].front();
+                s.warm_workers[dev].pop_front();
+                self->mail(neighbor_atom_v, next_worker).send(actor_cast<actor>(self->current_sender()));
+            } else if (!s.pending_queue.empty()) {
+                auto t = std::move(s.pending_queue.front());
                 s.pending_queue.pop_front();
+                s.gpu_free_mem[dev] -= get_task_memory(t);
                 s.completed++;
+
+                auto next_worker = self->spawn(worker_actor, std::move(t), actor_cast<actor>(self));
                 self->mail(neighbor_atom_v, next_worker).send(actor_cast<actor>(self->current_sender()));
             } else {
                 self->mail(neighbor_atom_v, actor_cast<actor>(self)).send(actor_cast<actor>(self->current_sender()));
             }
+            check_prefetch();
         },
 
         [=](start_atom, int dev, int stream) {
             auto& s = self->state();
-            if (!s.pending_queue.empty()) {
-                auto w = self->spawn(worker_actor, std::move(s.pending_queue.front()), actor_cast<actor>(self));
+            if (!s.warm_workers[dev].empty()) {
+                auto w = s.warm_workers[dev].front();
+                s.warm_workers[dev].pop_front();
+                self->mail(start_atom_v, dev, stream).send(w);
+            } else if (!s.pending_queue.empty()) {
+                auto t = std::move(s.pending_queue.front());
                 s.pending_queue.pop_front();
+                s.gpu_free_mem[dev] -= get_task_memory(t);
                 s.completed++;
+
+                auto w = self->spawn(worker_actor, std::move(t), actor_cast<actor>(self));
                 self->mail(start_atom_v, dev, stream).send(w);
             } else {
                 s.available_slots.push_back({dev, stream});
@@ -284,6 +414,24 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
                 self->mail(worker_done_atom_v).send(s.parent);
                 self->quit();
             }
+            check_prefetch();
+        },
+
+        [=](memory_report_atom, int dev, int64_t delta) {
+            auto& s = self->state();
+            if (dev >= 0 && dev < static_cast<int>(s.gpu_free_mem.size())) {
+                s.gpu_free_mem[dev] += static_cast<size_t>(delta);
+            }
+            check_prefetch();
+        },
+
+        [=](prefetch_done_atom, PrefetchedTask& pt) {
+            auto& s = self->state();
+            int dev = pt.device_id;
+            // Create the actor but don't solve yet
+            auto w = self->spawn(worker_actor, MatrixTask{}, actor_cast<actor>(self));
+            self->mail(std::move(pt)).send(w);
+            s.warm_workers[dev].push_back(w);
         }
     };
 }
