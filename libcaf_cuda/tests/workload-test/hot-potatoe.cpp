@@ -41,18 +41,6 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<MatrixTask>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<MatrixData>)
 
 // ============================================================
-// PARTITION STATE (supervisor owns)
-// ============================================================
-
-struct Partition {
-    size_t begin;
-    size_t end;
-
-    size_t active_tokens = 0;
-    bool completed = false;
-};
-
-// ============================================================
 // TASK ACTOR STATE
 // ============================================================
 
@@ -111,10 +99,9 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
             auto& s = self->state();
             s.neighbor = n;
             s.neighbor_received = true;
-            
-            if (s.solve_done) {
-                if (s.neighbor)
-                    self->send(s.neighbor, start_atom_v, s.device_id, s.stream_id);
+
+            if (s.solve_done && s.neighbor) {
+                self->send(s.neighbor, start_atom_v, s.device_id, s.stream_id);
                 self->quit();
             }
         },
@@ -122,11 +109,8 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
         [=](uint32_t, int, std::vector<float>&, solver_result_meta) {
             auto& s = self->state();
             s.solve_done = true;
-            self->send(s.supervisor, worker_done_atom_v);
-
-            if (s.neighbor_received) {
-                if (s.neighbor)
-                    self->send(s.neighbor, start_atom_v, s.device_id, s.stream_id);
+            if (s.neighbor_received && s.neighbor) {
+                self->send(s.neighbor, start_atom_v, s.device_id, s.stream_id);
                 self->quit();
             }
         }
@@ -139,11 +123,9 @@ behavior worker_actor(stateful_actor<worker_state>* self, MatrixTask t, actor su
 
 struct supervisor_state {
     std::vector<MatrixTask> batch;
-
     size_t next_task_idx = 0;
-    size_t completed = 0;
-
-    int num_streams = 0;
+    size_t returned_potatoes = 0;
+    size_t active_slots = 0;
 };
 
 // ============================================================
@@ -157,15 +139,16 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
     auto& st = self->state();
     st.batch = std::move(batch);
 
-    size_t num_parts = num_gpus * streams_per_gpu;
+    size_t total_slots = static_cast<size_t>(num_gpus * streams_per_gpu);
 
-    // Decision Logic: Initially create and start one worker per stream slot
-    for (size_t i = 0; i < num_parts; ++i) {
+    // Dynamically spawn only the first set of workers to fill the GPU slots
+    for (size_t i = 0; i < total_slots; ++i) {
         if (st.next_task_idx < st.batch.size()) {
-            int dev = i / streams_per_gpu;
-            int stream = i % streams_per_gpu;
+            int dev = static_cast<int>(i / streams_per_gpu);
+            int stream = static_cast<int>(i % streams_per_gpu);
             auto w = self->spawn(worker_actor, st.batch[st.next_task_idx++], actor_cast<actor>(self));
             self->send(w, start_atom_v, dev, stream);
+            st.active_slots++;
         }
     }
 
@@ -177,23 +160,16 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self,
                 auto next_worker = self->spawn(worker_actor, s.batch[s.next_task_idx++], actor_cast<actor>(self));
                 self->send(self->current_sender(), neighbor_atom_v, next_worker);
             } else {
-                // No more tasks to assign
-                self->send(self->current_sender(), neighbor_atom_v, actor{});
+                // No more tasks to assign: the Supervisor becomes the neighbor (to reclaim resources)
+                self->send(self->current_sender(), neighbor_atom_v, actor_cast<actor>(self));
             }
         },
 
-        [=](worker_done_atom) {
+        [=](start_atom, int, int) {
             auto& s = self->state();
-            s.completed++;
-            
-            if (s.completed % 10 == 0 || s.completed == s.batch.size()) {
-                std::cout << "[PROGRESS] Completed " 
-                          << s.completed << "/" 
-                          << s.batch.size() << " tasks\n";
-            }
-
-            if (s.completed >= s.batch.size()) {
-                std::cout << "[INFO] All tasks completed. Shutting down supervisor.\n";
+            // Potato returned! One processing chain has finished.
+            if (++s.returned_potatoes == s.active_slots) {
+                self->println("[INFO] All {} GPU streams returned. Shutting down.", s.active_slots);
                 self->quit();
             }
         }
