@@ -32,6 +32,8 @@ include_directories(
 # 5) Declare your executables
 add_executable(test main.test.cpp)
 target_compile_definitions(test PRIVATE CAF_ENABLE_LOGGING)
+add_executable(scheduler_test scheduler_integration_test.cpp)
+target_compile_definitions(scheduler_test PRIVATE CAF_ENABLE_LOGGING)
 
 add_executable(work-stealing work-stealing.cpp)
 target_compile_definitions(work-stealing PRIVATE CAF_ENABLE_LOGGING)
@@ -40,6 +42,18 @@ add_executable(cuda-baseline cuda-baseline.cpp)
 target_link_libraries(cuda-baseline PRIVATE CUDA::cuda_driver)
 
 target_link_libraries(test
+  PRIVATE
+    "${CAF_BUILD}/libcaf_core/libcaf_core.so"
+    "${CAF_BUILD}/libcaf_io/libcaf_io.so"
+    "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
+    CUDA::nvrtc 
+    CUDA::cublas
+    CUDA::cusparse
+)
+
+
+
+target_link_libraries(scheduler_test
   PRIVATE
     "${CAF_BUILD}/libcaf_core/libcaf_core.so"
     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
