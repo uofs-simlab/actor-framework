@@ -1,119 +1,116 @@
 #include "caf/cuda/control-layer/all-control-layer.hpp"
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
-#include "caf/cuda/control-layer/green_light_behavior.hpp"
-#include "caf/cuda/control-layer/red_light_behavior.hpp"
-#include "caf/cuda/control-layer/core_usage_behavior.hpp"
-#include "caf/cuda/control-layer/single_usage_behavior.hpp"
-#include "caf/cuda/control-layer/multilevel_usage_behavior.hpp"
-#include "caf/cuda/control-layer/pressure_scheduler.hpp"
-#include "caf/cuda/control-layer/kernel_graph.hpp"
-#include <string>
 #include <iostream>
 
-/*
- * This class is meant to handle actor GPU scheduling via s/r/r IPC
- * it has nothing to do with the scheduler class, that is kernel layer
- */
 namespace caf::cuda {
 
-caf::behavior scheduler_actor(caf::stateful_actor<scheduler_actor_state>* self, int device_number,bool multi_gpu) {
-    auto& state = self->state();
+scheduler_actor::scheduler_actor(caf::actor_config& cfg, 
+                                 int device_number, int num_streams, 
+                                 int stream_depth, bool multi_gpu)
+    : caf::event_based_actor(cfg),
+      device_number_(device_number),
+      num_streams_(num_streams),
+      stream_depth_(stream_depth),
+      multi_gpu_(multi_gpu) {
+    // Constructor logic if needed
+}
 
-    // add self reference
-    state.self = self;
-
-    // set device number
-    state.device_number = device_number;
-
-    //check if multiple gpus
-    state.multiple_gpus = multi_gpu;
-
-   // default behavior
-    state.table = std::make_unique<behavior_table>(state);
-    state.current_behavior = state.table -> get(behavior_token("single_usage"));
-    state.current_behavior->on_enter();
-
-
-
+caf::behavior scheduler_actor::make_behavior() {
     return {
-        [&](const token_ptr& tok) {
-            // std::cout << "Received token\n";
-            state.current_behavior->receive(tok);
+        [this](const token_ptr& tok) {
+            on_receive(tok);
         },
-        
-   [&state](const caf::cuda::behavior_token_ptr& tok) -> bool {
-    auto* next = state.table -> get(*tok);
-    if (next) {
-        if (next != state.current_behavior) {
-            state.current_behavior->on_exit();   // cleanup current behavior
-            state.current_behavior = next;       // swap behavior
-            state.current_behavior->on_enter();  // init new behavior
-            std::cout << "[INFO] Behavior changed to: " << state.current_behavior->name() << "\n";
-	    return true; // behavior changed
-        } else {
-            std::cout << "[INFO] Behavior already active: " << state.current_behavior->name() << "\n";
-            return false; // behavior was already current
+        [this](std::vector<token_ptr> tokens) {
+            on_receive_batch(std::move(tokens));
+        },
+        [this](int val, int mem, int time, int dep) {
+            on_reclaim(val, mem, time, dep);
+        },
+        [this](std::vector<caf::actor> neighbors) {
+            on_set_neighbors(std::move(neighbors));
+        },
+        [this](int requesting_device) -> std::vector<token_ptr> {
+            return on_steal_request(requesting_device);
+        },
+        [this](std::string word) {
+             std::cout << "Scheduler " << device_number_ << " received: " << word << "\n";
         }
-    } else {
-        std::cout << "[WARN] No behavior found for token: " << tok->name() << "\n";
-        return false; // no change
-    }
-	}
-	,
-        [&](std::vector<token_ptr> tokens) {
-            for (size_t i = 0; i < tokens.size(); ++i) {
-                state.current_behavior->receive(tokens[i]);
-            }
-        },
-
-	//can send the scheduler a message if you want 
-	//it is more than happy to print it out for you 
-        [=](std::string word) {
-             std::cout << "Received message " << word << "\n";
-        },
-	
-	//message handler for reclaim
-	[&](int value, int memory,int runtime,int dependency) {	
-
-                //std::cout << "Received reclaim request\n";
-		state.current_behavior->reclaim(value,memory,runtime,dependency);
-	},
-
-
-	//message handler for reclaim
-	[&](ack payload) {	
-		state.current_behavior->reclaim(payload);
-	},
-
-
-
-
-	//handler sent to set the scheduler actors 
-	//do not send a message more than once
-	//or else undefined behavior
-	[&](std::vector<caf::actor> s) {
-		state.schedulers = s;
-	},
-
-
-
-	//message handler for a request for work from another scheduler actor
-	[&](int device_number) {
-		state.current_behavior -> handle_load_balance_request(device_number);
-	},
-
-	//message handler for work being transfered over from another scheduler actor
-	[&](std::vector<kernel_graph> work_graphs) {
-		state.current_behavior -> receive_work(work_graphs);
-	},
-	
-	//TEMPORARY FIX SINCE CAF TYPE ID IS STATIC SO POLYMORPHISM WONT WORK HERE
-	//TODO FIGURE OUT A WAY FOR ACK AND ITS CHILDREN TO BE 1 SINGLE CLASS AND
-	//DOWNCASTED EASILY
-	[&](transfer_ack payload) {
-		state.current_behavior->reclaim(static_cast<ack&>(payload));
-	}
     };
+}
+
+void scheduler_actor::on_receive(const token_ptr& tok) {
+    if (tok->getType() == LAUNCH) {
+        queue_.push(tok);
+        schedule_work();
+    } else if (tok->getType() == MEMORY) {
+        const auto& mem = static_cast<const memory_transfer_token&>(*tok);
+        auto response = make_memory_response_token(this, mem, device_number_, 0);
+        this->mail(response).send(mem.getReplyActor());
+    }
+}
+
+void scheduler_actor::on_receive_batch(std::vector<token_ptr> tokens) {
+    for (auto& tok : tokens) {
+        queue_.push(std::move(tok));
+    }
+    schedule_work();
+}
+
+void scheduler_actor::on_reclaim(int /*val*/, int /*mem*/, int /*time*/, int /*dep*/) {
+    if (in_flight_ > 0) {
+        in_flight_--;
+    }
+    schedule_work();
+}
+
+void scheduler_actor::on_set_neighbors(std::vector<caf::actor> neighbors) {
+    schedulers_ = std::move(neighbors);
+}
+
+std::vector<token_ptr> scheduler_actor::on_steal_request(int requesting_device) {
+    if (queue_.size() > 1) {
+        size_t to_give = queue_.size() / 2;
+        std::vector<token_ptr> batch;
+        for (size_t i = 0; i < to_give; ++i) {
+            batch.push_back(queue_.front());
+            queue_.pop();
+        }
+        std::cout << "[INFO] Scheduler " << device_number_ 
+                  << " sharing " << batch.size() 
+                  << " tasks with device " << requesting_device << "\n";
+        return batch;
+    }
+    return {};
+}
+
+void scheduler_actor::schedule_work() {
+    int capacity = num_streams_ * stream_depth_;
+
+    // Dispatch queued tasks while we have capacity
+    while (!queue_.empty() && in_flight_ < capacity) {
+        auto tok = queue_.front();
+        queue_.pop();
+
+        if (tok->getType() == LAUNCH) {
+            in_flight_++;
+            const auto& launch = static_cast<const launch_token&>(*tok);
+            
+            // Distribute tasks across streams in round-robin fashion
+            int stream_id = in_flight_ % num_streams_;
+            
+            auto response = make_launch_response_token(this, launch, device_number_, stream_id);
+            this->mail(response).send(launch.getReplyActor());
+        }
+    }
+
+    // Work Stealing logic
+    if (multi_gpu_ && queue_.empty() && in_flight_ < (capacity / 2)) {
+        for (auto& neighbor : schedulers_) {
+            if (neighbor != this) {
+                this->mail(device_number_).send(neighbor);
+            }
+        }
+    }
 }
 
 } // namespace caf::cuda
