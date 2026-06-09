@@ -65,7 +65,7 @@ void run_latency_test(caf::actor_system& sys, int matrix_size) {
 
     // Spawn facade
     auto facade = mgr.spawnFromCUBIN(
-        "../mmul.cubin", "matrixMul", dims,
+        "mmul.cubin", "matrixMul", dims,
         in<int>{}, in<int>{}, out<int>{}, in<int>{});
 
     sys.spawn(latency_manager, facade, matrix_size);

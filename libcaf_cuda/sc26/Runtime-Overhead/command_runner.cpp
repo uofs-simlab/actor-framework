@@ -71,7 +71,7 @@ caf::behavior mmul_actor_fun_2(caf::stateful_actor<mmul_state>* self) {
       int stream = 1;
 
       auto program =
-        mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+        mgr.create_program_from_cubin("mmul.cubin", "matrixMul");
 
       auto t_total_start = clock::now();
       // -------------------------
