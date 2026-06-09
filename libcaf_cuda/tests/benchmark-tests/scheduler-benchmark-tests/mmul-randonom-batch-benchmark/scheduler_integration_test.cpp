@@ -43,7 +43,7 @@ MatrixPool create_matrix_pool_random(
         int N = dist(rng);
         if (used.insert(N).second) {
             pool.A[N] = std::vector<int>(N * N, 1);
-            pool.B[N] = std::vector<int>(N * N, 2); // Changed to 2 for distinct input
+            pool.B[N] = std::vector<int>(N * N, 1); 
         }
     }
     return pool;
@@ -100,9 +100,9 @@ double time_run(Fn&& fn) {
 
 void run_scheduler_integration_scaling_test(actor_system& sys) {
     const int min_N = 32;
-    const int max_N = 1024;
+    const int max_N = 2048;
     const int num_distinct_sizes = 10;
-    const std::vector<int> actor_counts = {60, 120};
+    const std::vector<int> actor_counts = {50000};
 
     // Generate deterministic random pool once
     MatrixPool pool = create_matrix_pool_random(num_distinct_sizes, min_N, max_N, 42);
@@ -118,7 +118,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         // Start scheduler with 4 streams and depth 2 (8 slots) to force queuing
         mgr.toggle_scheduler_actor(4, 2);
 
-        auto program = mgr.create_program_from_cubin("mmul.cubin", "matrixMul");
+        auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
         const int THREADS = 32;
 
         std::vector<token_ptr> tokens;

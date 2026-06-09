@@ -390,8 +390,8 @@ void run_mmul_random_scaling_tests(caf::actor_system& sys,
     const int max_N = 2048;
     const int num_sizes = 10;
 
-    const int workers_per_gpu = 8; // Admission control: only 16 concurrent tasks per GPU
-    const int max_in_flight_tasks_per_worker = 3; // Each worker keeps 2 tasks in flight
+    const int workers_per_gpu = 4; // Admission control: only 16 concurrent tasks per GPU
+    const int max_in_flight_tasks_per_worker = 2; // Each worker keeps 2 tasks in flight
 
     const std::vector<int> actor_counts = {
 	  1,30000,40000,50000
