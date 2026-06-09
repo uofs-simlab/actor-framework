@@ -51,7 +51,7 @@ MatrixPool create_matrix_pool_random(
 }
 
 // This actor represents a single task that requests permission from the scheduler.
-behavior task_actor_fun(stateful_actor<task_actor_state>* self) {
+behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_actor) {
     auto& st = self->state();
 
     return {
@@ -75,9 +75,10 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self) {
                 // 3. Asynchronous Copyback.
                 // The launch_response_token is released inside the callback 
                 // to signal to the scheduler that the resource is free. (No serial verification here)
-                runner.copy_to_host_async(d_c, st_inner.h_c.data(), st_inner.N_val * st_inner.N_val, [res, self](int* /*ptr*/, size_t /*sz*/) {
+                runner.copy_to_host_async(d_c, st_inner.h_c.data(), st_inner.N_val * st_inner.N_val, [res, self, exit_actor = exit_actor](int* /*ptr*/, size_t /*sz*/) {
                     std::cout << "[TASK] " << res->name() << " finished. Releasing token." << std::endl;
                     res->release();
+                    anon_mail(1).send(exit_actor);
                 });
             }
         }
@@ -85,13 +86,13 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self) {
 }
 
 // Helper function to initialize task_actor_state
-behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, const std::vector<int>& h_a_data, const std::vector<int>& h_b_data) {
+behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, const std::vector<int>& h_a_data, const std::vector<int>& h_b_data, caf::actor exit_actor) {
     self->state().prog = std::move(prog);
     self->state().N_val = N_val;
     self->state().h_a = h_a_data;
     self->state().h_b = h_b_data;
     self->state().h_c.resize(N_val * N_val, 0);
-    return task_actor_fun(self);
+    return task_actor_fun(self, exit_actor); // Pass exit_actor to task_actor_fun
 }
 
 template <class Fn>
@@ -123,7 +124,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         // Start scheduler with 4 streams and depth 2 (8 slots) to force queuing
         mgr.toggle_scheduler_actor(4, 2);
 
-        auto program = mgr.create_program_from_cubin("mmul.cubin", "matrixMul");
+        auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
         const int THREADS = 32;
 
         std::vector<token_ptr> tokens;
@@ -133,6 +134,9 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         std::cout << "=====================================\n";
         std::cout << "Scheduler Test | tasks=" << num_tasks << "\n";
 
+        // Spawn the exit actor for this specific test run (moved inside the loop)
+        auto exit_actor = sys.spawn(caf::cuda::exit_actor_fun, num_tasks);
+
         // Spawn task actors and prepare tokens
         for (int i = 0; i < num_tasks; ++i) {
             int current_N = available_Ns[dist_N_idx(rng)];
@@ -140,11 +144,12 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
                            (current_N + THREADS - 1) / THREADS, 1, 
                            THREADS, THREADS, 1);
             
-            auto worker = sys.spawn(make_task_actor_behavior, 
+            auto worker = sys.spawn(make_task_actor_behavior,
                                     program,
                                     current_N, 
                                     pool.A.at(current_N), 
-                                    pool.B.at(current_N));
+                                    pool.B.at(current_N),
+                                    exit_actor); // Pass exit_actor to task actors
 
             tokens.push_back(make_launch_token(program, range, 0, 
                              "task_" + std::to_string(i), worker));
@@ -153,12 +158,11 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         double elapsed = time_run([&]() {
             std::cout << "[MAIN] Dispatching batch to scheduler..." << std::endl;
             mgr.send_scheduler_actor_message(std::move(tokens));
-            sys.await_all_actors_done();
         });
 
         std::cout << "Run complete. Time: " << elapsed << " s\n";
-        manager::shutdown();
     }
+    sys.await_all_actors_done(); // Wait for all actors, including exit_actor, to finish
 }
 
 void caf_main(actor_system& sys) {
