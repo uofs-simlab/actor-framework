@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import glob
 import re
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,17 +7,19 @@ from pathlib import Path
 from collections import defaultdict
 
 # -----------------------------
-# Path Configuration (same style as first script)
+# Path Configuration
 # -----------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-BASE_DIR = SCRIPT_DIR.parent.parent / "Sequence-Independent-Tasks" / "results"
+# Check if benchmark_results.txt is in the same directory as the script
+INPUT_FILE = SCRIPT_DIR / "benchmark_results.txt"
+OUTPUT_PLOT = SCRIPT_DIR / "mmul_comparison.png"
 
-driver_files = glob.glob(str(BASE_DIR / "matrix_mul_driver_run*.txt"))
-actor_files = glob.glob(str(BASE_DIR / "test_run*.txt"))
-runner_files = glob.glob(str(BASE_DIR / "throughput_mapping_bench_test_run*.txt"))
-
-OUTPUT_PLOT = BASE_DIR / "mmul_comparison.png"
+# Fallback to the original parent-directory structure if not found locally
+if not INPUT_FILE.exists():
+    BASE_DIR = SCRIPT_DIR.parent.parent / "Sequence-Independent-Tasks" / "results"
+    INPUT_FILE = BASE_DIR / "benchmark_results.txt"
+    OUTPUT_PLOT = BASE_DIR / "mmul_comparison.png"
 
 # -----------------------------
 # Data containers
@@ -28,53 +29,49 @@ actor_facade_data = defaultdict(list)
 command_runner_data = defaultdict(list)
 
 # -----------------------------
-# Regex
+# Regex Patterns
 # -----------------------------
 cuda_pattern = re.compile(r"iterations\s*=\s*(\d+),\s*total GPU time\s*=\s*([0-9.]+)")
-actor_pattern = re.compile(r"iterations\s*=\s*(\d+),\s*time\s*=\s*([0-9.]+)")
-runner_pattern = re.compile(r"iterations\s*=\s*(\d+).*total_time\s*=\s*([0-9.]+)\s*ms")
+actor_pattern = re.compile(r"iterations\s*=\s*(\d+),\s*total_time\s*=\s*([0-9.]+)")
+runner_pattern = re.compile(r"iterations\s*=\s*(\d+),\s*time\s*=\s*([0-9.]+)")
 
 # -----------------------------
-# Parsers
+# Parse benchmark_results.txt
 # -----------------------------
-def parse_cuda(file):
-    with open(file) as f:
-        for line in f:
+current_impl = None
+
+with open(INPUT_FILE, "r") as f:
+    for line in f:
+        # Detect block switches
+        if "========== main_cuda_native ==========" in line:
+            current_impl = "cuda"
+            continue
+        elif "========== main_actor_facade ==========" in line:
+            current_impl = "facade"
+            continue
+        elif "========== main_command_runner ==========" in line:
+            current_impl = "runner"
+            continue
+            
+        # Parse data depending on the active block section
+        if current_impl == "cuda":
             m = cuda_pattern.search(line)
             if m:
                 it = int(m.group(1))
                 cuda_data[it].append(float(m.group(2)))
-
-def parse_actor(file):
-    with open(file) as f:
-        for line in f:
+        elif current_impl == "facade":
             m = actor_pattern.search(line)
             if m:
                 it = int(m.group(1))
                 actor_facade_data[it].append(float(m.group(2)))
-
-def parse_runner(file):
-    with open(file) as f:
-        for line in f:
+        elif current_impl == "runner":
             m = runner_pattern.search(line)
             if m:
                 it = int(m.group(1))
                 command_runner_data[it].append(float(m.group(2)))
 
 # -----------------------------
-# Parse all files
-# -----------------------------
-for f in driver_files:
-    parse_cuda(f)
-
-for f in actor_files:
-    parse_actor(f)
-
-for f in runner_files:
-    parse_runner(f)
-
-# -----------------------------
-# Aggregate
+# Aggregate and Compute Means
 # -----------------------------
 iterations = sorted(cuda_data.keys())
 
@@ -83,7 +80,7 @@ actor_mean = [np.mean(actor_facade_data[i]) for i in iterations]
 runner_mean = [np.mean(command_runner_data[i]) for i in iterations]
 
 # -----------------------------
-# Print
+# Print Performance Table
 # -----------------------------
 print("\nMean Performance Comparison\n")
 print(f"{'Iterations':>10} {'CUDA(ms)':>12} {'Facade(ms)':>12} {'Runner(ms)':>12} {'Facade Ovhd %':>15}")
@@ -93,20 +90,20 @@ for i, it in enumerate(iterations):
     print(f"{it:>10} {cuda_mean[i]:>12.2f} {actor_mean[i]:>12.2f} {runner_mean[i]:>12.2f} {pct:>14.2f}%")
 
 # -----------------------------
-# Plot
+# Plot and Save Chart
 # -----------------------------
-plt.figure(figsize=(8,6))
+fig, ax = plt.subplots(figsize=(8, 6))
 
-plt.plot(iterations, cuda_mean, marker='o', label="CUDA Native")
-plt.plot(iterations, actor_mean, marker='s', label="Actor Facade")
-plt.plot(iterations, runner_mean, marker='^', label="Command Runner")
+ax.plot(iterations, cuda_mean, marker='o', label="CUDA Native")
+ax.plot(iterations, actor_mean, marker='s', label="Actor Facade")
+ax.plot(iterations, runner_mean, marker='^', label="Command Runner")
 
-plt.xlabel("Iterations")
-plt.ylabel("Time (ms)")
-plt.title("Matrix Multiplication Performance")
-plt.legend()
-plt.grid(True)
+ax.set_xlabel("Iterations")
+ax.set_ylabel("Time (ms)")
+ax.set_title("Matrix Multiplication Performance")
+ax.legend()
+ax.grid(True)
 plt.tight_layout()
 
 plt.savefig(OUTPUT_PLOT)
-plt.show()
+# plt.show() # Uncomment if running in an interactive graphical interface
