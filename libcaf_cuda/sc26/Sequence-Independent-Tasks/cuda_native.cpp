@@ -46,8 +46,8 @@ void launchKernel(CUfunction kernel, CUstream stream,
 
 int main() {
     const int N = 1000;
-    const int total_iterations = 10000;
-    const int milestone_interval = 1000;
+    std::vector<int> iteration_series = {1000, 2000, 3000, 4000, 5000,
+                                         6000, 7000, 8000, 9000, 10000};
 
     checkCU(cuInit(0), "cuInit");
 
@@ -57,10 +57,10 @@ int main() {
     CUcontext ctx;
     checkCU(cuCtxCreate(&ctx, 0, dev), "cuCtxCreate");
 
-    std::string cubin = readFile("mmul.cubin");
+    std::string ptx = readFile("mmul.ptx");
 
     CUmodule module;
-    checkCU(cuModuleLoadDataEx(&module, cubin.data(), 0, nullptr, nullptr), "cuModuleLoadDataEx");
+    checkCU(cuModuleLoadDataEx(&module, ptx.c_str(), 0, nullptr, nullptr), "cuModuleLoadDataEx");
 
     CUfunction kernel;
     checkCU(cuModuleGetFunction(&kernel, module, "matrixMul"), "cuModuleGetFunction matrixMul");
@@ -78,77 +78,52 @@ int main() {
 
     using clock = std::chrono::steady_clock;
 
-    // Warmup: prime CUDA context and allocator before timed series
-    {
-        const int warmup_iters = 10;
-        for (int i = 0; i < warmup_iters; ++i) {
+    for (int iterations : iteration_series) {
+        auto start = clock::now();
+
+        for (int i = 0; i < iterations; ++i) {
+            // ----------------------------------
+            // Allocate device memory each iteration
+            // ----------------------------------
             CUdeviceptr d_a, d_b, d_c;
-            checkCU(cuMemAlloc(&d_a, elements * sizeof(int)), "warmup alloc d_a");
-            checkCU(cuMemAlloc(&d_b, elements * sizeof(int)), "warmup alloc d_b");
-            checkCU(cuMemAlloc(&d_c, elements * sizeof(int)), "warmup alloc d_c");
-            checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), elements * sizeof(int), stream), "warmup H2D d_a");
-            checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), elements * sizeof(int), stream), "warmup H2D d_b");
+            checkCU(cuMemAllocAsync(&d_a, elements * sizeof(int), stream), "cuMemAllocAsync d_a");
+            checkCU(cuMemAllocAsync(&d_b, elements * sizeof(int), stream), "cuMemAllocAsync d_b");
+            checkCU(cuMemAllocAsync(&d_c, elements * sizeof(int), stream), "cuMemAllocAsync d_c");
+
+            // ----------------------------------
+            // Copy persistent host buffers to device
+            // ----------------------------------
+            checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), elements * sizeof(int), stream), "H2D d_a");
+            checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), elements * sizeof(int), stream), "H2D d_b");
+
+            // ----------------------------------
+            // Launch kernel
+            // ----------------------------------
             launchKernel(kernel, stream, d_a, d_b, d_c, N);
-            checkCU(cuMemcpyDtoHAsync(h_c.data(), d_c, elements * sizeof(int), stream), "warmup D2H d_c");
-            checkCU(cuMemFree(d_a), "warmup free d_a");
-            checkCU(cuMemFree(d_b), "warmup free d_b");
-            checkCU(cuMemFree(d_c), "warmup free d_c");
+
+            // ----------------------------------
+            // Copy result back
+            // ----------------------------------
+            checkCU(cuMemcpyDtoHAsync(h_c.data(), d_c, elements * sizeof(int), stream), "D2H d_c");
+
+            // ----------------------------------
+            // Free device memory
+            // ----------------------------------
+            checkCU(cuMemFreeAsync(d_a, stream), "cuMemFreeAsync d_a");
+            checkCU(cuMemFreeAsync(d_b, stream), "cuMemFreeAsync d_b");
+            checkCU(cuMemFreeAsync(d_c, stream), "cuMemFreeAsync d_c");
         }
-        checkCU(cuStreamSynchronize(stream), "warmup sync");
-        std::cout << "--- warmup complete ---\n";
+
+        // Synchronize stream after series
+        checkCU(cuStreamSynchronize(stream), "stream sync after series");
+
+        auto end = clock::now();
+        double total_ms = std::chrono::duration<double, std::milli>(end - start).count();
+
+        std::cout << "[SERIES RESULT] Matrix " << N << "x" << N
+                  << ", iterations = " << iterations
+                  << ", total GPU time = " << total_ms << " ms\n";
     }
-
-    auto start = clock::now();
-
-    for (int i = 0; i < total_iterations; ++i) {
-        // ----------------------------------
-        // Allocate device memory each iteration
-        // ----------------------------------
-        CUdeviceptr d_a, d_b, d_c;
-        checkCU(cuMemAlloc(&d_a, elements * sizeof(int)), "cuMemAlloc d_a");
-        checkCU(cuMemAlloc(&d_b, elements * sizeof(int)), "cuMemAlloc d_b");
-        checkCU(cuMemAlloc(&d_c, elements * sizeof(int)), "cuMemAlloc d_c");
-
-        // ----------------------------------
-        // Copy persistent host buffers to device
-        // ----------------------------------
-        checkCU(cuMemcpyHtoDAsync(d_a, h_a.data(), elements * sizeof(int), stream), "H2D d_a");
-        checkCU(cuMemcpyHtoDAsync(d_b, h_b.data(), elements * sizeof(int), stream), "H2D d_b");
-
-        // ----------------------------------
-        // Launch kernel
-        // ----------------------------------
-        launchKernel(kernel, stream, d_a, d_b, d_c, N);
-
-        // ----------------------------------
-        // Copy result back
-        // ----------------------------------
-        checkCU(cuMemcpyDtoHAsync(h_c.data(), d_c, elements * sizeof(int), stream), "D2H d_c");
-
-        // ----------------------------------
-        // Free device memory
-        // ----------------------------------
-        checkCU(cuMemFree(d_a), "cuMemFree d_a");
-        checkCU(cuMemFree(d_b), "cuMemFree d_b");
-        checkCU(cuMemFree(d_c), "cuMemFree d_c");
-
-        if ((i + 1) % milestone_interval == 0) {
-            checkCU(cuStreamSynchronize(stream), "stream sync at milestone");
-            auto now = clock::now();
-            double elapsed_ms = std::chrono::duration<double, std::milli>(now - start).count();
-            std::cout << "[MILESTONE] " << (i + 1) << " / " << total_iterations
-                      << " iterations, elapsed = " << elapsed_ms << " ms\n";
-        }
-    }
-
-    checkCU(cuStreamSynchronize(stream), "stream sync after series");
-
-    auto end = clock::now();
-    double total_ms = std::chrono::duration<double, std::milli>(end - start).count();
-
-    std::cout << "[SERIES RESULT] Matrix " << N << "x" << N
-              << ", iterations = " << total_iterations
-              << ", total GPU time = " << total_ms << " ms\n";
 
     // ----------------------------------
     // Cleanup
