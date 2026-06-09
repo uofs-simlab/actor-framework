@@ -23,7 +23,7 @@
 #include "caf/cuda/actor_facade.hpp"
 #include "caf/cuda/platform.hpp"
 #include "caf/cuda/manager_config.hpp"
-#include "caf/cuda/control-layer/token.hpp"
+#include "caf/cuda/control-layer/token.hpp" // For send_scheduler_actor_message
 #include "caf/cuda/control-layer/behavior_token.hpp"
 
 
@@ -186,6 +186,27 @@ public:
 
   caf::actor spawn_exit_actor(int num_actors);
 
+  // Toggles the scheduler actors on. If called multiple times, it will only spawn them once.
+  void toggle_scheduler_actor(int num_streams, int stream_depth);
+
+  // Enables cuBLAS support on all detected devices.
+  void enable_blas_actors();
+
+  // Enables cuSparse support on all detected devices.
+  void enable_sparse_actors();
+
+  // Sends a batch of tokens to the scheduler actors, distributing them statically.
+  void send_scheduler_actor_message(std::vector<token_ptr> tokens);
+
+  // Returns the first scheduler actor. Useful for single-GPU setups or general dispatch.
+  caf::actor get_scheduler_actor();
+
+  // Returns a specific scheduler actor by device number.
+  caf::actor get_scheduler_actor(int device_number);
+
+  // Sends a behavior change message to a specific scheduler actor.
+  void send_scheduler_actor_message(const std::string& behavior_name, int device_number);
+
 private:
   explicit manager(caf::actor_system& sys)
     : system_(sys), platform_(platform::create()) {
@@ -203,6 +224,8 @@ private:
 
   mutable std::shared_mutex programs_mutex_;
   std::unordered_map<size_t, program_ptr> programs_;
+  std::vector<caf::actor> scheduler_actors_; // Stores handles to spawned scheduler actors
+  bool scheduler_actors_spawned_ = false; // Flag to ensure idempotency
 };
 
 } // namespace caf::cuda

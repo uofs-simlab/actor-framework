@@ -1,8 +1,10 @@
+#include <algorithm>
 #include "caf/cuda/manager.hpp"
 #include <stdexcept>
 #include <mutex>
 #include <map>
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
+#include "caf/cuda/control-layer/token_factory.hpp" // For make_behavior_token
 #include "caf/cuda/manager_config.hpp"
 #include "caf/cuda/control-layer/all-control-layer.hpp"
 
@@ -31,6 +33,7 @@ void manager::init(caf::actor_system& sys) {
     cuCtxGetCurrent(&ctx);
 
     instance_ = new manager(sys);
+    caf::init_global_meta_objects<caf::id_block::cuda_control>(); // Ensure control-layer types are registered
 
     caf::init_global_meta_objects<caf::id_block::cuda>();
 }
@@ -64,6 +67,8 @@ void manager::init(caf::actor_system& sys, manager_config config) {
         for (auto& dev : instance_->platform_->devices())
             dev->enable_cusparse();
     }
+
+  
 }
 
 int manager::get_num_devices() {return platform_ -> get_num_devices();}
@@ -92,6 +97,14 @@ void manager::shutdown() {
     if (!instance_)
         return;
 
+
+    if (instance_->scheduler_actors_spawned_) {
+
+    // Send exit message to all scheduler actors
+    for (const auto& actor : instance_->scheduler_actors_) {
+        caf::anon_mail(caf::exit_reason::user_shutdown).send(actor);
+    }
+  }
     delete instance_;
     instance_ = nullptr;
 }
@@ -312,5 +325,96 @@ caf::actor manager::spawn_exit_actor(int num_actors) {
 
 }
 
+void manager::toggle_scheduler_actor(int num_streams, int stream_depth) {
+    if (scheduler_actors_spawned_)
+        return;
+
+    const auto& devices = platform_->devices();
+    bool multi_gpu = devices.size() > 1;
+
+    for (const auto& dev : devices) {
+        auto hdl = system_.spawn<scheduler_actor>(
+            dev->getId(), 
+            num_streams, 
+            stream_depth, 
+            multi_gpu
+        );
+        scheduler_actors_.push_back(hdl);
+    }
+
+    // Link neighbors for work-stealing
+    if (multi_gpu) {
+        for (const auto& actor : scheduler_actors_) {
+            caf::anon_mail(scheduler_actors_).send(actor);
+        }
+    }
+
+    scheduler_actors_spawned_ = true;
+}
+
+void manager::enable_blas_actors() {
+    for (auto& dev : platform_->devices())
+        dev->enable_cublas();
+}
+
+void manager::enable_sparse_actors() {
+    for (auto& dev : platform_->devices())
+        dev->enable_cusparse();
+}
+
+void manager::send_scheduler_actor_message(std::vector<token_ptr> tokens) {
+    if (scheduler_actors_.empty())
+        return;
+
+    size_t num_schedulers = scheduler_actors_.size();
+    size_t total_tokens = tokens.size();
+    size_t base_chunk = total_tokens / num_schedulers;
+    size_t remainder = total_tokens % num_schedulers;
+
+    auto it = tokens.begin();
+    for (size_t i = 0; i < num_schedulers; ++i) {
+        size_t count = base_chunk + (i < remainder ? 1 : 0);
+        if (count == 0) continue;
+
+        std::vector<token_ptr> chunk;
+        chunk.reserve(count);
+        std::move(it, it + count, std::back_inserter(chunk));
+        it += count;
+
+        caf::anon_mail(std::move(chunk)).send(scheduler_actors_[i]);
+    }
+}
+
+caf::actor manager::get_scheduler_actor() {
+    if (scheduler_actors_.empty()) {
+        throw std::runtime_error(
+            "Scheduler actors not spawned. Call manager::toggle_scheduler_actor() first."
+        );
+    }
+    return scheduler_actors_[0];
+}
+
+caf::actor manager::get_scheduler_actor(int device_number) {
+    if (scheduler_actors_.empty()) {
+        throw std::runtime_error(
+            "Scheduler actors not spawned. Call manager::toggle_scheduler_actor() first."
+        );
+    }
+    
+    if (device_number >= 0 && static_cast<size_t>(device_number) < scheduler_actors_.size()) {
+        return scheduler_actors_[device_number];
+    }
+    
+    // Modulo logic to handle arbitrary device numbers as per documentation
+    int idx = device_number % static_cast<int>(scheduler_actors_.size());
+    return scheduler_actors_[idx];
+}
+
+void manager::send_scheduler_actor_message(const std::string& behavior_name, int device_number) {
+    auto target = get_scheduler_actor(device_number);
+    if (target) {
+        caf::anon_mail(make_behavior_token(behavior_name)).send(target);
+    }
+}
 
 } // namespace caf::cuda
