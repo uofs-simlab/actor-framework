@@ -97,7 +97,8 @@ public:
                 reclaim_value_,
                 reclaim_memory_returned_,
                 reclaim_runtime_,
-                reclaim_dependency_
+                reclaim_dependency_,
+                stream_id_
             ).urgent().send(receiver_);
         } catch (...) {
             // swallow exceptions — destructor safe

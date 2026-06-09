@@ -12,7 +12,12 @@ scheduler_actor::scheduler_actor(caf::actor_config& cfg,
       num_streams_(num_streams),
       stream_depth_(stream_depth),
       multi_gpu_(multi_gpu) {
-    // Constructor logic if needed
+    // Initialize the pool of available execution slots
+    for (int depth = 0; depth < stream_depth_; ++depth) {
+        for (int s = 0; s < num_streams_; ++s) {
+            available_streams_.push(s);
+        }
+    }
 }
 
 caf::behavior scheduler_actor::make_behavior() {
@@ -23,8 +28,8 @@ caf::behavior scheduler_actor::make_behavior() {
         [this](std::vector<token_ptr> tokens) {
             on_receive_batch(std::move(tokens));
         },
-        [this](int val, int mem, int time, int dep) {
-            on_reclaim(val, mem, time, dep);
+        [this](int val, int mem, int time, int dep, int stream_id) {
+            on_reclaim(val, mem, time, dep, stream_id);
         },
         [this](std::vector<caf::actor> neighbors) {
             on_set_neighbors(std::move(neighbors));
@@ -56,10 +61,11 @@ void scheduler_actor::on_receive_batch(std::vector<token_ptr> tokens) {
     schedule_work();
 }
 
-void scheduler_actor::on_reclaim(int /*val*/, int /*mem*/, int /*time*/, int /*dep*/) {
+void scheduler_actor::on_reclaim(int /*val*/, int /*mem*/, int /*time*/, int /*dep*/, int stream_id) {
     if (in_flight_ > 0) {
         in_flight_--;
     }
+    available_streams_.push(stream_id);
     schedule_work();
 }
 
@@ -87,16 +93,17 @@ void scheduler_actor::schedule_work() {
     int capacity = num_streams_ * stream_depth_;
 
     // Dispatch queued tasks while we have capacity
-    while (!queue_.empty() && in_flight_ < capacity) {
+    while (!queue_.empty() && !available_streams_.empty()) {
         auto tok = queue_.front();
         queue_.pop();
 
         if (tok->getType() == LAUNCH) {
             in_flight_++;
             const auto& launch = static_cast<const launch_token&>(*tok);
-            
-            // Distribute tasks across streams in round-robin fashion
-            int stream_id = in_flight_ % num_streams_;
+
+            // Take an available stream ID from the pool
+            int stream_id = available_streams_.front();
+            available_streams_.pop();
             
             auto response = make_launch_response_token(this, launch, device_number_, stream_id);
             this->mail(response).send(launch.getReplyActor());

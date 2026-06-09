@@ -15,7 +15,7 @@ public:
     // Message Handler Methods
     virtual void on_receive(const token_ptr& tok);
     virtual void on_receive_batch(std::vector<token_ptr> tokens);
-    virtual void on_reclaim(int val, int mem, int time, int dep);
+    virtual void on_reclaim(int val, int mem, int time, int dep, int stream_id);
     virtual void on_set_neighbors(std::vector<caf::actor> neighbors);
     virtual std::vector<token_ptr> on_steal_request(int requesting_device);
 
@@ -32,6 +32,7 @@ protected:
     int in_flight_ = 0;
     std::queue<token_ptr> queue_;
     std::vector<caf::actor> schedulers_;
+    std::queue<int> available_streams_;
 };
 
 } // namespace caf::cuda
