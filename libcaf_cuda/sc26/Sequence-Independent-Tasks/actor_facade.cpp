@@ -77,7 +77,7 @@ void run_mapping_throughput_test(caf::actor_system& sys, int matrix_size, int it
     caf::cuda::nd_range dims(BLOCKS, BLOCKS, 1, THREADS, THREADS, 1);
 
     auto facade = mgr.spawnFromCUBIN(
-        "../mmul.cubin", "matrixMul", dims,
+        "mmul.cubin", "matrixMul", dims,
         in<int>{}, in<int>{}, out<int>{}, in<int>{});
 
     sys.spawn(throughput_mapping_manager, facade, matrix_size, iterations);
