@@ -13,12 +13,13 @@ using namespace caf;
 using namespace caf::cuda;
 
 // A generic command runner to provide access to CUDA stream callbacks
-static command_runner<> runner;
+static command_runner<in<int>, in<int>, out<int>, in<int>> runner;
 
 struct task_actor_state {
     std::vector<int> h_a;
     std::vector<int> h_b;
     std::vector<int> h_c;
+    program_ptr prog; // Store the program handle in the actor state
     int N_val; // Store N for this specific task
 };
 
@@ -43,7 +44,7 @@ MatrixPool create_matrix_pool_random(
         int N = dist(rng);
         if (used.insert(N).second) {
             pool.A[N] = std::vector<int>(N * N, 1);
-            pool.B[N] = std::vector<int>(N * N, 1); 
+            pool.B[N] = std::vector<int>(N * N, 2); // Changed to 2 for distinct input
         }
     }
     return pool;
@@ -58,6 +59,9 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self) {
             if (res->getType() == LAUNCH_RESPONSE) {
                 auto& st_inner = self->state();
                 
+                // We need to cast the base response_token to access the specific nd_range stored in it.
+                auto launch_res = static_cast<launch_response_token*>(res.get());
+
                 // 1. Setup GPU arguments.
                 auto in_a = create_in_arg(st_inner.h_a);
                 auto in_b = create_in_arg(st_inner.h_b);
@@ -65,7 +69,7 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self) {
                 auto in_n = create_in_arg(st_inner.N_val);
 
                 // 2. Launch Work asynchronously using the stream and device assigned by the scheduler.
-                auto result_tuple = runner.run_async(res, in_a, in_b, out_c, in_n);
+                auto result_tuple = runner.run_async(st_inner.prog, launch_res->getRange(), res, in_a, in_b, out_c, in_n);
                 auto d_c = std::get<2>(result_tuple);
 
                 // 3. Asynchronous Copyback.
@@ -81,7 +85,8 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self) {
 }
 
 // Helper function to initialize task_actor_state
-behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, int N_val, const std::vector<int>& h_a_data, const std::vector<int>& h_b_data) {
+behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, const std::vector<int>& h_a_data, const std::vector<int>& h_b_data) {
+    self->state().prog = std::move(prog);
     self->state().N_val = N_val;
     self->state().h_a = h_a_data;
     self->state().h_b = h_b_data;
@@ -100,9 +105,9 @@ double time_run(Fn&& fn) {
 
 void run_scheduler_integration_scaling_test(actor_system& sys) {
     const int min_N = 32;
-    const int max_N = 2048;
+    const int max_N = 1024;
     const int num_distinct_sizes = 10;
-    const std::vector<int> actor_counts = {50000};
+    const std::vector<int> actor_counts = {60, 120};
 
     // Generate deterministic random pool once
     MatrixPool pool = create_matrix_pool_random(num_distinct_sizes, min_N, max_N, 42);
@@ -118,7 +123,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         // Start scheduler with 4 streams and depth 2 (8 slots) to force queuing
         mgr.toggle_scheduler_actor(4, 2);
 
-        auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+        auto program = mgr.create_program_from_cubin("mmul.cubin", "matrixMul");
         const int THREADS = 32;
 
         std::vector<token_ptr> tokens;
@@ -136,6 +141,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
                            THREADS, THREADS, 1);
             
             auto worker = sys.spawn(make_task_actor_behavior, 
+                                    program,
                                     current_N, 
                                     pool.A.at(current_N), 
                                     pool.B.at(current_N));
