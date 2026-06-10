@@ -52,8 +52,13 @@ add_custom_command(
 add_custom_target(stability_kernels_cubin ALL DEPENDS ${STABILITY_KERNEL_CUBIN})
 
 
-# 5) Declare your executable
+# 5) Declare your executable and its source files
 add_executable(test main.test.cpp sparse_utils.cpp)
+target_sources(test PRIVATE
+  atoms.hpp
+  ft_cg_actor.hpp
+  supervisor_actor.hpp
+)
 
 target_compile_definitions(test PRIVATE CAF_ENABLE_LOGGING)
 
