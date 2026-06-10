@@ -15,18 +15,16 @@ using namespace caf::cuda;
 // A generic command runner to provide access to CUDA stream callbacks
 static command_runner<in<int>, in<int>, out<int>, in<int>> runner;
 
-struct task_actor_state {
-    std::vector<int> h_a;
-    std::vector<int> h_b;
-    std::vector<int> h_c;
-    program_ptr prog; // Store the program handle in the actor state
-    int N_val; // Store N for this specific task
-};
-
 // MatrixPool structure from mmul-random-batch-benchmark
 struct MatrixPool {
     std::unordered_map<int, std::vector<int>> A;
     std::unordered_map<int, std::vector<int>> B;
+};
+
+struct task_actor_state {
+    program_ptr prog;
+    int N_val;
+    std::shared_ptr<MatrixPool> pool;
 };
 
 // create_matrix_pool_random function from mmul-random-batch-benchmark
@@ -52,31 +50,32 @@ MatrixPool create_matrix_pool_random(
 
 // This actor represents a single task that requests permission from the scheduler.
 behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_actor) {
-    auto& st = self->state();
-
     return {
         [=](response_token_ptr res) mutable {
             if (res->getType() == LAUNCH_RESPONSE) {
-                auto& st_inner = self->state();
+                auto& st = self->state();
                 
                 // We need to cast the base response_token to access the specific nd_range stored in it.
                 auto launch_res = static_cast<launch_response_token*>(res.get());
+                int N = st.N_val;
 
                 // 1. Setup GPU arguments.
-                auto in_a = create_in_arg(st_inner.h_a);
-                auto in_b = create_in_arg(st_inner.h_b);
-                auto out_c = create_out_arg_with_size<int>(st_inner.N_val * st_inner.N_val);
-                auto in_n = create_in_arg(st_inner.N_val);
+                // Fetch data from the shared pool only when scheduled to save RAM
+                auto in_a = create_in_arg(st.pool->A.at(N));
+                auto in_b = create_in_arg(st.pool->B.at(N));
+                auto out_c = create_out_arg_with_size<int>(N * N);
+                auto in_n = create_in_arg(N);
 
                 // 2. Launch Work asynchronously using the stream and device assigned by the scheduler.
-                auto result_tuple = runner.run_async(st_inner.prog, launch_res->getRange(), res, in_a, in_b, out_c, in_n);
+                auto result_tuple = runner.run_async(st.prog, launch_res->getRange(), res, in_a, in_b, out_c, in_n);
                 auto d_c = std::get<2>(result_tuple);
 
                 // 3. Asynchronous Copyback.
+                // Allocate a local buffer for the result to keep the total system memory low.
+                auto h_c = std::make_shared<std::vector<int>>(N * N);
                 // The launch_response_token is released inside the callback 
                 // to signal to the scheduler that the resource is free. (No serial verification here)
-                runner.copy_to_host_async(d_c, st_inner.h_c.data(), st_inner.N_val * st_inner.N_val, [res, self, exit_actor = exit_actor](int* /*ptr*/, size_t /*sz*/) {
-                    std::cout << "[TASK] " << res->name() << " finished. Releasing token." << std::endl;
+                runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, exit_actor, h_c](int* /*ptr*/, size_t /*sz*/) {
                     res->release();
                     anon_mail(1).send(exit_actor);
                 });
@@ -86,12 +85,11 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_
 }
 
 // Helper function to initialize task_actor_state
-behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, const std::vector<int>& h_a_data, const std::vector<int>& h_b_data, caf::actor exit_actor) {
-    self->state().prog = std::move(prog);
-    self->state().N_val = N_val;
-    self->state().h_a = h_a_data;
-    self->state().h_b = h_b_data;
-    self->state().h_c.resize(N_val * N_val, 0);
+behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, std::shared_ptr<MatrixPool> pool, caf::actor exit_actor) {
+    auto& st = self->state();
+    st.prog = std::move(prog);
+    st.N_val = N_val;
+    st.pool = std::move(pool);
     return task_actor_fun(self, exit_actor); // Pass exit_actor to task_actor_fun
 }
 
@@ -111,10 +109,11 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
     const std::vector<int> actor_counts = {50000};
 
     // Generate deterministic random pool once
-    MatrixPool pool = create_matrix_pool_random(num_distinct_sizes, min_N, max_N, 42);
+    auto pool_ptr = std::make_shared<MatrixPool>(
+        create_matrix_pool_random(num_distinct_sizes, min_N, max_N, 42));
     
     std::vector<int> available_Ns;
-    for (const auto& pair : pool.A) available_Ns.push_back(pair.first);
+    for (const auto& pair : pool_ptr->A) available_Ns.push_back(pair.first);
 
     for (int num_tasks : actor_counts) {
         manager_config config;
@@ -147,8 +146,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
             auto worker = sys.spawn(make_task_actor_behavior,
                                     program,
                                     current_N, 
-                                    pool.A.at(current_N), 
-                                    pool.B.at(current_N),
+                                    pool_ptr,
                                     exit_actor); // Pass exit_actor to task actors
 
             tokens.push_back(make_launch_token(program, range, 0, 
