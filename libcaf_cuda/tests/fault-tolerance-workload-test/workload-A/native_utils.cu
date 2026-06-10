@@ -26,30 +26,13 @@ __global__ void elementwise_mul_kernel(int n, const float* a, const float* b, fl
 }
 
 int solve_pcg_jacobi_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
-                           const MatrixTask& task, cudaStream_t stream) {
-    int n = (int)task.data->row_ptr.size() - 1;
+                           int n, int nnz, float* d_val, int* d_row_ptr, int* d_col_ind,
+                           float* d_b, float* d_x, float* d_r, float* d_p, float* d_Ap,
+                           float* d_z, float* d_Dinv, cudaStream_t stream) {
     float alpha = 1.0f, beta = 0.0f, rho = 0.0f, a = 0.0f, na = 0.0f, b = 0.0f;
     float tolerance = 1e-5f;
     int max_iters = 16000;
 
-    float *d_val, *d_x, *d_r, *d_p, *d_Ap, *d_b, *d_z, *d_Dinv;
-    int *d_row_ptr, *d_col_ind;
-
-    CHECK_CUDA(cudaMallocAsync(&d_val, task.data->nnz * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_row_ptr, (n + 1) * sizeof(int), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.data->nnz * sizeof(int), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_x, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_r, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_p, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_Ap, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_b, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_z, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_Dinv, n * sizeof(float), stream));
-
-    CHECK_CUDA(cudaMemcpyAsync(d_val, task.data->values.data(), task.data->nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.data->row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.data->col_indices.data(), task.data->nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_b, task.data->b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
     CHECK_CUDA(cudaMemsetAsync(d_x, 0, n * sizeof(float), stream));
 
     CHECK_CUBLAS(cublasSetStream(cublas, stream));
@@ -62,7 +45,7 @@ int solve_pcg_jacobi_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
 
     cusparseSpMatDescr_t matA;
     cusparseDnVecDescr_t vecP, vecAp;
-    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.data->nnz, d_row_ptr, d_col_ind, d_val,
+    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, nnz, d_row_ptr, d_col_ind, d_val,
                                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
                                      CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecP, n, d_p, CUDA_R_32F));
@@ -111,43 +94,17 @@ int solve_pcg_jacobi_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
     CHECK_CUSPARSE(cusparseDestroySpMat(matA));
     CHECK_CUSPARSE(cusparseDestroyDnVec(vecP));
     CHECK_CUSPARSE(cusparseDestroyDnVec(vecAp));
-    CHECK_CUDA(cudaFreeAsync(d_val, stream));
-    CHECK_CUDA(cudaFreeAsync(d_row_ptr, stream));
-    CHECK_CUDA(cudaFreeAsync(d_col_ind, stream));
-    CHECK_CUDA(cudaFreeAsync(d_x, stream));
-    CHECK_CUDA(cudaFreeAsync(d_r, stream));
-    CHECK_CUDA(cudaFreeAsync(d_p, stream));
-    CHECK_CUDA(cudaFreeAsync(d_Ap, stream));
-    CHECK_CUDA(cudaFreeAsync(d_b, stream));
-    CHECK_CUDA(cudaFreeAsync(d_z, stream));
-    CHECK_CUDA(cudaFreeAsync(d_Dinv, stream));
     CHECK_CUDA(cudaFreeAsync(d_buffer, stream));
     return k;
 }
 
 int solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
-                    const MatrixTask& task, cudaStream_t stream) {
-    int n = (int)task.data->row_ptr.size() - 1;
+                    int n, int nnz, float* d_val, int* d_row_ptr, int* d_col_ind,
+                    float* d_b, float* d_x, float* d_r, float* d_p, float* d_Ap, cudaStream_t stream) {
     float alpha = 1.0f, beta = 0.0f, r1 = 0.0f, a = 0.0f, na = 0.0f, b = 0.0f;
     float tolerance = 1e-5f;
     int max_iters = 16000;
 
-    float *d_val, *d_x, *d_r, *d_p, *d_Ap, *d_b;
-    int *d_row_ptr, *d_col_ind;
-
-    CHECK_CUDA(cudaMallocAsync(&d_val, task.data->nnz * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_row_ptr, (n + 1) * sizeof(int), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_col_ind, task.data->nnz * sizeof(int), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_x, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_r, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_p, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_Ap, n * sizeof(float), stream));
-    CHECK_CUDA(cudaMallocAsync(&d_b, n * sizeof(float), stream));
-
-    CHECK_CUDA(cudaMemcpyAsync(d_val, task.data->values.data(), task.data->nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.data->row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.data->col_indices.data(), task.data->nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_b, task.data->b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
     CHECK_CUDA(cudaMemsetAsync(d_x, 0, n * sizeof(float), stream));
 
     CHECK_CUBLAS(cublasSetStream(cublas, stream));
@@ -156,7 +113,7 @@ int solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
     cusparseSpMatDescr_t matA;
     cusparseDnVecDescr_t vecX, vecP, vecAp;
 
-    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, task.data->nnz, d_row_ptr, d_col_ind, d_val,
+    CHECK_CUSPARSE(cusparseCreateCsr(&matA, n, n, nnz, d_row_ptr, d_col_ind, d_val,
                                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
                                      CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
     CHECK_CUSPARSE(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_32F));
@@ -198,14 +155,6 @@ int solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
     CHECK_CUSPARSE(cusparseDestroyDnVec(vecX));
     CHECK_CUSPARSE(cusparseDestroyDnVec(vecP));
     CHECK_CUSPARSE(cusparseDestroyDnVec(vecAp));
-    CHECK_CUDA(cudaFreeAsync(d_val, stream));
-    CHECK_CUDA(cudaFreeAsync(d_row_ptr, stream));
-    CHECK_CUDA(cudaFreeAsync(d_col_ind, stream));
-    CHECK_CUDA(cudaFreeAsync(d_x, stream));
-    CHECK_CUDA(cudaFreeAsync(d_r, stream));
-    CHECK_CUDA(cudaFreeAsync(d_p, stream));
-    CHECK_CUDA(cudaFreeAsync(d_Ap, stream));
-    CHECK_CUDA(cudaFreeAsync(d_b, stream));
     CHECK_CUDA(cudaFreeAsync(d_buffer, stream));
     return k;
 }
@@ -225,7 +174,30 @@ void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>
         auto pick_time = std::chrono::steady_clock::now();
         std::cout << "[WORKER " << worker_id << "] Starting: " << task.path << " (NNZ: " << task.data->nnz << ")" << std::endl;
 
-        int iterations = solve_cg_async(cublas, cusparse, task, stream);
+        int n = (int)task.data->row_ptr.size() - 1;
+        int nnz = task.data->nnz;
+        float *d_val, *d_x, *d_r, *d_p, *d_Ap, *d_b, *d_z, *d_Dinv;
+        int *d_row_ptr, *d_col_ind;
+
+        // Allocate GPU memory once per task
+        CHECK_CUDA(cudaMallocAsync(&d_val, nnz * sizeof(float), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_row_ptr, (n + 1) * sizeof(int), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_col_ind, nnz * sizeof(int), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_x, n * sizeof(float), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_r, n * sizeof(float), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_p, n * sizeof(float), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_Ap, n * sizeof(float), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_b, n * sizeof(float), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_z, n * sizeof(float), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_Dinv, n * sizeof(float), stream));
+
+        // Initial Transfer
+        CHECK_CUDA(cudaMemcpyAsync(d_val, task.data->values.data(), nnz * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CHECK_CUDA(cudaMemcpyAsync(d_row_ptr, task.data->row_ptr.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
+        CHECK_CUDA(cudaMemcpyAsync(d_col_ind, task.data->col_indices.data(), nnz * sizeof(int), cudaMemcpyHostToDevice, stream));
+        CHECK_CUDA(cudaMemcpyAsync(d_b, task.data->b.data(), n * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+        int iterations = solve_cg_async(cublas, cusparse, n, nnz, d_val, d_row_ptr, d_col_ind, d_b, d_x, d_r, d_p, d_Ap, stream);
         CHECK_CUDA(cudaStreamSynchronize(stream));
 
         bool success = (iterations >= 0 && iterations < MAX_ITERATIONS);
@@ -234,10 +206,22 @@ void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>
         if (!success) {
             std::cout << "[WORKER " << worker_id << "] CG reached max iterations (" << iterations 
                       << "). Falling back to Jacobi solver for: " << task.path << std::endl;
-            iterations = solve_pcg_jacobi_async(cublas, cusparse, task, stream);
+            iterations = solve_pcg_jacobi_async(cublas, cusparse, n, nnz, d_val, d_row_ptr, d_col_ind, d_b, d_x, d_r, d_p, d_Ap, d_z, d_Dinv, stream);
             CHECK_CUDA(cudaStreamSynchronize(stream));
             success = (iterations >= 0 && iterations < MAX_ITERATIONS);
         }
+
+        // Clean up task memory
+        CHECK_CUDA(cudaFreeAsync(d_val, stream));
+        CHECK_CUDA(cudaFreeAsync(d_row_ptr, stream));
+        CHECK_CUDA(cudaFreeAsync(d_col_ind, stream));
+        CHECK_CUDA(cudaFreeAsync(d_x, stream));
+        CHECK_CUDA(cudaFreeAsync(d_r, stream));
+        CHECK_CUDA(cudaFreeAsync(d_p, stream));
+        CHECK_CUDA(cudaFreeAsync(d_Ap, stream));
+        CHECK_CUDA(cudaFreeAsync(d_b, stream));
+        CHECK_CUDA(cudaFreeAsync(d_z, stream));
+        CHECK_CUDA(cudaFreeAsync(d_Dinv, stream));
 
         auto finish_time = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish_time - pick_time).count();
