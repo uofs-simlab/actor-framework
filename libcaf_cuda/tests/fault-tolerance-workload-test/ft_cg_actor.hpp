@@ -203,7 +203,7 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
       runner.copy_to_host_async(st.x, [=, supervisor = st.supervisor, path = st.path, self_h = actor_cast<actor>(self)](std::vector<T> sol) {
         anon_mail(gpu_done_atom_v, path, self_h, std::move(sol), meta).send(supervisor);
         if (converged || code != CG_SUCCESS)
-          self->quit();
+          anon_mail(shutdown_atom_v).send(self_h);
       });
     },
     [=](update_stream_atom, int new_stream) {
