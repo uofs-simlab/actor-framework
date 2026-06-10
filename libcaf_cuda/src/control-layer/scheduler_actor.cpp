@@ -2,6 +2,8 @@
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
 #include <iostream>
 
+#include <random> // Required for random number generation
+#include <algorithm> // Required for std::remove_if if filtering self from neighbors
 namespace caf::cuda {
 
 scheduler_actor::scheduler_actor(caf::actor_config& cfg, 
@@ -11,7 +13,8 @@ scheduler_actor::scheduler_actor(caf::actor_config& cfg,
       device_number_(device_number),
       num_streams_(num_streams),
       stream_depth_(stream_depth),
-      multi_gpu_(multi_gpu) {
+      multi_gpu_(multi_gpu),
+      rng_(std::random_device{}()) {
     // Initialize the pool of available execution slots
     for (int depth = 0; depth < stream_depth_; ++depth) {
         for (int s = 0; s < num_streams_; ++s) {
@@ -71,10 +74,18 @@ void scheduler_actor::on_reclaim(int /*val*/, int /*mem*/, int /*time*/, int /*d
 
 void scheduler_actor::on_set_neighbors(std::vector<caf::actor> neighbors) {
     schedulers_ = std::move(neighbors);
+    victims_.clear();
+    auto self_handle = neighbors[device_number_];
+    for (const auto& neighbor : schedulers_) {
+        if (neighbor != self_handle) {
+            victims_.push_back(neighbor);
+        }
+    }
 }
 
 std::vector<token_ptr> scheduler_actor::on_steal_request(int requesting_device) {
-    if (queue_.size() > 1) {
+    size_t min_giveaway_threshold = static_cast<size_t>(num_streams_) * stream_depth_ * 2;
+    if (queue_.size() > min_giveaway_threshold) {
         size_t to_give = queue_.size() / 2;
         std::vector<token_ptr> batch;
         for (size_t i = 0; i < to_give; ++i) {
@@ -112,10 +123,11 @@ void scheduler_actor::schedule_work() {
 
     // Work Stealing logic
     if (multi_gpu_ && queue_.empty() && in_flight_ < (capacity / 2)) {
-        for (auto& neighbor : schedulers_) {
-            if (neighbor != this) {
-                this->mail(device_number_).send(neighbor);
-            }
+        // Randomly select a neighbor to request work from using the pre-generated victims list
+        if (!victims_.empty()) {
+            std::uniform_int_distribution<size_t> distrib(0, victims_.size() - 1);
+            size_t idx = distrib(rng_);
+            this->mail(device_number_).send(victims_[idx]);
         }
     }
 }

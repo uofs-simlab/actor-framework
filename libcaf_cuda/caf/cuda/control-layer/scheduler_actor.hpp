@@ -2,6 +2,8 @@
 #include <caf/all.hpp>
 #include "caf/cuda/control-layer/token.hpp"
 #include <queue>
+#include <vector>
+#include <random>
 #include "caf/cuda/global_export.hpp"
 
 namespace caf::cuda {
@@ -32,6 +34,8 @@ protected:
     int in_flight_ = 0;
     std::queue<token_ptr> queue_;
     std::vector<caf::actor> schedulers_;
+    std::vector<caf::actor> victims_;
+    std::mt19937 rng_;
     std::queue<int> available_streams_;
 };
 
