@@ -124,7 +124,9 @@ void scheduler_actor::schedule_work() {
     }
 
     // Work Stealing logic
-    if (multi_gpu_ && queue_.empty() && in_flight_ < (capacity / 2)) {
+    // if (multi_gpu_ && queue_.empty() && in_flight_ < (capacity / 2)) {
+    if (multi_gpu_ && queue_.empty() && in_flight_ < (capacity )) {
+
         // Randomly select a neighbor to request work from using the pre-generated victims list
         if (!victims_.empty()) {
             std::uniform_int_distribution<size_t> distrib(0, victims_.size() - 1);
