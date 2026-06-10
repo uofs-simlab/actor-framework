@@ -84,7 +84,9 @@ void scheduler_actor::on_set_neighbors(std::vector<caf::actor> neighbors) {
 }
 
 std::vector<token_ptr> scheduler_actor::on_steal_request(int requesting_device) {
-    size_t min_giveaway_threshold = static_cast<size_t>(num_streams_) * stream_depth_ * 2;
+    // size_t min_giveaway_threshold = static_cast<size_t>(num_streams_) * stream_depth_ * 2;
+    size_t min_giveaway_threshold = static_cast<size_t>(num_streams_) * stream_depth_;
+
     if (queue_.size() > min_giveaway_threshold) {
         size_t to_give = queue_.size() / 2;
         std::vector<token_ptr> batch;
