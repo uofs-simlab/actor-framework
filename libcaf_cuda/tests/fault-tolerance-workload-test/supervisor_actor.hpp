@@ -100,7 +100,7 @@ inline caf::behavior supervisor_actor(caf::stateful_actor<supervisor_state>* sel
                 s.available_slots.erase(slot_it);
                 s.pick_times[suspended.path] = std::chrono::steady_clock::now();
                 int next_batch = std::max(MAX_ITERATIONS / 8, suspended.last_batch_size / 2);
-                self->mail(cg_next_step_atom, next_batch).send(suspended.solver);
+                self->mail(cg_next_step_atom_v, next_batch).send(suspended.solver);
                 s.active_solvers.push_back(suspended.solver);
                 s.task_resources[suspended.path] = slot;
                 s.actor_batch_sizes[suspended.solver] = next_batch;
@@ -141,7 +141,7 @@ inline caf::behavior supervisor_actor(caf::stateful_actor<supervisor_state>* sel
                     self->quit();
                 }
             } else if (meta.iterations == 0) {
-                self->mail(cg_next_step_atom, s.num_iterations).send(solver);
+                self->mail(cg_next_step_atom_v, s.num_iterations).send(solver);
             } else {
                 auto it = std::find(s.active_solvers.begin(), s.active_solvers.end(), solver);
                 auto active_slice = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s.pick_times[task_name]).count();

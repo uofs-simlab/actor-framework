@@ -98,10 +98,10 @@ caf::behavior fault_tolerant_cg_actor(caf::stateful_actor<ft_cg_state<T>>* self,
       st.initialized = true;
 
       caf::cuda::solver_result_meta meta(st.device_id, st.stream_id, 0, false, CG_SUCCESS);
-      self->mail(gpu_done_atom, st.path, caf::actor_cast<caf::actor>(self), std::vector<T>{}, meta).send(st.supervisor);
+      self->mail(gpu_done_atom_v, st.path, caf::actor_cast<caf::actor>(self), std::vector<T>{}, meta).send(st.supervisor);
     },
 
-    [=](cg_next_step_atom, int num_iters) { // Changed to cg_next_step_atom_v
+    [=](cg_next_step_atom, int num_iters) {
       auto& st = self->state();
       caf::cuda::command_runner<T> runner;
       T threshold = st.tol * st.tol;
@@ -161,7 +161,7 @@ caf::behavior fault_tolerant_cg_actor(caf::stateful_actor<ft_cg_state<T>>* self,
       }
       caf::cuda::solver_result_meta meta(st.device_id, st.stream_id, st.iterations, converged, code);
       runner.copy_to_host_async(st.x, [=, supervisor = st.supervisor, path = st.path, self_h = caf::actor_cast<caf::actor>(self)](std::vector<T> sol) {
-        caf::anon_mail(gpu_done_atom, path, self_h, std::move(sol), meta).send(supervisor);
+        caf::anon_mail(gpu_done_atom_v, path, self_h, std::move(sol), meta).send(supervisor);
         if (converged || code != CG_SUCCESS) self->quit();
       });
     },
