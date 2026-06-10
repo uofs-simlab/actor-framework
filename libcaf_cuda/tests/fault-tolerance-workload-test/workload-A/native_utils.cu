@@ -228,10 +228,20 @@ void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>
         int iterations = solve_cg_async(cublas, cusparse, task, stream);
         CHECK_CUDA(cudaStreamSynchronize(stream));
 
+        bool success = (iterations >= 0 && iterations < MAX_ITERATIONS);
+
+        // Fallback mechanism: If standard CG fails to converge, retry using the Jacobi Preconditioner
+        if (!success) {
+            std::cout << "[WORKER " << worker_id << "] CG reached max iterations (" << iterations 
+                      << "). Falling back to Jacobi solver for: " << task.path << std::endl;
+            iterations = solve_pcg_jacobi_async(cublas, cusparse, task, stream);
+            CHECK_CUDA(cudaStreamSynchronize(stream));
+            success = (iterations >= 0 && iterations < MAX_ITERATIONS);
+        }
+
         auto finish_time = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish_time - pick_time).count();
 
-        bool success = (iterations >= 0 && iterations < MAX_ITERATIONS);
         if (success) {
             succeeded++;
         } else {

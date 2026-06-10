@@ -35,8 +35,7 @@ enum cg_error_type : int {
   CG_NAN_INF = 2,
   CG_STAGNATION = 3,
   CG_BREAKDOWN = 4,
-  CG_RESIDUAL_FACTOR_FAIL = 5,
-  CG_JACOBI_RETRY = 6
+  CG_RESIDUAL_FACTOR_FAIL = 5
 };
 
 inline std::string to_string(cg_error_type err) {
@@ -47,7 +46,6 @@ inline std::string to_string(cg_error_type err) {
     case CG_STAGNATION: return "Stagnation Detected (Residual stopped changing)";
     case CG_BREAKDOWN: return "Solver Breakdown (Division by zero/near-zero)";
     case CG_RESIDUAL_FACTOR_FAIL: return "Residual Factor Check Failed";
-    case CG_JACOBI_RETRY: return "Falling back to Jacobi Preconditioner";
     default: return "Unknown Error (" + std::to_string(static_cast<int>(err)) + ")";
   }
 }
