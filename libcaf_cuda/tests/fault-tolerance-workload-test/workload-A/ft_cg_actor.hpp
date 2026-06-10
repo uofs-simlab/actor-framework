@@ -24,7 +24,7 @@ struct ft_cg_state {
 
   // GPU Buffers
   mem_ptr<int> A_rp, A_ci, d_err;
-  mem_ptr<T> A_val, b, x, r, p, w, y_tmp;
+  mem_ptr<T> A_val, b, x, r, p, w, z, D_inv, y_tmp;
   mem_ptr<char> spmv_ws;
 
   // Config
@@ -37,11 +37,12 @@ struct ft_cg_state {
   // Supervision & Monitoring
   caf::actor supervisor;
   device_ptr d_ptr;
-  program_ptr stab_prog;
+  program_ptr stab_prog, diag_prog;
 
   T initial_rho = 0;
   T current_rho = 0;
   T old_rho = 0;
+  bool is_jacobi = false;
   bool initialized = false;
   std::shared_ptr<MatrixData> pinned_data;
 };
@@ -79,10 +80,13 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
       auto& mgr = manager::get();
       // Load stability kernel from file as requested
       st.stab_prog = mgr.create_program_from_cubin("stability_kernels.cubin", "check_stability", st.d_ptr);
+      st.diag_prog = mgr.create_program_from_cubin("jacobi_kernels.cubin", "extract_diag_inv", st.d_ptr);
 
       st.r = runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
       st.p = runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
       st.w = runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
+      st.z = runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
+      st.D_inv = runner.transfer_memory(st.device_id, st.stream_id, out<T>(st.n));
       st.y_tmp = runner.transfer_memory(st.device_id, st.stream_id, out<T>(1));
       st.d_err = runner.transfer_memory(st.device_id, st.stream_id, out<int>(1));
       
@@ -121,18 +125,35 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
 
         if (st.iterations > 1) {
           T beta = st.current_rho / st.old_rho;
-          if constexpr (std::is_same_v<T, double>) {
-            st.d_ptr->dcopy(st.stream_id, st.n, st.r, st.w);
-            st.d_ptr->daxpy(st.stream_id, st.n, beta, st.p, st.w);
-            st.d_ptr->dcopy(st.stream_id, st.n, st.w, st.p);
+          if (st.is_jacobi) {
+            if constexpr (std::is_same_v<T, double>) {
+              st.d_ptr->dcopy(st.stream_id, st.n, st.z, st.w);
+              st.d_ptr->daxpy(st.stream_id, st.n, beta, st.p, st.w);
+              st.d_ptr->dcopy(st.stream_id, st.n, st.w, st.p);
+            } else {
+              st.d_ptr->scopy(st.stream_id, st.n, st.z, st.w);
+              st.d_ptr->saxpy(st.stream_id, st.n, static_cast<float>(beta), st.p, st.w);
+              st.d_ptr->scopy(st.stream_id, st.n, st.w, st.p);
+            }
           } else {
-            st.d_ptr->scopy(st.stream_id, st.n, st.r, st.w);
-            st.d_ptr->saxpy(st.stream_id, st.n, static_cast<float>(beta), st.p, st.w);
-            st.d_ptr->scopy(st.stream_id, st.n, st.w, st.p);
+            if constexpr (std::is_same_v<T, double>) {
+              st.d_ptr->dcopy(st.stream_id, st.n, st.r, st.w);
+              st.d_ptr->daxpy(st.stream_id, st.n, beta, st.p, st.w);
+              st.d_ptr->dcopy(st.stream_id, st.n, st.w, st.p);
+            } else {
+              st.d_ptr->scopy(st.stream_id, st.n, st.r, st.w);
+              st.d_ptr->saxpy(st.stream_id, st.n, static_cast<float>(beta), st.p, st.w);
+              st.d_ptr->scopy(st.stream_id, st.n, st.w, st.p);
+            }
           }
         } else {
-          if constexpr (std::is_same_v<T, double>) st.d_ptr->dcopy(st.stream_id, st.n, st.r, st.p);
-          else st.d_ptr->scopy(st.stream_id, st.n, st.r, st.p);
+          if (st.is_jacobi) {
+            if constexpr (std::is_same_v<T, double>) st.d_ptr->dcopy(st.stream_id, st.n, st.z, st.p);
+            else st.d_ptr->scopy(st.stream_id, st.n, st.z, st.p);
+          } else {
+            if constexpr (std::is_same_v<T, double>) st.d_ptr->dcopy(st.stream_id, st.n, st.r, st.p);
+            else st.d_ptr->scopy(st.stream_id, st.n, st.r, st.p);
+          }
         }
 
         st.d_ptr->spmv_csr(st.stream_id, st.n, st.n, st.nnz, T{1}, st.A_rp, st.A_ci, st.A_val, st.p, T{0}, st.w, st.spmv_ws);
@@ -155,8 +176,15 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
         }
 
         st.old_rho = st.current_rho;
-        if constexpr (std::is_same_v<T, double>) st.d_ptr->ddot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
-        else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
+        if (st.is_jacobi) {
+          if constexpr (std::is_same_v<T, double>) st.d_ptr->d_elementwise_multiply(st.stream_id, st.n, st.D_inv, st.r, st.z);
+          else st.d_ptr->s_elementwise_multiply(st.stream_id, st.n, st.D_inv, st.r, st.z);
+          if constexpr (std::is_same_v<T, double>) st.d_ptr->ddot(st.stream_id, st.n, st.r, st.z, st.y_tmp);
+          else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.z, st.y_tmp);
+        } else {
+          if constexpr (std::is_same_v<T, double>) st.d_ptr->ddot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
+          else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.r, st.y_tmp);
+        }
         st.current_rho = runner.copy_to_host(st.y_tmp)[0];
 
       }
@@ -196,6 +224,28 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
       }
 
       if (code != CG_SUCCESS) converged = false;
+
+      // Fallback: if CG failed and we haven't tried Jacobi, transition and retry.
+      if (code != CG_SUCCESS && !st.is_jacobi) {
+        self->println("[INFO] Solver failed in standard mode ({}). Falling back to Jacobi for: {}", to_string(static_cast<cg_error_type>(code)), st.path);
+        st.is_jacobi = true;
+        st.iterations = 0;
+        st.strikes = 0;
+
+        // Setup Jacobi Preconditioning
+        nd_range range_diag((st.n + 255) / 256, 1, 1, 256, 1, 1);
+        st.d_ptr->launch_kernel_mem_ref(st.diag_prog->get_kernel(st.d_ptr->getId()), range_diag,
+                                        std::make_tuple(in<int>(st.n), st.A_rp, st.A_ci, st.A_val, st.D_inv), st.stream_id);
+        if constexpr (std::is_same_v<T, double>) st.d_ptr->d_elementwise_multiply(st.stream_id, st.n, st.D_inv, st.r, st.z);
+        else st.d_ptr->s_elementwise_multiply(st.stream_id, st.n, st.D_inv, st.r, st.z);
+        if constexpr (std::is_same_v<T, double>) st.d_ptr->ddot(st.stream_id, st.n, st.r, st.z, st.y_tmp);
+        else st.d_ptr->sdot(st.stream_id, st.n, st.r, st.z, st.y_tmp);
+        
+        st.current_rho = runner.copy_to_host(st.y_tmp)[0];
+        st.initial_rho = st.current_rho;
+        code = CG_SUCCESS;
+        converged = false;
+      }
 
       solver_result_meta meta(st.device_id, st.stream_id, st.iterations, converged, code);
       
