@@ -49,7 +49,23 @@ add_custom_command(
   VERBATIM
 )
 
+set(JACOBI_KERNEL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/jacobi_kernels.cu")
+set(JACOBI_KERNEL_CUBIN "${CMAKE_CURRENT_BINARY_DIR}/jacobi_kernels.cubin")
+
+add_custom_command(
+  OUTPUT ${JACOBI_KERNEL_CUBIN}
+  COMMAND ${CUDAToolkit_NVCC_EXECUTABLE}
+          -cubin
+          -arch=${CUDA_ARCH}
+          -o ${JACOBI_KERNEL_CUBIN}
+          ${JACOBI_KERNEL_SRC}
+  DEPENDS ${JACOBI_KERNEL_SRC}
+  COMMENT "Compiling CUDA kernel ${JACOBI_KERNEL_SRC} for architecture: ${CUDA_ARCH}"
+  VERBATIM
+)
+
 add_custom_target(stability_kernels_cubin ALL DEPENDS ${STABILITY_KERNEL_CUBIN})
+add_custom_target(jacobi_kernels_cubin ALL DEPENDS ${JACOBI_KERNEL_CUBIN})
 
 
 # 5) Declare your executable and its source files
@@ -57,6 +73,7 @@ add_executable(test main.test.cpp sparse_utils.cpp)
 target_sources(test PRIVATE
   atoms.hpp
   ft_cg_actor.hpp
+  ft_cg_jacobi_actor.hpp
   supervisor_actor.hpp
 )
 
