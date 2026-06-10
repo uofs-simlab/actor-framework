@@ -243,7 +243,7 @@ behavior fault_tolerant_cg_actor(stateful_actor<ft_cg_state<T>>* self,
         
         st.current_rho = runner.copy_to_host(st.y_tmp)[0];
         st.initial_rho = st.current_rho;
-        code = CG_SUCCESS;
+        code = CG_JACOBI_RETRY;
         converged = false;
       }
 

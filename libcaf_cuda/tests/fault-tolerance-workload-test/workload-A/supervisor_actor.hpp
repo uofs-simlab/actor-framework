@@ -114,6 +114,12 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 self->println("[INFO] Resuming solver for: {} (Device: {}, Stream: {}, Batch: {})", 
                               suspended.path, slot.device_id, slot.stream_id, next_batch);
 
+                
+                // Resume on the same stream ID. No update_stream_atom_v needed.
+                self->mail(cg_next_step_atom_v, next_batch).send(suspended.solver);
+
+               
+
                 // Resume on the same stream ID. No update_stream_atom_v needed.
                 self->mail(cg_next_step_atom_v, next_batch).send(suspended.solver);
 
@@ -135,7 +141,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
         [=](gpu_done_atom, const std::string& task_name, caf::actor solver, std::vector<float>& solution, solver_result_meta meta) {
             auto& s = self->state();
 
-            if (meta.converged || meta.error_code != CG_SUCCESS) {
+            if (meta.converged || (meta.error_code != CG_SUCCESS && meta.error_code != CG_JACOBI_RETRY)) {
                 auto end_time = std::chrono::steady_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   end_time - s.start_times[task_name]).count();
@@ -211,6 +217,12 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
                 s.task_resources.erase(task_name);
 
                 int last_batch = s.actor_batch_sizes[solver];
+                
+                // If switching to Jacobi, set last_batch such that resume uses MAX_ITERATIONS
+                if (meta.error_code == CG_JACOBI_RETRY) {
+                    last_batch = MAX_ITERATIONS;
+                }
+
                 s.suspended_queue.push_back({solver, task_name, last_batch, slot.device_id, slot.stream_id});
 
                 self->println("[INFO] Suspending solver for: {} (Reclaimed Device: {}, Stream: {})", 
@@ -218,6 +230,12 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
 
                 spawn_next();
             }
+        }
+        ,
+        [=](jacobi_fallback_atom, const std::string& task_name, caf::actor solver_actor) {
+            auto& s = self->state();
+            self->println("[INFO] Solver for {} (Actor: {}) fell back to Jacobi. Adjusting next batch size to initial value.", task_name, to_string(solver_actor));
+            s.actor_batch_sizes[solver_actor] = s.num_iterations; // Reset to initial batch size (MAX_ITERATIONS )
         }
        
     };
