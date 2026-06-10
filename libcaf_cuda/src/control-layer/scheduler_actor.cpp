@@ -75,7 +75,7 @@ void scheduler_actor::on_reclaim(int /*val*/, int /*mem*/, int /*time*/, int /*d
 void scheduler_actor::on_set_neighbors(std::vector<caf::actor> neighbors) {
     schedulers_ = std::move(neighbors);
     victims_.clear();
-    auto self_handle = neighbors[device_number_];
+    auto self_handle = caf::actor_cast<caf::actor>(this);
     for (const auto& neighbor : schedulers_) {
         if (neighbor != self_handle) {
             victims_.push_back(neighbor);
