@@ -108,6 +108,11 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
     const int num_distinct_sizes = 10;
     const std::vector<int> actor_counts = {50000};
 
+
+    //  const std::vector<int> actor_counts = {5};
+
+
+
     // Generate deterministic random pool once
     auto pool_ptr = std::make_shared<MatrixPool>(
         create_matrix_pool_random(num_distinct_sizes, min_N, max_N, 42));
@@ -156,11 +161,16 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         double elapsed = time_run([&]() {
             std::cout << "[MAIN] Dispatching batch to scheduler..." << std::endl;
             mgr.send_scheduler_actor_message(std::move(tokens));
+
+            // The dispatch is asynchronous. To get an accurate measurement, we must
+            // block until the exit_actor terminates (signaling all 50k tasks are done).
+            scoped_actor self{sys};
+            self->wait_for(exit_actor);
         });
 
         std::cout << "Run complete. Time: " << elapsed << " s\n";
+        manager::shutdown(); // Reset manager state for the next potential iteration
     }
-    sys.await_all_actors_done(); // Wait for all actors, including exit_actor, to finish
 }
 
 void caf_main(actor_system& sys) {
