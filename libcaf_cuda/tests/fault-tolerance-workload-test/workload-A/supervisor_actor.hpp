@@ -40,14 +40,15 @@ struct supervisor_state {
   std::unordered_map<caf::actor, int> actor_batch_sizes;
   std::deque<resource_slot> available_slots;
   int max_active = 1; // Admission control limit to be mindful of GPU memory.
-  int num_iterations = MAX_ITERATIONS / 2;
+  int num_iterations = MAX_ITERATIONS;
   int num_gpus = 0;
   int tasks_succeeded = 0;
   int tasks_failed = 0;
   std::chrono::steady_clock::time_point benchmark_start;
 };
 
-behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<MatrixTask> tasks, int initial_max_active, std::chrono::steady_clock::time_point start_time) {
+behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<MatrixTask> tasks, 
+  int initial_max_active, std::chrono::steady_clock::time_point start_time) {
     auto& st = self->state();
     st.queue.insert(st.queue.end(), std::make_move_iterator(tasks.begin()), std::make_move_iterator(tasks.end()));
     st.max_active = initial_max_active;
@@ -55,7 +56,7 @@ behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<Ma
     st.num_gpus = manager::get().get_num_devices();
 
     // Initialize the pool with streams interleaved across all available GPUs
-    for (int s = 0; s < 32; ++s) {
+    for (int s = 0; s < 4; ++s) {
       for (int g = 0; g < st.num_gpus; ++g) {
         st.available_slots.push_back({g, s});
       }
