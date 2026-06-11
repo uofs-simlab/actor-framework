@@ -234,7 +234,7 @@ int solve_cg_async(cublasHandle_t cublas, cusparseHandle_t cusparse,
     if (out_code == CG_SUCCESS) {
         if (!converged) {
             if (k >= max_iters) out_code = CG_MAX_ITER;
-            else if (std::abs(initial_rho - r1) < 1e-14f) out_code = CG_STAGNATION;
+            else if (std::abs(initial_rho - r1) < 1e-12f) out_code = CG_STAGNATION;
             else if (initial_rho > 0 && (r1 / initial_rho) > 0.9999f) out_code = CG_RESIDUAL_FACTOR_FAIL;
         }
     }
@@ -344,7 +344,8 @@ void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>
 
         record_job(task.path, task.enqueue_time, pick_time, finish_time, iterations, success);
 
-        std::cout << "[WORKER " << worker_id << "] Done: " << task.path << " (" << iterations << " iters, " << duration << " ms)." << std::endl;
+        std::cout << "[WORKER " << worker_id << "] Done: " << task.path << " (" << iterations << " iters, " << duration << " ms) ["
+                  << (success ? "SUCCESS" : "FAILED") << "]." << std::endl;
     }
     CHECK_CUBLAS(cublasDestroy(cublas));
     CHECK_CUSPARSE(cusparseDestroy(cusparse));

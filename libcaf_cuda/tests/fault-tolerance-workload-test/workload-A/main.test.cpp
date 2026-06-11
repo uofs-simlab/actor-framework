@@ -28,7 +28,10 @@ void caf_main(actor_system& sys) {
          //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/spd", CGS_SOLVER);
         //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/unsymmetric", CGS_SOLVER);
          //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrix_corpus_v2/matrices/unsymmetric", CGS_SOLVER);
-         auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/mixed", CGS_SOLVER);
+         //auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/mixed", CGS_SOLVER);
+
+         auto tasks_vec = scan_for_matrices("/scratch/nqr159/matrices/workloadA", CGS_SOLVER);
+
 
         int num_gpus = manager::get().get_num_devices();
         std::cout << "[INFO] Found " << num_gpus << " GPUs\n";
