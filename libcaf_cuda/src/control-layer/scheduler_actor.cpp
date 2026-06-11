@@ -88,7 +88,7 @@ std::vector<token_ptr> scheduler_actor::on_steal_request(int requesting_device) 
     // size_t min_giveaway_threshold = static_cast<size_t>(num_streams_) * stream_depth_;
 
 
-    size_t min_giveaway_threshold = 1;
+    size_t min_giveaway_threshold = 0;
 
 
     if (queue_.size() > min_giveaway_threshold) {
