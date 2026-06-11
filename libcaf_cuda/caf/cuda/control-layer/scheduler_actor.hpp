@@ -37,6 +37,8 @@ protected:
     std::vector<caf::actor> victims_;
     std::mt19937 rng_;
     std::queue<int> available_streams_;
+    int current_backoff_ = 0;
+    bool awaiting_steal_ = false;
 };
 
 } // namespace caf::cuda

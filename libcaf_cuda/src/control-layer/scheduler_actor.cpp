@@ -41,12 +41,18 @@ caf::behavior scheduler_actor::make_behavior() {
             return on_steal_request(requesting_device);
         },
         [this](std::string word) {
-             std::cout << "Scheduler " << device_number_ << " received: " << word << "\n";
+            if (word == "retry_steal") {
+                current_backoff_ = 0;
+                schedule_work();
+            } else {
+                std::cout << "Scheduler " << device_number_ << " received: " << word << "\n";
+            }
         }
     };
 }
 
 void scheduler_actor::on_receive(const token_ptr& tok) {
+    current_backoff_ = 0; // Reset backoff when new work arrives locally
     if (tok->getType() == LAUNCH) {
         queue_.push(tok);
         schedule_work();
@@ -58,6 +64,9 @@ void scheduler_actor::on_receive(const token_ptr& tok) {
 }
 
 void scheduler_actor::on_receive_batch(std::vector<token_ptr> tokens) {
+    if (!tokens.empty()) {
+        current_backoff_ = 0; // Reset backoff when work is successfully received
+    }
     for (auto& tok : tokens) {
         queue_.push(std::move(tok));
     }
@@ -131,14 +140,31 @@ void scheduler_actor::schedule_work() {
     }
 
     // Work Stealing logic
-     if (multi_gpu_ && queue_.empty() && in_flight_ < (capacity / 2)) {
-    // if (multi_gpu_ && queue_.empty() && in_flight_ < (capacity )) {
-
+    if (multi_gpu_ && queue_.empty() && in_flight_ < (capacity / 2) && !awaiting_steal_ && current_backoff_ == 0) {
         // Randomly select a neighbor to request work from using the pre-generated victims list
         if (!victims_.empty()) {
             std::uniform_int_distribution<size_t> distrib(0, victims_.size() - 1);
             size_t idx = distrib(rng_);
-            this->mail(device_number_).send(victims_[idx]);
+            
+            awaiting_steal_ = true;
+            this->mail(device_number_).request(victims_[idx], infinite).then(
+                [this](std::vector<token_ptr>& stolen) {
+                    awaiting_steal_ = false;
+                    if (!stolen.empty()) {
+                        on_receive_batch(std::move(stolen));
+                    } else {
+                        // Work stealing failed: increase backoff and schedule a retry
+                        current_backoff_ = (current_backoff_ == 0) ? 1 : std::min(100, current_backoff_ * 2);
+                        this->mail("retry_steal").urgent().delay(std::chrono::milliseconds(current_backoff_)).send(this);
+                    }
+                },
+                [this](error& err) {
+                    awaiting_steal_ = false;
+                    // On network error or timeout, also backoff to avoid hammerring a dead/slow neighbor
+                    current_backoff_ = (current_backoff_ == 0) ? 1 : std::min(100, current_backoff_ * 2);
+                    this->mail("retry_steal").urgent().delay(std::chrono::milliseconds(current_backoff_)).send(this);
+                }
+            );
         }
     }
 }
