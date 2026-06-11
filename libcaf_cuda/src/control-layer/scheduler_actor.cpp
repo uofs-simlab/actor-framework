@@ -99,6 +99,9 @@ std::vector<token_ptr> scheduler_actor::on_steal_request(int requesting_device) 
                   << " tasks with device " << requesting_device << "\n";
         return batch;
     }
+     std::cout << "[INFO] Scheduler " << device_number_ 
+                  << " sharing no "
+                  << " tasks with device " << requesting_device << "\n";
     return {};
 }
 
