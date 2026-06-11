@@ -300,15 +300,15 @@ void gpu_stream_worker(int device_id, int worker_id, ThreadSafeQueue<MatrixTask>
         int strikes = 0;
 
         // Try standard CG with the 3-strikes policy for non-fatal errors
-        do {
+        // do {
             iterations = solve_cg_async(cublas, cusparse, n, nnz, d_val, d_row_ptr, d_col_ind, d_b, d_x, d_r, d_p, d_Ap, d_err, stream, code);
-            if (code == CG_SUCCESS) break;
+            // if (code == CG_SUCCESS) break;
             
             bool is_fatal = (code == CG_NAN_INF || code == CG_BREAKDOWN);
-            if (is_fatal) break;
+            // if (is_fatal) break;
 
             strikes++;
-        } while (strikes < 3);
+        // } while (strikes < 3);
 
         bool success = (code == CG_SUCCESS);
 
