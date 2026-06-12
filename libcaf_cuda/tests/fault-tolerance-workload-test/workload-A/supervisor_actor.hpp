@@ -48,18 +48,16 @@ struct supervisor_state {
 };
 
 behavior supervisor_actor(stateful_actor<supervisor_state>* self, std::vector<MatrixTask> tasks, 
-  int initial_max_active, std::chrono::steady_clock::time_point start_time) {
+  int initial_max_active, std::chrono::steady_clock::time_point start_time, int target_device) {
     auto& st = self->state();
     st.queue.insert(st.queue.end(), std::make_move_iterator(tasks.begin()), std::make_move_iterator(tasks.end()));
     st.max_active = initial_max_active;
     st.benchmark_start = start_time;
-    st.num_gpus = manager::get().get_num_devices();
+    st.num_gpus = 1; 
 
-    // Initialize the pool with streams interleaved across all available GPUs
+    // Initialize the pool with streams for the assigned GPU
     for (int s = 0; s < 4; ++s) {
-      for (int g = 0; g < st.num_gpus; ++g) {
-        st.available_slots.push_back({g, s});
-      }
+      st.available_slots.push_back({target_device, s});
     }
 
     auto spawn_next = [self]() {

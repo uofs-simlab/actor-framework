@@ -53,10 +53,27 @@ void caf_main(actor_system& sys) {
             task.enqueue_time = std::chrono::steady_clock::now();
         }
 
-        auto benchmark_start = std::chrono::steady_clock::now();
-        int admission_control_limit = 4 * num_gpus; // 4 concurrent tasks per GPU
+        // Workload partitioning logic (Timed)
+        auto part_start = std::chrono::steady_clock::now();
+        auto partitions = make_contiguous_partitions(tasks_vec.size(), num_gpus, 1);
+        
+        std::vector<std::vector<MatrixTask>> partitioned_workloads(num_gpus);
+        for (int i = 0; i < num_gpus; ++i) {
+            auto& p = partitions[i];
+            partitioned_workloads[i].reserve(p.end - p.begin);
+            for (size_t j = p.begin; j < p.end; ++j) {
+                partitioned_workloads[i].push_back(std::move(tasks_vec[j]));
+            }
+        }
+        auto part_end = std::chrono::steady_clock::now();
+        auto part_ms = std::chrono::duration_cast<std::chrono::milliseconds>(part_end - part_start).count();
+        std::cout << "[INFO] Workload partitioning completed in " << part_ms << " ms\n";
 
-        sys.spawn(supervisor_actor, std::move(tasks_vec), admission_control_limit, benchmark_start);
+        auto benchmark_start = std::chrono::steady_clock::now();
+        for (int i = 0; i < num_gpus; ++i) {
+            sys.spawn(supervisor_actor, std::move(partitioned_workloads[i]), 4, benchmark_start, i);
+        }
+
         sys.await_all_actors_done();
     }
     manager::shutdown();
