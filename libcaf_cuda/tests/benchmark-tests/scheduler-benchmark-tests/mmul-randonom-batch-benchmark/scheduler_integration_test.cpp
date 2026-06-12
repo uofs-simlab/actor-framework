@@ -23,7 +23,6 @@ struct MatrixPool {
 
 struct task_actor_state {
     program_ptr prog;
-    int N_val;
     std::shared_ptr<MatrixPool> pool;
 };
 
@@ -55,9 +54,14 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_
             if (res->getType() == LAUNCH_RESPONSE) {
                 auto& st = self->state();
                 
-                // We need to cast the base response_token to access the specific nd_range stored in it.
+                // Extract N from the token ID and compute kernel dimensions dynamically.
                 auto launch_res = static_cast<launch_response_token*>(res.get());
-                int N = st.N_val;
+                int N = std::stoi(launch_res->getId());
+
+                const int THREADS = 32;
+                nd_range range((N + THREADS - 1) / THREADS, 
+                               (N + THREADS - 1) / THREADS, 1, 
+                               THREADS, THREADS, 1);
 
                 // 1. Setup GPU arguments.
                 // Fetch data from the shared pool only when scheduled to save RAM
@@ -67,7 +71,7 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_
                 auto in_n = create_in_arg(N);
 
                 // 2. Launch Work asynchronously using the stream and device assigned by the scheduler.
-                auto result_tuple = runner.run_async(st.prog, launch_res->getRange(), res, in_a, in_b, out_c, in_n);
+                auto result_tuple = runner.run_async(st.prog, range, res, in_a, in_b, out_c, in_n);
                 auto d_c = std::get<2>(result_tuple);
 
                 // 3. Asynchronous Copyback.
@@ -85,10 +89,9 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_
 }
 
 // Helper function to initialize task_actor_state
-behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, std::shared_ptr<MatrixPool> pool, caf::actor exit_actor) {
+behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, std::shared_ptr<MatrixPool> pool, caf::actor exit_actor) {
     auto& st = self->state();
     st.prog = std::move(prog);
-    st.N_val = N_val;
     st.pool = std::move(pool);
     return task_actor_fun(self, exit_actor); // Pass exit_actor to task_actor_fun
 }
@@ -141,21 +144,24 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         // Spawn the exit actor for this specific test run (moved inside the loop)
         auto exit_actor = sys.spawn(caf::cuda::exit_actor_fun, num_tasks);
 
-        // Spawn task actors and prepare tokens
+        // 1. Spawn a fixed pool of 100 workers to reuse across all tasks.
+        const int max_workers = 100;
+        std::vector<caf::actor> workers;
+        for (int i = 0; i < max_workers; ++i) {
+            workers.push_back(sys.spawn(make_task_actor_behavior, program, pool_ptr, exit_actor));
+        }
+
+        // 2. Prepare tokens and assign to workers in round-robin fashion.
         for (int i = 0; i < num_tasks; ++i) {
             int current_N = available_Ns[dist_N_idx(rng)];
             nd_range range((current_N + THREADS - 1) / THREADS, 
                            (current_N + THREADS - 1) / THREADS, 1, 
                            THREADS, THREADS, 1);
             
-            auto worker = sys.spawn(make_task_actor_behavior,
-                                    program,
-                                    current_N, 
-                                    pool_ptr,
-                                    exit_actor); // Pass exit_actor to task actors
+            auto worker = workers[i % max_workers];
 
             tokens.push_back(make_launch_token(program, range, 0, 
-                             "task_" + std::to_string(i), worker));
+                             std::to_string(current_N), worker));
         }
 
         double elapsed = time_run([&]() {
