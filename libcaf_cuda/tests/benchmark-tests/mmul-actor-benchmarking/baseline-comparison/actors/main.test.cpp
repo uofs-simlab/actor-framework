@@ -127,7 +127,7 @@ return {
       auto output = command.run_async(
 		      self->state().program,
 		      dims,
-		      1, 0, device,
+		      stream, 0, device,
 		      arg1,arg2,out<int>{N*N},in<int>{N});
 
 	    caf::cuda::mem_ptr<int> dC = std::get<2>(output);
@@ -141,10 +141,8 @@ return {
             });
         }
         else {
-           mmul_command.copy_to_host_async(dC, matrixC.data(), N*N, [self_hdl](int*, size_t) {
-            //do nothing there is nothing to do
-          });
-
+           mmul_command.copy_to_host_async(dC, matrixC.data(), N*N );
+          
         }
         
     },
