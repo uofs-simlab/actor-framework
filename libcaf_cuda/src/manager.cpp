@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <mutex>
 #include <map>
+#include <random>
 #include "caf/cuda/control-layer/scheduler_actor.hpp"
 #include "caf/cuda/control-layer/token_factory.hpp" // For make_behavior_token
 #include "caf/cuda/manager_config.hpp"
@@ -383,6 +384,17 @@ void manager::send_scheduler_actor_message(std::vector<token_ptr> tokens) {
 
         caf::anon_mail(std::move(chunk)).send(scheduler_actors_[i]);
     }
+}
+
+void manager::send_scheduler_actor_message(token_ptr token) {
+    if (scheduler_actors_.empty())
+        return;
+
+    static thread_local std::mt19937 generator(std::random_device{}());
+    std::uniform_int_distribution<size_t> distribution(0, scheduler_actors_.size() - 1);
+    size_t idx = distribution(generator);
+
+    caf::anon_mail(std::move(token)).send(scheduler_actors_[idx]);
 }
 
 caf::actor manager::get_scheduler_actor() {

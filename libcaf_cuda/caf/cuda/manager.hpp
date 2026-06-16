@@ -198,6 +198,9 @@ public:
   // Sends a batch of tokens to the scheduler actors, distributing them statically.
   void send_scheduler_actor_message(std::vector<token_ptr> tokens);
 
+  // Sends a single token to a randomly selected scheduler actor.
+  void send_scheduler_actor_message(token_ptr token);
+
   // Returns the first scheduler actor. Useful for single-GPU setups or general dispatch.
   caf::actor get_scheduler_actor();
 
