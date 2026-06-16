@@ -149,9 +149,7 @@ return {
         
     },
     [=](kernel_done_atom) {
-        if (++self->state().results_received == self->state().total_expected) {
             self->quit();
-        }
     }
   };
 }
