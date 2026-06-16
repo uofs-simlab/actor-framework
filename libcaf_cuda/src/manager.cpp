@@ -429,4 +429,20 @@ void manager::send_scheduler_actor_message(const std::string& behavior_name, int
     }
 }
 
+CUcontext manager::get_context(int device_number) {
+    auto dev = find_device(device_number);
+    if (!dev) {
+        throw std::runtime_error("Invalid device number: " + std::to_string(device_number));
+    }
+    return dev->getContext();
+}
+
+CUstream manager::get_stream(int stream_number, int device_number) {
+    auto dev = find_device(device_number);
+    if (!dev) {
+        throw std::runtime_error("Invalid device number: " + std::to_string(device_number));
+    }
+    return dev->get_stream_for_actor(stream_number);
+}
+
 } // namespace caf::cuda

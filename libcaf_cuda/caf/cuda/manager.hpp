@@ -210,6 +210,12 @@ public:
   // Sends a behavior change message to a specific scheduler actor.
   void send_scheduler_actor_message(const std::string& behavior_name, int device_number);
 
+  /// Returns the CUDA context associated with the given device number.
+  CUcontext get_context(int device_number);
+
+  /// Returns the CUDA stream associated with the given stream number (actor ID) and device number.
+  CUstream get_stream(int stream_number, int device_number);
+
 private:
   explicit manager(caf::actor_system& sys)
     : system_(sys), platform_(platform::create()) {

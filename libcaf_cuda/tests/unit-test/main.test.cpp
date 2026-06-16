@@ -757,11 +757,43 @@ void test_command_runner_memory_transfer([[maybe_unused]] caf::actor_system& sys
 }
 
 
-
-
-
-
-
+// Test for context and stream retrieval helper methods
+void test_context_stream_retrieval([[maybe_unused]] caf::actor_system& sys) {
+  using namespace caf::cuda;
+  auto& mgr = manager::get();
+  
+  // Test manager context and stream retrieval
+  CUcontext m_ctx = mgr.get_context(0);
+  assert(m_ctx != nullptr);
+  
+  CUstream m_stream = mgr.get_stream(1, 0);
+  assert(m_stream != nullptr);
+  
+  // Test command_runner context and stream retrieval
+  command_runner<> runner;
+  CUcontext cr_ctx = runner.get_context(0);
+  assert(cr_ctx == m_ctx);
+  
+  CUstream cr_stream = runner.get_stream(1, 0);
+  assert(cr_stream == m_stream);
+  
+  // Test invalid device exception throwing
+  bool manager_threw = false;
+  try {
+    mgr.get_context(9999);
+  } catch (const std::exception&) {
+    manager_threw = true;
+  }
+  assert(manager_threw);
+  
+  bool runner_threw = false;
+  try {
+    runner.get_context(9999);
+  } catch (const std::exception&) {
+    runner_threw = true;
+  }
+  assert(runner_threw);
+}
 
 
 // Structure to hold test information
@@ -790,7 +822,8 @@ const std::vector<Test> tests = {
     {"test_invalid_kernel_params", test_invalid_kernel_params},
     {"test_stream_async_execution", test_stream_async_execution},
     {"test_compare_strings", test_compare_strings},
-    {"test_command_runner_memory_transfer", test_command_runner_memory_transfer}
+    {"test_command_runner_memory_transfer", test_command_runner_memory_transfer},
+    {"test_context_stream_retrieval", test_context_stream_retrieval}
 };
 
 // Function to run a single test and report its result

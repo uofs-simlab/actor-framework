@@ -359,6 +359,24 @@ public:
     dev->synchronize_event(std::move(e));
   }
 
+  // -------------------------------------------------------------------------
+  // CUDA Context and Stream Retrieval
+  // -------------------------------------------------------------------------
+
+  /// Returns the CUDA context associated with the given device number.
+  CUcontext get_context(int device_number) {
+      auto plat = platform::create();
+      auto dev = plat->getDevice(device_number);
+      return dev->getContext();
+  }
+
+  /// Returns the CUDA stream associated with the given stream number (actor ID) and device number.
+  CUstream get_stream(int stream_number, int device_number) {
+      auto plat = platform::create();
+      auto dev = plat->schedule(stream_number, device_number);
+      return dev->get_stream_for_actor(stream_number);
+  }
+
 };
 
 } // namespace caf::cuda
