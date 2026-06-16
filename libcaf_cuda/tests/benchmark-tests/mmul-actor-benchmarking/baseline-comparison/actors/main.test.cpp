@@ -132,18 +132,26 @@ return {
 
 	    caf::cuda::mem_ptr<int> dC = std::get<2>(output);
 
-            if (++self->state().results_received == self->state().total_expected) {
-                auto self_hdl = caf::actor_cast<caf::actor>(self);
-                mmul_command.copy_to_host_async(dC, matrixC.data(), N*N, [self_hdl](int*, size_t) {
-                    caf::anon_mail(kernel_done_atom_v).send(self_hdl);
-                });
-            } else {
-                // Fire-and-forget: No host callback, no synchronization
-                mmul_command.copy_to_host_async(dC, matrixC.data(), N*N);
-            }
+        auto self_hdl = caf::actor_cast<caf::actor>(self);
+      
+        
+        if (++self->state().results_received == self->state().total_expected) {
+           mmul_command.copy_to_host_async(dC, matrixC.data(), N*N, [self_hdl](int*, size_t) {
+                caf::anon_mail(kernel_done_atom_v).send(self_hdl);
+            });
+        }
+        else {
+           mmul_command.copy_to_host_async(dC, matrixC.data(), N*N, [self_hdl](int*, size_t) {
+            //do nothing there is nothing to do
+          });
+
+        }
+        
     },
     [=](kernel_done_atom) {
-        self->quit();
+        if (++self->state().results_received == self->state().total_expected) {
+            self->quit();
+        }
     }
   };
 }
