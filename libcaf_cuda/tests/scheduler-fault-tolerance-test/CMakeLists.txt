@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS      OFF)
 
 # 2) Set CAF source and build directories
-set(CAF_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../actor-framework")
+set(CAF_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../actor-framework")
 set(CAF_BUILD "${CAF_SRC}/build")
 
 
@@ -30,26 +30,26 @@ include_directories(
 
 
 # 5) Declare your executables
-add_executable(test main.test.cpp)
-target_compile_definitions(test PRIVATE CAF_ENABLE_LOGGING)
+# add_executable(test main.test.cpp)
+# target_compile_definitions(test PRIVATE CAF_ENABLE_LOGGING)
 add_executable(scheduler_test scheduler_integration_test.cpp)
 target_compile_definitions(scheduler_test PRIVATE CAF_ENABLE_LOGGING)
 
-add_executable(work-stealing work-stealing.cpp)
-target_compile_definitions(work-stealing PRIVATE CAF_ENABLE_LOGGING)
+# add_executable(work-stealing work-stealing.cpp)
+# target_compile_definitions(work-stealing PRIVATE CAF_ENABLE_LOGGING)
 
-add_executable(cuda-baseline cuda-baseline.cpp)
-target_link_libraries(cuda-baseline PRIVATE CUDA::cuda_driver)
+# add_executable(cuda-baseline cuda-baseline.cpp)
+# target_link_libraries(cuda-baseline PRIVATE CUDA::cuda_driver)
 
-target_link_libraries(test
-  PRIVATE
-    "${CAF_BUILD}/libcaf_core/libcaf_core.so"
-    "${CAF_BUILD}/libcaf_io/libcaf_io.so"
-    "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
-    CUDA::nvrtc 
-    CUDA::cublas
-    CUDA::cusparse
-)
+# target_link_libraries(test
+#   PRIVATE
+#     "${CAF_BUILD}/libcaf_core/libcaf_core.so"
+#     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
+#     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
+#     CUDA::nvrtc 
+#     CUDA::cublas
+#     CUDA::cusparse
+# )
 
 
 
@@ -63,12 +63,12 @@ target_link_libraries(scheduler_test
     CUDA::cusparse
 )
 
-target_link_libraries(work-stealing
-  PRIVATE
-    "${CAF_BUILD}/libcaf_core/libcaf_core.so"
-    "${CAF_BUILD}/libcaf_io/libcaf_io.so"
-    "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
-    CUDA::nvrtc
-    CUDA::cublas
-    CUDA::cusparse
-)
+# target_link_libraries(work-stealing
+#   PRIVATE
+#     "${CAF_BUILD}/libcaf_core/libcaf_core.so"
+#     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
+#     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
+#     CUDA::nvrtc
+#     CUDA::cublas
+#     CUDA::cusparse
+# )
