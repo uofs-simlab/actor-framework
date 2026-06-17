@@ -27,6 +27,30 @@ struct task_actor_state {
     std::shared_ptr<MatrixPool> pool;
 };
 
+struct supervisor_state {
+    program_ptr prog;
+    int N_val;
+    std::shared_ptr<MatrixPool> pool;
+    actor exit_actor;
+    actor stats_actor;
+    response_token_ptr res;
+};
+
+struct stats_actor_state {
+    int completed = 0;
+};
+
+behavior stats_actor_fun(stateful_actor<stats_actor_state>* self) {
+    return {
+        [=](int count) {
+            self->state().completed += count;
+            if (self->state().completed % 1000 == 0) {
+                std::cout << "[STATS] Jobs completed: " << self->state().completed << std::endl;
+            }
+        }
+    };
+}
+
 // create_matrix_pool_random function from mmul-random-batch-benchmark
 MatrixPool create_matrix_pool_random(
     int num_sizes,
@@ -49,10 +73,10 @@ MatrixPool create_matrix_pool_random(
 }
 
 // This actor represents a single task that requests permission from the scheduler.
-behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_actor) {
+behavior task_worker_fun(stateful_actor<task_actor_state>* self, caf::actor stats_actor, caf::actor exit_actor) {
     return {
         [=](response_token_ptr res) mutable {
-            if (res->getType() == LAUNCH_RESPONSE) {
+            try {
                 auto& st = self->state();
                 
                 // We need to cast the base response_token to access the specific nd_range stored in it.
@@ -73,24 +97,83 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_
                 // 3. Asynchronous Copyback.
                 // Allocate a local buffer for the result to keep the total system memory low.
                 auto h_c = std::make_shared<std::vector<int>>(N * N);
+                auto self_hdl = actor_cast<actor>(self);
+
                 // The launch_response_token is released inside the callback 
                 // to signal to the scheduler that the resource is free. (No serial verification here)
-                runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, exit_actor, h_c](int* /*ptr*/, size_t /*sz*/) {
+                runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, stats_actor, exit_actor, h_c, self_hdl](int* /*ptr*/, size_t /*sz*/) {
                     res->release();
+                    anon_mail(1).send(stats_actor);
                     anon_mail(1).send(exit_actor);
+                    anon_mail(0).send(self_hdl); // Signal normal completion
                 });
+            } catch (const std::exception& e) {
+                self->quit(sec::runtime_error);
             }
+        },
+        [=](int signal) {
+            if (signal == 0)
+                self->quit();
         }
     };
 }
 
 // Helper function to initialize task_actor_state
-behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, std::shared_ptr<MatrixPool> pool, caf::actor exit_actor) {
+behavior make_task_worker_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, std::shared_ptr<MatrixPool> pool, caf::actor stats_actor, caf::actor exit_actor) {
     auto& st = self->state();
     st.prog = std::move(prog);
     st.N_val = N_val;
     st.pool = std::move(pool);
-    return task_actor_fun(self, exit_actor); // Pass exit_actor to task_actor_fun
+    return task_worker_fun(self, stats_actor, exit_actor);
+}
+
+behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
+    self->set_down_handler([=](down_msg& msg) {
+        if (msg.reason != exit_reason::normal) {
+            std::cout << "[SUPERVISOR] Task worker failed (reason: " << to_string(msg.reason) 
+                      << "). Restarting N=" << self->state().N_val << std::endl;
+            
+            auto w = self->spawn<monitored>(make_task_worker_behavior, 
+                                          self->state().prog, 
+                                          self->state().N_val, 
+                                          self->state().pool, 
+                                          self->state().stats_actor, 
+                                          self->state().exit_actor);
+            self->mail(self->state().res).send(w);
+        } else {
+            self->quit();
+        }
+    });
+
+    return {
+        [=](response_token_ptr res) {
+            if (res->getType() == LAUNCH_RESPONSE) {
+                self->state().res = res;
+                auto w = self->spawn<monitored>(make_task_worker_behavior, 
+                                              self->state().prog, 
+                                              self->state().N_val, 
+                                              self->state().pool, 
+                                              self->state().stats_actor, 
+                                              self->state().exit_actor);
+                self->mail(res).send(w);
+            }
+        }
+    };
+}
+
+behavior make_task_supervisor_behavior(stateful_actor<supervisor_state>* self, 
+                                      program_ptr prog, 
+                                      int N_val, 
+                                      std::shared_ptr<MatrixPool> pool, 
+                                      actor exit_actor, 
+                                      actor stats_actor) {
+    auto& st = self->state();
+    st.prog = std::move(prog);
+    st.N_val = N_val;
+    st.pool = std::move(pool);
+    st.exit_actor = exit_actor;
+    st.stats_actor = stats_actor;
+    return task_supervisor_fun(self);
 }
 
 template <class Fn>
@@ -102,16 +185,29 @@ double time_run(Fn&& fn) {
     return elapsed.count();
 }
 
+
+static std::vector<caf::cuda::mem_ptr<char>> pressure_holder;
+
+void apply_memory_pressure(int device_id, size_t target_free_bytes) {
+    auto dev = manager::get().find_device(device_id);
+    size_t total = dev->total_memory_bytes();
+    if (total > target_free_bytes) {
+        size_t to_allocate = total - target_free_bytes;
+        auto arg = create_out_arg_with_size<char>(to_allocate);
+        static command_runner<out<char>> p_runner;
+        pressure_holder.push_back(p_runner.transfer_memory(device_id, 0, arg));
+        std::cout << "[MAIN] Device " << device_id << " memory pressure: allocated " 
+                  << to_allocate / (1024*1024) << " MB, " 
+                  << target_free_bytes / (1024*1024) << " MB left free." << std::endl;
+    }
+}
+
 void run_scheduler_integration_scaling_test(actor_system& sys) {
     const int min_N = 32;
     const int max_N = 2048;
     const int num_distinct_sizes = 10;
-    const std::vector<int> actor_counts = {50000};
-
-
-    //  const std::vector<int> actor_counts = {5};
-
-
+    // const std::vector<int> actor_counts = {50000};
+    const std::vector<int> actor_counts = {2000};
 
     // Generate deterministic random pool once
     auto pool_ptr = std::make_shared<MatrixPool>(
@@ -124,6 +220,9 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         manager_config config;
         manager::init(sys, config);
         auto& mgr = manager::get();
+
+        // Occupy GPU memory such that only 1 GB remains
+        apply_memory_pressure(0, 1024ULL * 1024ULL * 1024ULL);
 
         // Start scheduler with 4 streams and depth 2 (8 slots) to force queuing
         mgr.toggle_scheduler_actor(8, 1);
@@ -141,6 +240,8 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         // Spawn the exit actor for this specific test run (moved inside the loop)
         auto exit_actor = sys.spawn(caf::cuda::exit_actor_fun, num_tasks);
 
+        auto stats_actor = sys.spawn(stats_actor_fun);
+
         // Spawn task actors and prepare tokens
         for (int i = 0; i < num_tasks; ++i) {
             int current_N = available_Ns[dist_N_idx(rng)];
@@ -148,14 +249,15 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
                            (current_N + THREADS - 1) / THREADS, 1, 
                            THREADS, THREADS, 1);
             
-            auto worker = sys.spawn(make_task_actor_behavior,
-                                    program,
-                                    current_N, 
-                                    pool_ptr,
-                                    exit_actor); // Pass exit_actor to task actors
+            auto supervisor = sys.spawn(make_task_supervisor_behavior,
+                                       program,
+                                       current_N, 
+                                       pool_ptr,
+                                       exit_actor,
+                                       stats_actor);
 
             tokens.push_back(make_launch_token(program, range, 0, 
-                             "task_" + std::to_string(i), worker));
+                             "task_" + std::to_string(i), supervisor));
         }
 
         double elapsed = time_run([&]() {
