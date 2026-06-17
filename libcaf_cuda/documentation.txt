@@ -258,5 +258,84 @@ The command runner does support kernels with shared memory (actor facade does no
                           );
 }}}
 
+== Multi GPU Scheduling 
+We use actors as a way to provide single node Multi GPU task scheduling. To accomplish this the runtime uses Send Receive Reply IPC as a means
+Of GPU scheduling.
+What this means is that if you want the scheduler to load balance tasks across multiple devices for you, actors cannot directly submit GPU work
+they must instead seek permission from the scheduler actor to do so and only when the scheduler actor tells the actor that its ok it may then
+do GPU work.
+
+The scheduler actor uses tokens as a way to track tasks. A token contains metadata about a task such as what device and stream to execute on and is given 
+to the GPU actor requesting to do work granting it permission to do work.
+Tokens are C++ smart pointers that embedd a message signalling to the scheduler actor that created it that a task is completed in its deconstructor.
+Meaning that the scheduler actor expects that the issued token object lifetime matches that of the GPU task that is being completed. Destroying it 
+too early will make the scheduler actor behave as if the task has been completed. 
+
+Tokens can either be sent to scheduler actor one by one or in batches. Submitting one by one looks like 
+
+{{{
+///sending a single token
+caf::cuda::launch_token token = make_launch_token(program, range, 0, 
+                             "task_name", reply_actor);
+
+mgr.send_scheduler_actor_message(token);
+
+
+
+
+//sending a batch of tokens
+  std::vector<token_ptr> tokens;
+  for (int i = 0; i < num_tasks; ++i) {
+            
+            
+            caf::actor supervisor = sys.spawn(supervisor_behavior);
+
+            tokens.push_back(make_launch_token(program, range, 0, 
+                             "task_" + std::to_string(i), supervisor));
+        }
+
+mgr.send_scheduler_actor_message(tokens);
+
+
+}}}
+
+a request token contains a program_ptr, kernel dimensions, memory being used, a task identifer (string) and
+a handle to an actor that will receive the response token. The scheduler actor does not look at program, range, memory size or task identifers,
+it only cares about the handle to the actor.
+
+
+ {{{
+  //receiving a response token
+
+
+    [=](response_token_ptr res) mutable {
+       if (res->getType() == LAUNCH_RESPONSE) {
+              auto& st = self->state();
+                
+               
+                int N = st.N_val;
+
+                // 1. Setup GPU arguments
+
+                // 2. Launch Work asynchronously using the stream and device assigned by the scheduler.
+                auto result_tuple = runner.run_async(st.prog, dims, res, in_a, in_b, out_c, in_n);
+                //alternatively you can use res->getDeviceNumber() and res->getStreamId() to access the values assigned to the actor via the scheduler
+                auto d_c = std::get<2>(result_tuple);
+
+                // 3. Asynchronous Copyback.
+                // Allocate a local buffer for the result to keep the total system memory low.
+                auto h_c = std::make_shared<std::vector<int>>(N * N);
+                // The launch_response_token is released inside the callback 
+                // to signal to the scheduler that the resource is free. 
+                runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, exit_actor, h_c](int* /*ptr*/, size_t /*sz*/) {
+                    res->release();//marks the tasks lifetime as complete, alternatively could have just dropped it out of scope.
+                });
+            }
+
+
+ }}}
+
+to send scheduler actor exit messages invoke caf::cuda::manager::shutdown() and this will send exit messages to the scheduler actor
+
 
 For more details, see the example code found at https://github.com/uofs-simlab/actor-framework/tree/main/libcaf_cuda/examples
