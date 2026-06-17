@@ -77,6 +77,7 @@ behavior task_worker_fun(stateful_actor<task_actor_state>* self, caf::actor stat
     return {
         [=](response_token_ptr res) mutable {
             try {
+                // std::cout << "[WORKER] Starting task N=" << self->state().N_val << std::endl;
                 auto& st = self->state();
                 
                 // We need to cast the base response_token to access the specific nd_range stored in it.
@@ -128,33 +129,36 @@ behavior make_task_worker_behavior(stateful_actor<task_actor_state>* self, progr
 }
 
 behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
-    self->set_down_handler([=](down_msg& msg) {
-        if (msg.reason != exit_reason::normal) {
-            std::cout << "[SUPERVISOR] Task worker failed (reason: " << to_string(msg.reason) 
-                      << "). Restarting N=" << self->state().N_val << std::endl;
-            
-            auto w = self->spawn<monitored>(make_task_worker_behavior, 
-                                          self->state().prog, 
-                                          self->state().N_val, 
-                                          self->state().pool, 
-                                          self->state().stats_actor, 
-                                          self->state().exit_actor);
-            self->mail(self->state().res).send(w);
-        } else {
-            self->quit();
-        }
-    });
-
     return {
-        [=](response_token_ptr res) {
-            if (res->getType() == LAUNCH_RESPONSE) {
-                self->state().res = res;
-                auto w = self->spawn<monitored>(make_task_worker_behavior, 
+        [=](down_msg& msg) {
+            if (msg.reason != exit_reason::normal) {
+                std::cout << "[SUPERVISOR] Task worker failed (reason: " << to_string(msg.reason) 
+                          << "). Restarting N=" << self->state().N_val << std::endl;
+                
+                // self->state().stats_actor->send(0); // Optional: could track restarts in stats
+                
+                auto w = self->spawn(make_task_worker_behavior, 
                                               self->state().prog, 
                                               self->state().N_val, 
                                               self->state().pool, 
                                               self->state().stats_actor, 
                                               self->state().exit_actor);
+                self->monitor(w);
+                self->mail(self->state().res).send(w);
+            } else {
+                self->quit();
+            }
+        },
+        [=](response_token_ptr res) {
+            if (res->getType() == LAUNCH_RESPONSE) {
+                self->state().res = res;
+                auto w = self->spawn(make_task_worker_behavior, 
+                                              self->state().prog, 
+                                              self->state().N_val, 
+                                              self->state().pool, 
+                                              self->state().stats_actor, 
+                                              self->state().exit_actor);
+                self->monitor(w);
                 self->mail(res).send(w);
             }
         }
@@ -190,24 +194,28 @@ static std::vector<caf::cuda::mem_ptr<char>> pressure_holder;
 
 void apply_memory_pressure(int device_id, size_t target_free_bytes) {
     auto dev = manager::get().find_device(device_id);
-    size_t total = dev->total_memory_bytes();
-    if (total > target_free_bytes) {
-        size_t to_allocate = total - target_free_bytes;
-        auto arg = create_out_arg_with_size<char>(to_allocate);
-        static command_runner<out<char>> p_runner;
-        pressure_holder.push_back(p_runner.transfer_memory(device_id, 0, arg));
-        std::cout << "[MAIN] Device " << device_id << " memory pressure: allocated " 
-                  << to_allocate / (1024*1024) << " MB, " 
-                  << target_free_bytes / (1024*1024) << " MB left free." << std::endl;
+    size_t available = dev->available_memory_bytes();
+    if (available > target_free_bytes) {
+        size_t to_allocate = available - target_free_bytes;
+        try {
+            auto arg = create_out_arg_with_size<char>(to_allocate);
+            static command_runner<out<char>> p_runner;
+            pressure_holder.push_back(p_runner.transfer_memory(device_id, 0, arg));
+            std::cout << "[MAIN] Device " << device_id << " memory pressure: allocated " 
+                      << to_allocate / (1024*1024) << " MB from available, " 
+                      << target_free_bytes / (1024*1024) << " MB left free." << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[MAIN] Warning: Initial memory pressure failed: " << e.what() << std::endl;
+        }
     }
 }
 
 void run_scheduler_integration_scaling_test(actor_system& sys) {
-    const int min_N = 32;
-    const int max_N = 2048;
+    const int min_N = 2048;
+    const int max_N = 4096;
     const int num_distinct_sizes = 10;
     // const std::vector<int> actor_counts = {50000};
-    const std::vector<int> actor_counts = {2000};
+    const std::vector<int> actor_counts = {3000};
 
     // Generate deterministic random pool once
     auto pool_ptr = std::make_shared<MatrixPool>(
@@ -221,11 +229,11 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         manager::init(sys, config);
         auto& mgr = manager::get();
 
-        // Occupy GPU memory such that only 1 GB remains
-        apply_memory_pressure(0, 1024ULL * 1024ULL * 1024ULL);
+        // Occupy GPU memory such that only 300 MB remains to force OOMs during task runs
+        apply_memory_pressure(0, 1500ULL * 1024ULL * 1024ULL);
 
         // Start scheduler with 4 streams and depth 2 (8 slots) to force queuing
-        mgr.toggle_scheduler_actor(8, 1);
+        mgr.toggle_scheduler_actor(14, 1);
 
         auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
         const int THREADS = 32;
@@ -271,6 +279,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         });
 
         std::cout << "Run complete. Time: " << elapsed << " s\n";
+        pressure_holder.clear();
         manager::shutdown(); // Reset manager state for the next potential iteration
     }
 }
