@@ -33,7 +33,7 @@ public:
     virtual void schedule() = 0;
     virtual void receive(const token_ptr& tok) = 0;
 
-    virtual void reclaim(int value, int memory_returned,int runtime,int dependency) {
+    virtual void reclaim([[maybe_unused]] int value, [[maybe_unused]] int memory_returned, [[maybe_unused]] int runtime, [[maybe_unused]] int dependency) {
 	    //default implementation is to do nothing, this should be overidden
 	    //by children classes 
     }
@@ -42,7 +42,7 @@ public:
 
     //this is here to ensure that payloads on return can conform to an interface
     //rather than changing the interface to accomidate every scheduling need
-    virtual void reclaim(ack& payload) {
+    virtual void reclaim([[maybe_unused]] ack& payload) {
 	    //default implementation is to do nothing, this should be overidden
 	    //by children classes 
     }
@@ -52,7 +52,7 @@ public:
 
     //this method is meant to be a handler for when
     //another scheduler actor queries for more work
-    virtual void handle_load_balance_request(int device_number) {
+    virtual void handle_load_balance_request([[maybe_unused]] int device_number) {
     
 	    //default action is to do nothing and not particpate in load balancing
 	    //whether of not a scheduler wants to participate in load balancing 
@@ -61,7 +61,7 @@ public:
 
 
     //method is meant to handle work being sent over from another scheduler actor
-   virtual void receive_work(std::vector<kernel_graph> work_graphs) {
+   virtual void receive_work([[maybe_unused]] std::vector<kernel_graph> work_graphs) {
      //ideally this should not default to do nothing 
     //however I do not have the time implement this on every existing behavior 
     //as of right now
@@ -84,4 +84,3 @@ protected:
 };
 
 } // namespace caf::cuda
-

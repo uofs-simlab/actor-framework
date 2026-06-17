@@ -183,7 +183,7 @@ void multilevel_usage_behavior::schedule() {
 
 void multilevel_usage_behavior::reclaim(int blocks_consumed,
                                        int memory_returned,
-                                       int time,
+                                       [[maybe_unused]] int time,
                                        int dependency_number) {
     // update available resources
     available_SM += blocks_consumed;
@@ -447,4 +447,3 @@ int multilevel_usage_behavior::get_device_for_dependency(int dependency_number) 
 }
 
 } // namespace caf::cuda
-

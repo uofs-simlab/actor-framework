@@ -14,7 +14,7 @@ platform_ptr platform::create() {
 //constructor
 platform::platform() {
   int device_count = 0;
-  check(cuDeviceGetCount(&device_count), "cuDeviceGetCount");
+  CHECK_CUDA(cuDeviceGetCount(&device_count));
   devices_.resize(device_count);
   contexts_.resize(device_count);
 
@@ -23,25 +23,25 @@ platform::platform() {
 
   for (int i = 0; i < device_count; ++i) {
     CUdevice cuda_device;
-    check(cuDeviceGet(&cuda_device, i), "cuDeviceGet");
+    CHECK_CUDA(cuDeviceGet(&cuda_device, i));
 
     char name[256];
-    check(cuDeviceGetName(name, sizeof(name), cuda_device), "cuDeviceGetName");
+    CHECK_CUDA(cuDeviceGetName(name, sizeof(name), cuda_device));
     device_names[i] = name;
 
 
 #if CUDA_VERSION >= 13000
     {
       CUctxCreateParams ctx_params = {};
-      check(cuCtxCreate(&contexts_[i], 
-                        &ctx_params, 
-                        CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, 
-                        cuda_device),"creating context");
+      CHECK_CUDA(cuCtxCreate(&contexts_[i], 
+                             &ctx_params, 
+                             CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, 
+                             cuda_device));
     }
 #else
-    check(cuCtxCreate(&contexts_[i], 
-                      CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, 
-                      cuda_device),"creating context");
+    CHECK_CUDA(cuCtxCreate(&contexts_[i], 
+                           CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, 
+                           cuda_device));
 #endif
     devices_[i] = make_counted<device>(cuda_device, contexts_[i], name, i);
  
@@ -65,7 +65,7 @@ platform::platform() {
   scheduler_->set_devices(devices_);
 
   if (device_count > 0) {
-    check(cuCtxSetCurrent(contexts_[0]), "cuCtxSetCurrent");
+    CHECK_CUDA(cuCtxSetCurrent(contexts_[0]));
   }
 }
 

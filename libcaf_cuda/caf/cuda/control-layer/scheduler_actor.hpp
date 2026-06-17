@@ -17,9 +17,9 @@ public:
     // Message Handler Methods
     virtual void on_receive(const token_ptr& tok);
     virtual void on_receive_batch(std::vector<token_ptr> tokens);
-    virtual void on_reclaim(int val, int mem, int time, int dep, int stream_id);
+    virtual void on_reclaim([[maybe_unused]] int val, [[maybe_unused]] int mem, [[maybe_unused]] int time, [[maybe_unused]] int dep, [[maybe_unused]] int stream_id);
     virtual void on_set_neighbors(std::vector<caf::actor> neighbors);
-    virtual std::vector<token_ptr> on_steal_request(int requesting_device);
+    virtual std::vector<token_ptr> on_steal_request([[maybe_unused]] int requesting_device);
 
 protected:
     // Scheduling logic

@@ -35,7 +35,7 @@ public:
 
     // reclaim: called when resources are returned; dependency_number
     // allows this behavior to find the graph that might now be ready
-    void reclaim(int resources_consumed, int memory_returned, int time, int dependency_number) override;
+    void reclaim([[maybe_unused]] int resources_consumed, [[maybe_unused]] int memory_returned, [[maybe_unused]] int time, [[maybe_unused]] int dependency_number) override;
 
     std::string name() const override { return "pressure_scheduler\n"; }
 
@@ -128,4 +128,3 @@ private:
 
 
 } // namespace caf::cuda
-

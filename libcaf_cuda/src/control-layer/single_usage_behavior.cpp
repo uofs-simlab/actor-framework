@@ -28,10 +28,10 @@ void single_usage_behavior::on_enter() {
     schedule();  // try to launch something right away if tokens already waiting
 }
 
-void single_usage_behavior::reclaim(int blocks_consumed,
+void single_usage_behavior::reclaim([[maybe_unused]] int blocks_consumed,
                                     int memory_returned,
-                                    int time,
-                                    int dependency_number) {
+                                    [[maybe_unused]] int time,
+                                    [[maybe_unused]] int dependency_number) {
    
     std::cout << "reclaiming\n";
     // GPU is now free again

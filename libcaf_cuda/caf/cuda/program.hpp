@@ -27,7 +27,7 @@ public:
   /// @throws std::runtime_error if the kernel was not loaded for the device.
   CUfunction get_kernel(int device_id);
 
-    friend void intrusive_ptr_add_ref(const program* p) noexcept {
+    friend void intrusive_ptr_add_ref([[maybe_unused]] const program* p) noexcept {
         //p->ref_count_.fetch_add(1, std::memory_order_relaxed);
     }
     friend void intrusive_ptr_release(const program* p) noexcept {
@@ -62,4 +62,3 @@ private:
 using program_ptr = caf::intrusive_ptr<program>;
 
 } // namespace caf::cuda
-

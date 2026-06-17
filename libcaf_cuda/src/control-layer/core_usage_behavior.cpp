@@ -31,8 +31,8 @@ void core_usage_behavior::on_enter() {
 
 void core_usage_behavior::reclaim(int blocks_consumed,
 	       	int memory_returned,
-	       	int time,
-	       	int dependency_number) {
+	       	[[maybe_unused]] int time,
+	       	[[maybe_unused]] int dependency_number) {
 
 	//std::cout << "blocks is " <<  blocks_consumed << "\n";
 	available_SM += blocks_consumed;

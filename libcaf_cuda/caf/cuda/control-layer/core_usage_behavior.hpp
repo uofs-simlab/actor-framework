@@ -15,7 +15,7 @@ public:
     void on_enter() override;
     void schedule() override;
     void receive(const token_ptr& tok) override;
-    void reclaim(int value /*blocks consumed*/,int memory_returned,int time,int dependency) override; 
+    void reclaim([[maybe_unused]] int value /*blocks consumed*/, [[maybe_unused]] int memory_returned, [[maybe_unused]] int time, [[maybe_unused]] int dependency) override; 
     ~core_usage_behavior() override;  
     std::string name() const override {return "core_usage\n";}
 
@@ -57,4 +57,3 @@ private:
 };
 
 } // namespace caf::cuda
-

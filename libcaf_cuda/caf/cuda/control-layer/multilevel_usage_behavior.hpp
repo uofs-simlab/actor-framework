@@ -29,7 +29,7 @@ public:
 
     // reclaim: called when resources are returned; dependency_number
     // allows this behavior to find the graph that might now be ready
-    void reclaim(int blocks_consumed, int memory_returned, int time, int dependency_number) override;
+    void reclaim(int blocks_consumed, int memory_returned, [[maybe_unused]] int time, int dependency_number) override;
 
     //more improved version of reclaim, meant for when we need to dispatch transfer
     //tokens
@@ -42,8 +42,8 @@ public:
     //multi GPU load balancing methods
     //by default this scheduler behavior will try to load balance
     //across all gpus 
-    void handle_load_balance_request(int device_number) override;
-    void receive_work(std::vector<kernel_graph> work_graphs) override;
+    void handle_load_balance_request([[maybe_unused]] int device_number) override;
+    void receive_work([[maybe_unused]] std::vector<kernel_graph> work_graphs) override;
     void request_load_balance();
 
 
@@ -105,4 +105,3 @@ private:
 
 
 } // namespace caf::cuda
-

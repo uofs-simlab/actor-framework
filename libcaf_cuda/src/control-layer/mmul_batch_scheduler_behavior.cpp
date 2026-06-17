@@ -79,7 +79,7 @@ void mmul_batch_scheduler_behavior::receive(const token_ptr& tok) {
             kernel_graph new_graph(state_.device_number, assigned_stream);
             new_graph.add_operation(tok);
             independent_graphs.push_back(std::move(new_graph));
-            graph_ref ref{graph_ref::kind_t::independent, -1, static_cast<int>(independent_graphs.size() - 1)};
+            graph_ref ref{graph_ref::kind_t::independent, -1, independent_graphs.size() - 1};
             enqueue_graph_by_blocks(ref, qt);
             schedule();
             return;
@@ -220,7 +220,7 @@ void mmul_batch_scheduler_behavior::schedule() {
     try_dispatch_queue(high_queue, HIGH);
 }
 
-void mmul_batch_scheduler_behavior::process_launch_token(const token_ptr& tok, int stream_id, int assigned_queue) {
+void mmul_batch_scheduler_behavior::process_launch_token(const token_ptr& tok, int stream_id, [[maybe_unused]] int assigned_queue) {
     // Create a launch response token and send it (same pattern as multilevel)
     const auto& launch = static_cast<const launch_token&>(*tok);
     auto response = make_launch_response_token(state_.self, launch, state_.device_number, stream_id, /*reclaim_value*/ 0, /*reclaim_runtime*/ 0);
@@ -230,9 +230,9 @@ void mmul_batch_scheduler_behavior::process_launch_token(const token_ptr& tok, i
     // when launch_response_token::release() runs on the device side. That triggers reclaim(...) in this actor.
 }
 
-void mmul_batch_scheduler_behavior::reclaim(int blocks_consumed,
-                                            int memory_returned,
-                                            int time,
+void mmul_batch_scheduler_behavior::reclaim([[maybe_unused]] int blocks_consumed,
+                                            [[maybe_unused]] int memory_returned,
+                                            [[maybe_unused]] int time,
                                             int dependency_number) {
     // This reclaim() is called when the device (or the launch_response_token destructor)
     // sends the 4-tuple (reclaim_value, reclaim_memory, reclaim_runtime, reclaim_dependency).
@@ -298,4 +298,3 @@ kernel_graph* mmul_batch_scheduler_behavior::resolve(const graph_ref& ref) {
 }
 
 } // namespace caf::cuda
-

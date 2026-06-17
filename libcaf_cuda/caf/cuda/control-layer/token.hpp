@@ -23,7 +23,7 @@ class CAF_CUDA_EXPORT token : public caf::ref_counted {
 public:
    virtual ~token() {
     // Print ref count when destructor runs
-    size_t count = ref_count_.load(std::memory_order_acquire);
+    [[maybe_unused]] size_t count = ref_count_.load(std::memory_order_acquire);
     //std::cout << "token object getting deleted, ref_count = " << count << "\n";
 }
 

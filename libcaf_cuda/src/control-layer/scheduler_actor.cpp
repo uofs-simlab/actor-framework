@@ -158,7 +158,7 @@ void scheduler_actor::schedule_work() {
                         this->mail("retry_steal").urgent().delay(std::chrono::milliseconds(current_backoff_)).send(this);
                     }
                 },
-                [this](error& err) {
+                [this]([[maybe_unused]] error& err) {
                     awaiting_steal_ = false;
                     // On network error or timeout, also backoff to avoid hammerring a dead/slow neighbor
                     current_backoff_ = (current_backoff_ == 0) ? 50 : std::min(500, current_backoff_ * 2);

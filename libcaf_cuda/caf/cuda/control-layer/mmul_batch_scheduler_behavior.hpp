@@ -23,13 +23,13 @@ public:
     void schedule() override;
     void receive(const token_ptr& tok) override;
 
-    void reclaim(int blocks_consumed, int memory_returned, int time, int dependency_number) override;
+    void reclaim([[maybe_unused]] int blocks_consumed, [[maybe_unused]] int memory_returned, [[maybe_unused]] int time, [[maybe_unused]] int dependency_number) override;
     void reclaim(ack& return_msg) override;
 
     std::string name() const override { return "mmul_batch_scheduler"; }
 
 protected:
-    void process_launch_token(const token_ptr& tok, int stream_id, int assigned_queue);
+    void process_launch_token(const token_ptr& tok, int stream_id, [[maybe_unused]] int assigned_queue);
 
 private:
     enum queue_type { LOW = 0, MED = 1, HIGH = 2 };
@@ -80,6 +80,3 @@ private:
 };
 
 } // namespace caf::cuda
-
-
-

@@ -70,7 +70,7 @@ public:
             transfer_ack ack_obj{dependency_number_};
 
             // Upcast explicitly to ack reference before sending
-            const ack& base_ack = ack_obj;
+            [[maybe_unused]] const ack& base_ack = ack_obj;
 	    caf::anon_mail(std::move(ack_obj)).urgent().send(receiver_);
 
 
@@ -87,4 +87,3 @@ private:
 };
 
 } // namespace caf::cuda
-
