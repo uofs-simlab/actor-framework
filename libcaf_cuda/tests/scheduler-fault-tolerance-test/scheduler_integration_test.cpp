@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
+#include <iomanip>
 
 using namespace caf;
 using namespace caf::cuda;
@@ -35,18 +36,36 @@ struct supervisor_state {
     actor stats_actor;
     response_token_ptr res;
     std::mt19937 rng;
+    int retries = 0;
 };
 
 struct stats_actor_state {
-    int completed = 0;
+    int succeeded = 0;
+    int failed = 0;
+
+    ~stats_actor_state() {
+        int total = succeeded + failed;
+        std::cout << "\n=====================================\n"
+                  << "[STATS REPORT] Iteration Complete\n"
+                  << "  Succeeded: " << succeeded << "\n"
+                  << "  Failed:    " << failed << "\n";
+        if (total > 0) {
+            double pct = (static_cast<double>(succeeded) / total) * 100.0;
+            std::cout << "  Success %: " << std::fixed << std::setprecision(2) << pct << "%\n";
+        }
+        std::cout << "=====================================\n" << std::endl;
+    }
 };
 
 behavior stats_actor_fun(stateful_actor<stats_actor_state>* self) {
     return {
-        [=](int count) {
-            self->state().completed += count;
-            if (self->state().completed % 1000 == 0) {
-                std::cout << "[STATS] Jobs completed: " << self->state().completed << std::endl;
+        [=](bool success) {
+            if (success) self->state().succeeded++;
+            else self->state().failed++;
+
+            int total = self->state().succeeded + self->state().failed;
+            if (total % 1000 == 0) {
+                std::cout << "[STATS] Progress: " << total << " jobs processed." << std::endl;
             }
         }
     };
@@ -114,9 +133,9 @@ behavior task_worker_fun(stateful_actor<task_actor_state>* self, caf::actor stat
 
                 // The launch_response_token is released inside the callback 
                 // to signal to the scheduler that the resource is free. (No serial verification here)
-                runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, stats_actor, exit_actor, h_c, self_hdl](int* /*ptr*/, size_t /*sz*/) {
+                runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, stats_actor, exit_actor, h_c, self_hdl](int* /*ptr*/, size_t /*sz*/) mutable {
                     res->release();
-                    anon_mail(1).send(stats_actor);
+                    anon_mail(true).send(stats_actor);
                     anon_mail(1).send(exit_actor);
                     anon_mail(0).send(self_hdl); // Signal normal completion
                 });
@@ -164,13 +183,25 @@ behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
 
                 self->monitor(w, [self, res](const error& err) mutable {
                     if (err) {
-                        std::uniform_int_distribution<> dis(100, 1000);
-                        auto backoff = std::chrono::milliseconds(dis(self->state().rng));
+                        self->state().retries++;
+                        if (self->state().retries > 5) {
+                            std::cout << "[SUPERVISOR] Task N=" << self->state().N_val 
+                                      << " failed permanently after 5 retries. Giving up." << std::endl;
+                            
+                            self->mail(false).send(self->state().stats_actor);
+                            self->mail(1).send(self->state().exit_actor);
+                            res->release();
+                            self->quit();
+                        } else {
+                            std::uniform_int_distribution<> dis(100, 1000);
+                            auto backoff = std::chrono::milliseconds(dis(self->state().rng));
 
-                        std::cout << "[SUPERVISOR] Task worker failed (" << to_string(err)
-                                  << "). Restarting N=" << self->state().N_val 
-                                  << " after " << backoff.count() << "ms backoff." << std::endl;
-                        self->mail(res).delay(backoff).send(self); // Trigger restart logic with delay
+                            std::cout << "[SUPERVISOR] Task worker failed (" << to_string(err)
+                                      << "). Restarting N=" << self->state().N_val 
+                                      << " after " << backoff.count() << "ms backoff (Retry " 
+                                      << self->state().retries << "/5)." << std::endl;
+                            self->mail(res).delay(backoff).send(self); // Trigger restart logic with delay
+                        }
                     } else {
                         self->quit();
                     }
@@ -313,6 +344,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
             // block until the exit_actor terminates (signaling all 50k tasks are done).
             scoped_actor self{sys};
             self->wait_for(exit_actor);
+            anon_send_exit(stats_actor, exit_reason::user_shutdown);
         });
 
         std::cout << "Run complete. Time: " << elapsed << " s\n";
