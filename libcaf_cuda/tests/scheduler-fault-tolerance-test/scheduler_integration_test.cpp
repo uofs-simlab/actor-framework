@@ -201,9 +201,23 @@ void apply_memory_pressure(int device_id, size_t target_free_bytes) {
             auto arg = create_out_arg_with_size<char>(to_allocate);
             static command_runner<out<char>> p_runner;
             pressure_holder.push_back(p_runner.transfer_memory(device_id, 0, arg));
-            std::cout << "[MAIN] Device " << device_id << " memory pressure: allocated " 
-                      << to_allocate / (1024*1024) << " MB from available, " 
-                      << target_free_bytes / (1024*1024) << " MB left free." << std::endl;
+
+            // Synchronize stream 0 to ensure the allocation is complete before checking.
+            auto stream = p_runner.get_stream(0, device_id);
+            CHECK_CUDA(cuStreamSynchronize(stream));
+
+            size_t post_available = dev->available_memory_bytes();
+            std::cout << "[MAIN] Device " << device_id << " memory pressure: allocated "
+                      << to_allocate / (1024 * 1024) << " MB. Actual free: "
+                      << post_available / (1024 * 1024) << " MB." << std::endl;
+
+            // Check if the pressure "stuck". We allow a 50MB tolerance for driver overhead.
+            if (post_available > target_free_bytes + (50ULL * 1024 * 1024)) {
+                std::cerr << "[WARNING] Memory pressure check failed! Expected ~"
+                          << target_free_bytes / (1024 * 1024) << " MB free, but found "
+                          << post_available / (1024 * 1024) << " MB. "
+                          << "The allocation might have been freed prematurely." << std::endl;
+            }
         } catch (const std::exception& e) {
             std::cerr << "[MAIN] Warning: Initial memory pressure failed: " << e.what() << std::endl;
         }
