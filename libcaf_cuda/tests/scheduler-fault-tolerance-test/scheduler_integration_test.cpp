@@ -344,8 +344,8 @@ void apply_memory_pressure(int device_id, size_t target_free_bytes) {
 }
 
 void run_scheduler_integration_scaling_test(actor_system& sys) {
-    const int min_N = 2000;
-    const int max_N = 2048;
+    const int min_N = 2048;
+    const int max_N = 4096;
     const int num_distinct_sizes = 10;
     // const std::vector<int> actor_counts = {50000};
     const std::vector<int> actor_counts = {3000};
