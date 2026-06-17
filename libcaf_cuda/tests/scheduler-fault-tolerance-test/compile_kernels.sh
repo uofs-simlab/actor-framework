@@ -8,7 +8,5 @@ echo "Using NVCC arch flag: $SM_ARCH"
 
 # Compile kernels to cubin for Driver API loading
 nvcc -arch=$SM_ARCH -cubin mmul.cu -o mmul.cubin
-nvcc -arch=$SM_ARCH -cubin vector_add.cu -o vector_add.cubin
-nvcc -arch=$SM_ARCH -cubin conv1d.cu -o conv1d.cubin
 
 echo "Kernels compiled successfully for $SM_ARCH."
