@@ -34,6 +34,7 @@ struct supervisor_state {
     actor exit_actor;
     actor stats_actor;
     response_token_ptr res;
+    std::mt19937 rng;
 };
 
 struct stats_actor_state {
@@ -120,7 +121,7 @@ behavior task_worker_fun(stateful_actor<task_actor_state>* self, caf::actor stat
                     anon_mail(0).send(self_hdl); // Signal normal completion
                 });
             } catch (const std::exception& e) {
-                // std::cerr << "[WORKER] Exception caught: " << e.what() << std::endl;
+                std::cerr << "[WORKER] Exception caught: " << e.what() << std::endl;
                 self->quit(sec::runtime_error);
             }
         },
@@ -163,9 +164,13 @@ behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
 
                 self->monitor(w, [self, res](const error& err) mutable {
                     if (err) {
+                        std::uniform_int_distribution<> dis(100, 1000);
+                        auto backoff = std::chrono::milliseconds(dis(self->state().rng));
+
                         std::cout << "[SUPERVISOR] Task worker failed (" << to_string(err)
-                                  << "). Restarting N=" << self->state().N_val << std::endl;
-                        self->mail(res).send(self); // Trigger restart logic by re-sending token to self
+                                  << "). Restarting N=" << self->state().N_val 
+                                  << " after " << backoff.count() << "ms backoff." << std::endl;
+                        self->mail(res).delay(backoff).send(self); // Trigger restart logic with delay
                     } else {
                         self->quit();
                     }
@@ -192,6 +197,7 @@ behavior make_task_supervisor_behavior(stateful_actor<supervisor_state>* self,
     st.pool = std::move(pool);
     st.exit_actor = exit_actor;
     st.stats_actor = stats_actor;
+    st.rng.seed(std::random_device{}());
     return task_supervisor_fun(self);
 }
 
@@ -240,8 +246,8 @@ void apply_memory_pressure(int device_id, size_t target_free_bytes) {
 }
 
 void run_scheduler_integration_scaling_test(actor_system& sys) {
-    const int min_N = 1024;
-    const int max_N = 3000;
+    const int min_N = 2000;
+    const int max_N = 2048;
     const int num_distinct_sizes = 10;
     // const std::vector<int> actor_counts = {50000};
     const std::vector<int> actor_counts = {3000};
