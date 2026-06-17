@@ -90,7 +90,7 @@ out<T> create_out_arg(const std::vector<T>& buffer) {
 
 // Create `out<T>` from scalar or vector
 template <typename T>
-out<T> create_out_arg_with_size(int size) {
+out<T> create_out_arg_with_size(size_t size) {
   return out<T>{size};
 }
 

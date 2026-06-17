@@ -162,7 +162,7 @@ template <typename T>
 class out_impl {
 private:
   T scalar_;
-  int size_ = 1;
+  size_t size_ = 1;
   bool is_scalar_ = true;
   bool moved_from_ = false;
 
@@ -177,7 +177,7 @@ public:
   out_impl() : scalar_{}, size_(1), is_scalar_(true) {}
 
   // allocate GPU buffer of given size
-  explicit out_impl(int size)
+  explicit out_impl(size_t size)
     : scalar_{}, size_(size), is_scalar_(false) {}
 
   explicit out_impl(const std::vector<T>& buf)
