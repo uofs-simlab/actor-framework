@@ -40,19 +40,34 @@ struct supervisor_state {
 };
 
 struct stats_actor_state {
-    int succeeded = 0;
+    std::map<int, int> succeeded_by_retries; // retry_count -> num_jobs
     int failed = 0;
     double runtime = 0.0;
 
     ~stats_actor_state() {
-        int total = succeeded + failed;
+        int total_succeeded = 0;
+        for (auto const& [retries, count] : succeeded_by_retries) {
+            total_succeeded += count;
+        }
+        int total = total_succeeded + failed;
+
         std::cout << "\n=====================================\n"
                   << "[STATS REPORT] Iteration Complete\n"
-                  << "  Succeeded: " << succeeded << "\n"
-                  << "  Failed:    " << failed << "\n";
+                  << "  Total Processed: " << total << "\n"
+                  << "  Total Succeeded: " << total_succeeded << "\n"
+                  << "  Total Failed:    " << failed << "\n";
+
+        if (total_succeeded > 0) {
+            std::cout << "  Succeeded by Retries:\n";
+            for (auto const& [retries, count] : succeeded_by_retries) {
+                double pct = (static_cast<double>(count) / total_succeeded) * 100.0;
+                std::cout << "    " << retries << " retries: " << count << " jobs ("
+                          << std::fixed << std::setprecision(2) << pct << "%)\n";
+            }
+        }
         if (total > 0) {
-            double pct = (static_cast<double>(succeeded) / total) * 100.0;
-            std::cout << "  Success %: " << std::fixed << std::setprecision(2) << pct << "%\n";
+            double overall_pct = (static_cast<double>(total_succeeded) / total) * 100.0;
+            std::cout << "  Overall Success %: " << std::fixed << std::setprecision(2) << overall_pct << "%\n";
         }
         if (runtime > 0.0) {
             std::cout << "  Runtime:   " << std::fixed << std::setprecision(2) << runtime << " s\n";
@@ -63,11 +78,19 @@ struct stats_actor_state {
 
 behavior stats_actor_fun(stateful_actor<stats_actor_state>* self) {
     return {
-        [=](bool success) {
-            if (success) self->state().succeeded++;
-            else self->state().failed++;
+        [=](bool success, int retries_taken) { // Changed signature
+            if (success) {
+                self->state().succeeded_by_retries[retries_taken]++;
+            } else {
+                self->state().failed++;
+            }
 
-            int total = self->state().succeeded + self->state().failed;
+            int total_succeeded = 0;
+            for (auto const& [retries, count] : self->state().succeeded_by_retries) {
+                total_succeeded += count;
+            }
+            int total = total_succeeded + self->state().failed;
+
             if (total % 1000 == 0) {
                 std::cout << "[STATS] Progress: " << total << " jobs processed." << std::endl;
             }
@@ -141,8 +164,9 @@ behavior task_worker_fun(stateful_actor<task_actor_state>* self, caf::actor stat
                 // The launch_response_token is released inside the callback 
                 // to signal to the scheduler that the resource is free. (No serial verification here)
                 runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, stats_actor, exit_actor, h_c, self_hdl](int* /*ptr*/, size_t /*sz*/) mutable {
-                    res->release();
-                    anon_mail(true).send(stats_actor);
+                    res->release(); // Release the token
+                    // The worker no longer sends directly to stats_actor.
+                    // It signals normal completion to itself, which causes its supervisor to be notified.
                     anon_mail(1).send(exit_actor);
                     anon_mail(0).send(self_hdl); // Signal normal completion
                 });
@@ -192,10 +216,13 @@ behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
                     if (err) {
                         self->state().retries++;
                         if (self->state().retries > 5) {
+                            // Max retries reached, permanent failure
                             std::cout << "[SUPERVISOR] Task N=" << self->state().N_val 
                                       << " failed permanently after 5 retries. Giving up." << std::endl;
                             
-                            self->mail(false).send(self->state().stats_actor);
+                            // Send failure to stats_actor with the retry count (5)
+                            self->mail(false, self->state().retries).send(self->state().stats_actor);
+                            
                             self->mail(1).send(self->state().exit_actor);
                             res->release();
                             self->quit();
@@ -210,6 +237,9 @@ behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
                             self->mail(res).delay(backoff).send(self); // Trigger restart logic with delay
                         }
                     } else {
+                        // Worker exited normally (success)
+                        // Send success to stats_actor with the retry count
+                        self->mail(true, self->state().retries).send(self->state().stats_actor);
                         self->quit();
                     }
                 });
@@ -354,9 +384,12 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
 
             // The dispatch is asynchronous. To get an accurate measurement, we must
             // block until the exit_actor terminates (signaling all 50k tasks are done).
+            scoped_actor self{sys};
             self->wait_for(exit_actor);
+            anon_send_exit(stats_actor, exit_reason::user_shutdown);
         });
 
+        std::cout << "Run complete. Time: " << elapsed << " s\n";
         self->mail(elapsed).send(stats_actor);
         self->send_exit(stats_actor, exit_reason::user_shutdown);
         self->wait_for(stats_actor);
