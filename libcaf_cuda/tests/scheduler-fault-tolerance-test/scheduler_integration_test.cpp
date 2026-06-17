@@ -74,7 +74,18 @@ MatrixPool create_matrix_pool_random(
 
 // This actor represents a single task that requests permission from the scheduler.
 behavior task_worker_fun(stateful_actor<task_actor_state>* self, caf::actor stats_actor, caf::actor exit_actor) {
+   
+   
+    //   self->attach_functor([](const caf::error& reason) {
+    //     std::cout << "[worker EXIT] "
+    //               << to_string(reason)
+    //               << std::endl;
+    // });
+   
+   
+   
     return {
+        
         [=](response_token_ptr res) mutable {
             try {
                 // std::cout << "[WORKER] Starting task N=" << self->state().N_val << std::endl;
@@ -109,6 +120,7 @@ behavior task_worker_fun(stateful_actor<task_actor_state>* self, caf::actor stat
                     anon_mail(0).send(self_hdl); // Signal normal completion
                 });
             } catch (const std::exception& e) {
+                // std::cerr << "[WORKER] Exception caught: " << e.what() << std::endl;
                 self->quit(sec::runtime_error);
             }
         },
@@ -129,38 +141,41 @@ behavior make_task_worker_behavior(stateful_actor<task_actor_state>* self, progr
 }
 
 behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
+   
+   
+    //   self->attach_functor([](const caf::error& reason) {
+    //     std::cout << "[SUPERVISOR EXIT] "
+    //               << to_string(reason)
+    //               << std::endl;
+    // });
+   
+   
     return {
-        [=](down_msg& msg) {
-            if (msg.reason != exit_reason::normal) {
-                std::cout << "[SUPERVISOR] Task worker failed (reason: " << to_string(msg.reason) 
-                          << "). Restarting N=" << self->state().N_val << std::endl;
-                
-                // self->state().stats_actor->send(0); // Optional: could track restarts in stats
-                
-                auto w = self->spawn(make_task_worker_behavior, 
-                                              self->state().prog, 
-                                              self->state().N_val, 
-                                              self->state().pool, 
-                                              self->state().stats_actor, 
-                                              self->state().exit_actor);
-                self->monitor(w);
-                self->mail(self->state().res).send(w);
-            } else {
-                self->quit();
-            }
-        },
         [=](response_token_ptr res) {
             if (res->getType() == LAUNCH_RESPONSE) {
                 self->state().res = res;
-                auto w = self->spawn(make_task_worker_behavior, 
-                                              self->state().prog, 
-                                              self->state().N_val, 
-                                              self->state().pool, 
-                                              self->state().stats_actor, 
-                                              self->state().exit_actor);
-                self->monitor(w);
+                auto w = self->spawn(make_task_worker_behavior,
+                                     self->state().prog,
+                                     self->state().N_val,
+                                     self->state().pool,
+                                     self->state().stats_actor,
+                                     self->state().exit_actor);
+
+                self->monitor(w, [self, res](const error& err) mutable {
+                    if (err) {
+                        std::cout << "[SUPERVISOR] Task worker failed (" << to_string(err)
+                                  << "). Restarting N=" << self->state().N_val << std::endl;
+                        self->mail(res).send(self); // Trigger restart logic by re-sending token to self
+                    } else {
+                        self->quit();
+                    }
+                });
+                
                 self->mail(res).send(w);
+            
+            
             }
+            
         }
     };
 }
@@ -225,8 +240,8 @@ void apply_memory_pressure(int device_id, size_t target_free_bytes) {
 }
 
 void run_scheduler_integration_scaling_test(actor_system& sys) {
-    const int min_N = 2048;
-    const int max_N = 4096;
+    const int min_N = 1024;
+    const int max_N = 3000;
     const int num_distinct_sizes = 10;
     // const std::vector<int> actor_counts = {50000};
     const std::vector<int> actor_counts = {3000};
@@ -247,7 +262,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         apply_memory_pressure(0, 1500ULL * 1024ULL * 1024ULL);
 
         // Start scheduler with 4 streams and depth 2 (8 slots) to force queuing
-        mgr.toggle_scheduler_actor(14, 1);
+        mgr.toggle_scheduler_actor(32, 1);
 
         auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
         const int THREADS = 32;
@@ -264,6 +279,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
 
         auto stats_actor = sys.spawn(stats_actor_fun);
 
+        std::vector<caf::actor> sups;
         // Spawn task actors and prepare tokens
         for (int i = 0; i < num_tasks; ++i) {
             int current_N = available_Ns[dist_N_idx(rng)];
@@ -277,6 +293,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
                                        pool_ptr,
                                        exit_actor,
                                        stats_actor);
+            sups.push_back(supervisor);
 
             tokens.push_back(make_launch_token(program, range, 0, 
                              "task_" + std::to_string(i), supervisor));
