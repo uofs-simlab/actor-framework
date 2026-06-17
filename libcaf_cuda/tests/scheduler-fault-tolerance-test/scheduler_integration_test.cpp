@@ -40,63 +40,93 @@ struct supervisor_state {
 };
 
 struct stats_actor_state {
-    std::map<int, int> succeeded_by_retries; // retry_count -> num_jobs
+    std::map<int, int> succeeded_by_retries;
     int failed = 0;
     double runtime = 0.0;
 
-    ~stats_actor_state() {
-        int total_succeeded = 0;
-        for (auto const& [retries, count] : succeeded_by_retries) {
-            total_succeeded += count;
-        }
-        int total = total_succeeded + failed;
-
-        std::cout << "\n=====================================\n"
-                  << "[STATS REPORT] Iteration Complete\n"
-                  << "  Total Processed: " << total << "\n"
-                  << "  Total Succeeded: " << total_succeeded << "\n"
-                  << "  Total Failed:    " << failed << "\n";
-
-        if (total_succeeded > 0) {
-            std::cout << "  Succeeded by Retries:\n";
-            for (auto const& [retries, count] : succeeded_by_retries) {
-                double pct = (static_cast<double>(count) / total_succeeded) * 100.0;
-                std::cout << "    " << retries << " retries: " << count << " jobs ("
-                          << std::fixed << std::setprecision(2) << pct << "%)\n";
-            }
-        }
-        if (total > 0) {
-            double overall_pct = (static_cast<double>(total_succeeded) / total) * 100.0;
-            std::cout << "  Overall Success %: " << std::fixed << std::setprecision(2) << overall_pct << "%\n";
-        }
-        if (runtime > 0.0) {
-            std::cout << "  Runtime:   " << std::fixed << std::setprecision(2) << runtime << " s\n";
-        }
-        std::cout << "=====================================\n" << std::endl;
-    }
+    // prevents double-finalize
+    bool finalized = false;
 };
+
+
 
 behavior stats_actor_fun(stateful_actor<stats_actor_state>* self) {
     return {
-        [=](bool success, int retries_taken) { // Changed signature
+
+        // SUCCESS / FAILURE REPORTING
+        [=](bool success, int retries_taken) {
+            auto& st = self->state();
+
             if (success) {
-                self->state().succeeded_by_retries[retries_taken]++;
+                st.succeeded_by_retries[retries_taken]++;
             } else {
-                self->state().failed++;
+                st.failed++;
             }
 
-            int total_succeeded = 0;
-            for (auto const& [retries, count] : self->state().succeeded_by_retries) {
-                total_succeeded += count;
-            }
-            int total = total_succeeded + self->state().failed;
+            int total = 0;
+            for (auto const& [r, c] : st.succeeded_by_retries)
+                total += c;
+            total += st.failed;
 
-            if (total % 1000 == 0) {
-                std::cout << "[STATS] Progress: " << total << " jobs processed." << std::endl;
+            if (total % 1000 == 0 && total > 0) {
+                std::cout << "[STATS] Progress: "
+                          << total << " jobs processed\n";
             }
         },
+
+        // RUNTIME UPDATE
         [=](double runtime) {
             self->state().runtime = runtime;
+        },
+
+        // FINAL REPORT (IMPORTANT FIX)
+        [=](char finalize_stats) {
+            auto& st = self->state();
+
+            if (st.finalized)
+                return;
+
+            st.finalized = true;
+
+            int total_succeeded = 0;
+            for (auto const& [r, c] : st.succeeded_by_retries)
+                total_succeeded += c;
+
+            int total = total_succeeded + st.failed;
+
+            double success_pct = (total > 0)
+                ? (100.0 * total_succeeded / total)
+                : 0.0;
+
+            std::cout << "\n=====================================\n";
+            std::cout << "[STATS REPORT] Iteration Complete\n";
+            std::cout << "  Total Processed: " << total << "\n";
+            std::cout << "  Total Succeeded: " << total_succeeded << "\n";
+            std::cout << "  Total Failed:    " << st.failed << "\n";
+
+            std::cout << "  Succeeded by Retries:\n";
+            for (auto const& [r, c] : st.succeeded_by_retries) {
+                double pct = (total_succeeded > 0)
+                    ? (100.0 * c / total_succeeded)
+                    : 0.0;
+
+                std::cout << "    " << r << " retries: "
+                          << c << " jobs ("
+                          << std::fixed << std::setprecision(2)
+                          << pct << "%)\n";
+            }
+
+            std::cout << "  Overall Success %: "
+                      << std::fixed << std::setprecision(2)
+                      << success_pct << "%\n";
+
+            if (st.runtime > 0.0) {
+                std::cout << "  Runtime: "
+                          << std::fixed << std::setprecision(3)
+                          << st.runtime << " s\n";
+            }
+
+            std::cout << "=====================================\n";
         }
     };
 }
@@ -386,12 +416,13 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
             // block until the exit_actor terminates (signaling all 50k tasks are done).
             scoped_actor self{sys};
             self->wait_for(exit_actor);
-            anon_send_exit(stats_actor, exit_reason::user_shutdown);
+            // anon_send_exit(stats_actor, exit_reason::user_shutdown);
         });
 
         std::cout << "Run complete. Time: " << elapsed << " s\n";
-        self->mail(elapsed).send(stats_actor);
-        self->send_exit(stats_actor, exit_reason::user_shutdown);
+       // self->mail(elapsed).send(stats_actor);
+        self->mail('c').send(stats_actor);   
+        anon_send_exit(stats_actor, exit_reason::user_shutdown);    
         self->wait_for(stats_actor);
         pressure_holder.clear();
         manager::shutdown(); // Reset manager state for the next potential iteration
