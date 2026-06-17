@@ -42,6 +42,7 @@ struct supervisor_state {
 struct stats_actor_state {
     int succeeded = 0;
     int failed = 0;
+    double runtime = 0.0;
 
     ~stats_actor_state() {
         int total = succeeded + failed;
@@ -52,6 +53,9 @@ struct stats_actor_state {
         if (total > 0) {
             double pct = (static_cast<double>(succeeded) / total) * 100.0;
             std::cout << "  Success %: " << std::fixed << std::setprecision(2) << pct << "%\n";
+        }
+        if (runtime > 0.0) {
+            std::cout << "  Runtime:   " << std::fixed << std::setprecision(2) << runtime << " s\n";
         }
         std::cout << "=====================================\n" << std::endl;
     }
@@ -67,6 +71,9 @@ behavior stats_actor_fun(stateful_actor<stats_actor_state>* self) {
             if (total % 1000 == 0) {
                 std::cout << "[STATS] Progress: " << total << " jobs processed." << std::endl;
             }
+        },
+        [=](double runtime) {
+            self->state().runtime = runtime;
         }
     };
 }
@@ -295,8 +302,12 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         manager::init(sys, config);
         auto& mgr = manager::get();
 
-        // Occupy GPU memory such that only 300 MB remains to force OOMs during task runs
-        apply_memory_pressure(0, 1500ULL * 1024ULL * 1024ULL);
+        
+        
+        // Occupy GPU memory such that only 1500 MB remains to force OOMs during task runs
+        for (int i=0; i < mgr.get_num_devices(); i++) {
+            apply_memory_pressure(i, 1500ULL * 1024ULL * 1024ULL);
+        }
 
         // Start scheduler with 4 streams and depth 2 (8 slots) to force queuing
         mgr.toggle_scheduler_actor(32, 1);
@@ -336,18 +347,19 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
                              "task_" + std::to_string(i), supervisor));
         }
 
+        scoped_actor self{sys};
         double elapsed = time_run([&]() {
             std::cout << "[MAIN] Dispatching batch to scheduler..." << std::endl;
             mgr.send_scheduler_actor_message(std::move(tokens));
 
             // The dispatch is asynchronous. To get an accurate measurement, we must
             // block until the exit_actor terminates (signaling all 50k tasks are done).
-            scoped_actor self{sys};
             self->wait_for(exit_actor);
-            anon_send_exit(stats_actor, exit_reason::user_shutdown);
         });
 
-        std::cout << "Run complete. Time: " << elapsed << " s\n";
+        self->mail(elapsed).send(stats_actor);
+        self->send_exit(stats_actor, exit_reason::user_shutdown);
+        self->wait_for(stats_actor);
         pressure_holder.clear();
         manager::shutdown(); // Reset manager state for the next potential iteration
     }
