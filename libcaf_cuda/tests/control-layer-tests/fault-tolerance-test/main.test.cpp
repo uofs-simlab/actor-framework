@@ -2,296 +2,264 @@
 #include <caf/cuda/all.hpp>
 #include <caf/cuda/control-layer/all-control-layer.hpp>
 #include <iostream>
-#include <iomanip>
 #include <vector>
-#include <chrono>
-#include <thread>
-#include <algorithm>
-#include <numeric>
+#include <string>
 #include <random>
-#include <unistd.h>
-#include "caf/actor_registry.hpp"
-#include <chrono>
-#include <iostream>
-//#include <caf/atoms.hpp>
-
-
-
+#include <unordered_map>
+#include <unordered_set>
+#include <algorithm>
 
 using namespace caf;
-using namespace std::chrono_literals;
+using namespace caf::cuda;
 
+// A generic command runner to provide access to CUDA stream callbacks
+static command_runner<in<int>, in<int>, out<int>, in<int>> runner;
 
-struct exit_actor_state {
-	int completed = 0;
+// MatrixPool structure from mmul-random-batch-benchmark
+struct MatrixPool {
+    std::unordered_map<int, std::vector<int>> A;
+    std::unordered_map<int, std::vector<int>> B;
 };
 
-
-// --- command runner types (put near top of file) -------------------------
-using initCommand =
-  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, in<int>, in<unsigned long long>>;
-
-using divCommand  =
-  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, in<int>>;
-
-using sumCommand  =
-  caf::cuda::command_runner<caf::cuda::mem_ptr<float>, caf::cuda::mem_ptr<float>, in<int>>;
-
-// single instances (can be file-global)
-static initCommand init_cmd;
-static divCommand  div_cmd;
-static sumCommand  sum_cmd;
-
-// --- pipeline actor state (device buffers persist here) ------------------
-struct pipeline_actor_state {
-    int id = rand();
-
-    // device-side buffers that must persist across stages:
-    caf::cuda::mem_ptr<float> d_denoms;
-    caf::cuda::mem_ptr<float> d_results;
-    caf::cuda::mem_ptr<float> d_sum;
+struct task_actor_state {
+    program_ptr prog;
+    int N_val;
+    std::shared_ptr<MatrixPool> pool;
 };
 
-// --- corrected pipeline_actor -------------------------------------------
-behavior pipeline_actor(caf::stateful_actor<pipeline_actor_state>* self,
-                        actor supervisor,
-                        caf::cuda::program_ptr p1,
-                        caf::cuda::program_ptr p2,
-                        caf::cuda::program_ptr p3,
-                        int n)
-{
-    // host-side scratch (only used for post-stage2 NaN/Inf detection)
-    std::vector<float> h_results;
+// create_matrix_pool_random function from mmul-random-batch-benchmark
+MatrixPool create_matrix_pool_random(
+    int num_sizes,
+    int min_N,
+    int max_N,
+    unsigned int seed
+) {
+    MatrixPool pool;
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> dist(min_N, max_N);
+    std::unordered_set<int> used;
+    while (used.size() < static_cast<size_t>(num_sizes)) {
+        int N = dist(rng);
+        if (used.insert(N).second) {
+            pool.A[N] = std::vector<int>(N * N, 1);
+            pool.B[N] = std::vector<int>(N * N, 2); // Changed to 2 for distinct input
+        }
+    }
+    return pool;
+}
 
-    // scheduler from manager
-    caf::actor scheduler = caf::cuda::manager::get().get_scheduler_actor();
-
-    // nd_range used for all stages (adapt to your kernels as needed)
-    caf::cuda::nd_range range{
-        {(n + 255) / 256, 1, 1},
-        {256, 1, 1}
-    };
-
-    // helper to create and send a launch token
-    auto launch = [&](caf::cuda::program_ptr prog, const std::string& stage) {
-        auto tok = make_launch_token(
-            prog,
-            range,
-            /*memory_usage=*/static_cast<int>(sizeof(float) * n),
-            stage,
-            self,
-            self->state().id  // dependency/demo id
-        );
-        anon_mail(tok).send(scheduler);
-    };
-
-    // fire all three tokens (scheduler will reply with response_token on grants)
-    launch(p1, "stage1");
-    launch(p2, "stage2");
-    launch(p3, "stage3");
-
+// This actor represents a single task that requests permission from the scheduler.
+//this actor is mean to represent the case of when it sends out a request but crashes 
+//before it can receive a response, showing the scheduler actor will just move on
+behavior bad_task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_actor) {
+   
+   
+        //lets crash the actor before it can receive a response
+        
+        auto token = make_launch_token(self->state().prog,caf::cuda::nd_range(1,1,1,1,1,1),0,"hello",self);
+        caf::cuda::manager::get().send_scheduler_actor_message(token);
+        self->quit();
+   
+   
     return {
-
-        // handle response tokens by name — opaque to reclaim payload
-        [=](caf::cuda::response_token_ptr res_token) mutable {
-
-            const auto& stage = res_token->name();
-
-            // --------------------- Stage 1: init_denominators ---------------------
-            if (stage == "stage1") {
-                // allocate device buffer for denominators (persist in state)
-
-     	           std::cout << "Starting stage 1\n";		    
-		    unsigned long long seed = static_cast<unsigned long long>(
-    std::chrono::high_resolution_clock::now().time_since_epoch().count()
-);
-
-
-
-		out<float> buffer = caf::cuda::create_out_arg_with_size<float>(n);
-                self->state().d_denoms = init_cmd.transfer_memory(res_token,buffer);
-
-                // run kernel on the stream/device from res_token
-                // kernel signature: (float* denominators, int n, unsigned long long seed)
-                init_cmd.run_async(
-                    p1,
-                    range,
-                    res_token,                            // uses token's stream/device
-                    self->state().d_denoms,               // device buffer
-                    caf::cuda::create_in_arg(n),          // n
-                    caf::cuda::create_in_arg(seed)     // seed
-                );
-
-		std::cout << "Finished stage 1\n";
-                // stage1 intentionally no checks — data may contain zeros
-                return;
-            }
-
-            // --------------------- Stage 2: perform_division ---------------------
-            if (stage == "stage2") {
-                // allocate device buffer for results (persist in state)
-		    std::vector<float> buffer1(n); 
-
-     	           std::cout << "Starting stage 2\n";		    
-		self->state().d_results = div_cmd.transfer_memory(res_token,out<float>{buffer1});
-
-                // create a host numerators vector (all ones)
-                std::vector<float> h_nums(n, 1.0f);
-
-                // transfer numerators to device on the token's stream/device
-                // transfer_memory returns a caf::cuda::mem_ptr<float>
-                auto d_nums = div_cmd.transfer_memory(res_token, in_out<float>{h_nums});
-
-                // run division kernel on the token's stream/device:
-                // kernel signature: (float* numerators, float* denominators, float* results, int n)
-                div_cmd.run(
-                    p2,
-                    range,
-                    res_token,
-                    d_nums,
-                    self->state().d_denoms,
-                    self->state().d_results,
-                    caf::cuda::create_in_arg(n)
-                );
-
-                // extract the device results back to host for verification.
-                // extract_vector will synchronize as needed.
-                h_results = self->state().d_results -> copy_to_host();
-
-                // check for NaN/Inf AFTER the kernel finished
-                bool fault = false;
-                for (float v : h_results) {
-                    if (!std::isfinite(v)) {
-                        fault = true;
-                        break;
-                    }
-                }
-
-                if (fault) {
-                    // inform supervisor and exit;
-                    anon_mail(std::string("crash")).send(supervisor);
-                    self->quit();
-                    return;
-                }
-
-                // stage2 passed — keep d_results in state for stage3
-                return;
-            }
-
-            // --------------------- Stage 3: sum_results --------------------------
-            if (stage == "stage3") {
-                // allocate device scalar for sum result
+        [=](response_token_ptr res) mutable {
+            if (res->getType() == LAUNCH_RESPONSE) {
+                auto& st = self->state();
                 
-     	           std::cout << "Starting stage 3\n";		    
-		    std::vector<float> buffer1(1); 
+                // We need to cast the base response_token to access the specific nd_range stored in it.
+                auto launch_res = static_cast<launch_response_token*>(res.get());
+                int N = st.N_val;
 
-		self->state().d_sum = div_cmd.transfer_memory(res_token,out<float>{buffer1});
-		    
-                // run reduction on the token's stream/device:
-                // kernel signature: (float* results, float* final_sum, int n)
-                sum_cmd.run(
-                    p3,
-                    range,
-                    res_token,
-                    self->state().d_results,
-                    self->state().d_sum,
-                    caf::cuda::create_in_arg(n)
-                );
+                // 1. Setup GPU arguments.
+                // Fetch data from the shared pool only when scheduled to save RAM
+                auto in_a = create_in_arg(st.pool->A.at(N));
+                auto in_b = create_in_arg(st.pool->B.at(N));
+                auto out_c = create_out_arg_with_size<int>(N * N);
+                auto in_n = create_in_arg(N);
 
-                // extract final scalar
-		
-		std::vector<float> buf = self->state().d_sum -> copy_to_host();
-                float final_sum = buf[0];
-                std::cout << "[pipeline] completed, sum = " << final_sum << "\n";
+                int threads = 32;
+                int blocks = (N + threads - 1) / threads;
+                caf::cuda::nd_range dims = caf::cuda::nd_range(blocks,blocks,1,
+                                                               threads,threads,1);
 
-                // successful completion -> tell supervisor to tear everything down
-                anon_mail(std::string("done")).send(supervisor);
 
-                // quit the pipeline actor
-                self->quit();
-                return;
+                // 2. Launch Work asynchronously using the stream and device assigned by the scheduler.
+                auto result_tuple = runner.run_async(st.prog, dims , res, in_a, in_b, out_c, in_n);
+                auto d_c = std::get<2>(result_tuple);
+
+                // 3. Asynchronous Copyback.
+                // Allocate a local buffer for the result to keep the total system memory low.
+                auto h_c = std::make_shared<std::vector<int>>(N * N);
+                // The launch_response_token is released inside the callback 
+                // to signal to the scheduler that the resource is free. (No serial verification here)
+                runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, exit_actor, h_c](int* /*ptr*/, size_t /*sz*/) {
+                    res->release();
+                    anon_mail(1).send(exit_actor);
+                });
             }
-
-            // unknown stage: ignore or log
-            std::cerr << "[pipeline] received unknown response token: " << stage << "\n";
         }
     };
 }
 
 
 
-void supervisor_handle_msg(event_based_actor* self,
-                           caf::cuda::program_ptr p1,
-                           caf::cuda::program_ptr p2,
-                           caf::cuda::program_ptr p3,
-                           int n,
-                           const std::string& msg) {
-    if (msg == "crash") {
-        std::cout << "[supervisor] Pipeline crashed — restarting\n";
-        self->system().spawn(pipeline_actor, self, p1, p2, p3, n);
-    } else if (msg == "done") {
-        std::cout << "[supervisor] Pipeline completed — shutting down\n";
-        caf::cuda::manager::shutdown();
-        self->quit();
-    } else {
-        std::cerr << "[supervisor] Unknown message: " << msg << "\n";
+
+// This actor represents a single task that requests permission from the scheduler.
+behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_actor) {
+   
+   
+        
+        auto token = make_launch_token(self->state().prog,caf::cuda::nd_range(1,1,1,1,1,1),0,"hello",self);
+        caf::cuda::manager::get().send_scheduler_actor_message(token);
+
+      
+   
+   
+    return {
+        [=](response_token_ptr res) mutable {
+            if (res->getType() == LAUNCH_RESPONSE) {
+                auto& st = self->state();
+                
+                // We need to cast the base response_token to access the specific nd_range stored in it.
+                auto launch_res = static_cast<launch_response_token*>(res.get());
+                int N = st.N_val;
+
+                // 1. Setup GPU arguments.
+                // Fetch data from the shared pool only when scheduled to save RAM
+                auto in_a = create_in_arg(st.pool->A.at(N));
+                auto in_b = create_in_arg(st.pool->B.at(N));
+                auto out_c = create_out_arg_with_size<int>(N * N);
+                auto in_n = create_in_arg(N);
+
+                // 2. Launch Work asynchronously using the stream and device assigned by the scheduler.
+                auto result_tuple = runner.run_async(st.prog, launch_res->getRange(), res, in_a, in_b, out_c, in_n);
+                auto d_c = std::get<2>(result_tuple);
+
+                // 3. Asynchronous Copyback.
+                // Allocate a local buffer for the result to keep the total system memory low.
+                auto h_c = std::make_shared<std::vector<int>>(N * N);
+                // The launch_response_token is released inside the callback 
+                // to signal to the scheduler that the resource is free. (No serial verification here)
+                runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, exit_actor, h_c](int* /*ptr*/, size_t /*sz*/) {
+                    res->release();
+                    anon_mail(1).send(exit_actor);
+                });
+            }
+        }
+    };
+}
+
+
+
+// Helper function to initialize task_actor_state
+behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, std::shared_ptr<MatrixPool> pool, caf::actor exit_actor) {
+    auto& st = self->state();
+    st.prog = std::move(prog);
+    st.N_val = N_val;
+    st.pool = std::move(pool);
+    return task_actor_fun(self, exit_actor); // Pass exit_actor to task_actor_fun
+}
+
+
+
+// Helper function to initialize bad+task_actor_state
+behavior make_bad_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, std::shared_ptr<MatrixPool> pool, caf::actor exit_actor) {
+    auto& st = self->state();
+    st.prog = std::move(prog);
+    st.N_val = N_val;
+    st.pool = std::move(pool);
+    return bad_task_actor_fun(self, exit_actor); // Pass exit_actor to task_actor_fun
+}
+
+template <class Fn>
+double time_run(Fn&& fn) {
+    auto start = std::chrono::steady_clock::now();
+    fn();
+    auto end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    return elapsed.count();
+}
+
+void run_scheduler_integration_scaling_test(actor_system& sys) {
+    const int min_N = 1024;
+    const int max_N = 2048;
+    const int num_distinct_sizes = 10;
+    const std::vector<int> actor_counts = {1000};
+
+
+    //  const std::vector<int> actor_counts = {5};
+
+
+
+    // Generate deterministic random pool once
+    auto pool_ptr = std::make_shared<MatrixPool>(
+        create_matrix_pool_random(num_distinct_sizes, min_N, max_N, 42));
+    
+    std::vector<int> available_Ns;
+    for (const auto& pair : pool_ptr->A) available_Ns.push_back(pair.first);
+
+    for (int num_tasks : actor_counts) {
+        manager_config config;
+        manager::init(sys, config);
+        auto& mgr = manager::get();
+
+        // Start scheduler with 4 streams and depth 2 (8 slots) to force queuing
+        mgr.toggle_scheduler_actor(8, 1);
+
+        auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+        const int THREADS = 32;
+
+        std::vector<token_ptr> tokens;
+        std::mt19937 rng(42);
+        std::uniform_int_distribution<size_t> dist_N_idx(0, available_Ns.size() - 1);
+
+        std::cout << "=====================================\n";
+        std::cout << "Scheduler Test | tasks=" << num_tasks << "\n";
+
+        // Spawn the exit actor for this specific test run (moved inside the loop)
+        auto exit_actor = sys.spawn(caf::cuda::exit_actor_fun, num_tasks);
+
+        // Spawn task actors and prepare tokens
+        for (int i = 0; i < num_tasks; ++i) {
+            int current_N = available_Ns[dist_N_idx(rng)];
+          
+
+
+             auto worker = sys.spawn(make_bad_task_actor_behavior,
+                                    program,
+                                    current_N, 
+                                    pool_ptr,
+                                    exit_actor); // Pass exit_actor to task actors
+            
+            auto worker2 = sys.spawn(make_task_actor_behavior,
+                                    program,
+                                    current_N, 
+                                    pool_ptr,
+                                    exit_actor); // Pass exit_actor to task actors
+
+
+    
+        }
+
+        double elapsed = time_run([&]() {
+            std::cout << "[MAIN] Dispatching batch to scheduler..." << std::endl;
+            // mgr.send_scheduler_actor_message(std::move(tokens));
+
+            // The dispatch is asynchronous. To get an accurate measurement, we must
+            // block until the exit_actor terminates (signaling all 50k tasks are done).
+            // anon_mail(num_tasks).delay(std::chrono::seconds(5)).send(exit_actor);
+            scoped_actor self{sys};
+            self->wait_for(exit_actor);
+        });
+
+        std::cout << "Run complete. Time: " << elapsed << " s\n";
+        manager::shutdown(); // Reset manager state for the next potential iteration
     }
 }
 
-
-
-
-behavior supervisor_actor(event_based_actor* self,
-                          caf::cuda::program_ptr p1,
-                          caf::cuda::program_ptr p2,
-                          caf::cuda::program_ptr p3,
-                          int n) {
-    // Spawn first pipeline safely
-    self->system().spawn(pipeline_actor, self, p1, p2, p3, n);
-
-    // Behavior: just route string messages to the helper
-    return {
-        [=](const std::string& msg) {
-            supervisor_handle_msg(self, p1, p2, p3, n, msg);
-        }
-    };
+void caf_main(actor_system& sys) {
+    run_scheduler_integration_scaling_test(sys);
+    std::cout << "[MAIN] Integration test complete." << std::endl;
 }
 
-
-
-
-void caf_main(caf::actor_system& sys) {
-
-
-
-        caf::cuda::manager_config man_config(true); //turns the scheduler on
-        caf::cuda::manager::init(sys,man_config);
-
-	//change the scheduler to core_usage
-	anon_mail(
-        caf::cuda::make_behavior_token("single_usage")
-        ).send(caf::cuda::manager::get().get_scheduler_actor());
-
-
-	caf::cuda::program_ptr p1 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","init_denominators");
-	caf::cuda::program_ptr p2 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","perform_division");
-	caf::cuda::program_ptr p3 = caf::cuda::manager::get().create_program_from_cubin("../fault.cubin","sum_results");
-
-	sys.spawn(supervisor_actor,p1,p2,p3,1);
-	sys.await_all_actors_done();
-
-
-}
-
-
-
-
-CAF_MAIN()
-
-
-
-
-
-
-
-
+CAF_MAIN(id_block::cuda_control)
