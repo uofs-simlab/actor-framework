@@ -11,25 +11,51 @@
 #include <cuda_runtime.h>
 #include <cuda.h> // Include CUDA Driver API header
 
-// Macro for safe CUDA Runtime error checking
-#define CHECK_CUDA_THROW(call) \
-    do { \
-        cudaError_t err = call; \
-        if (err != cudaSuccess) { \
-            throw std::runtime_error(cudaGetErrorString(err)); \
-        } \
+#include <iostream>
+#include <string>
+#include <stdexcept>
+
+// Clean Runtime API Check Macro
+#define CHECK_CUDA_THROW(call)                                                 \
+    do {                                                                       \
+        cudaError_t err = call;                                                \
+        if (err != cudaSuccess) {                                              \
+            std::string error_msg =                                            \
+                std::string("[CUDA RUNTIME ERROR] API Call '") + #call +       \
+                "' failed.\n  Error Name:        " +                           \
+                cudaGetErrorName(err) +                                        \
+                "\n  Error Description: " + cudaGetErrorString(err) +          \
+                "\n  Location:          " + __FILE__ + ":" +                   \
+                std::to_string(__LINE__) + "\n";                               \
+            std::cerr << error_msg << std::endl;                               \
+            throw std::runtime_error(error_msg);                               \
+        }                                                                      \
     } while (0)
 
-// Macro for safe CUDA Driver error checking
-#define CHECK_CUDA_DRV_THROW(call) \
-    do { \
-        CUresult res = call; \
-        if (res != CUDA_SUCCESS) { \
-            const char* errStr = nullptr; \
-            cuGetErrorString(res, &errStr); \
-            throw std::runtime_error(errStr ? errStr : "Unknown Driver Error"); \
-        } \
+// Clean Driver API Check Macro
+#define CHECK_CUDA_DRV_THROW(call)                                             \
+    do {                                                                       \
+        CUresult res = call;                                                   \
+        if (res != CUDA_SUCCESS) {                                             \
+            const char* errorName = nullptr;                                   \
+            const char* errorStr = nullptr;                                    \
+            cuGetErrorName(res, &errorName);                                   \
+            cuGetErrorString(res, &errorStr);                                  \
+            std::string error_msg =                                            \
+                std::string("[CUDA DRIVER ERROR] API Call '") + #call +        \
+                "' failed.\n  Error Code:        " +                           \
+                std::to_string(static_cast<int>(res)) +                        \
+                "\n  Error Name:        " +                                    \
+                (errorName ? errorName : "UNKNOWN") +                          \
+                "\n  Error Description: " +                                    \
+                (errorStr ? errorStr : "UNKNOWN") +                            \
+                "\n  Location:          " + __FILE__ + ":" +                   \
+                std::to_string(__LINE__) + "\n";                               \
+            std::cerr << error_msg << std::endl;                               \
+            throw std::runtime_error(error_msg);                               \
+        }                                                                      \
     } while (0)
+
 
 struct MatrixPool {
     std::unordered_map<int, std::vector<int>> A;
@@ -117,43 +143,61 @@ void apply_memory_pressure(int device_id, size_t target_free_bytes) {
 
 // Worker thread logic
 void worker_thread_fun(int thread_id, int device_id, TaskQueue& queue, const MatrixPool& pool, Stats& stats, CUmodule module) {
-    cudaSetDevice(device_id);
-
-    // Fetch kernel function handle from the preloaded module
-    CUfunction matrixMulKernel;
-    if (cuModuleGetFunction(&matrixMulKernel, module, "matrixMul") != CUDA_SUCCESS) {
-        std::cerr << "[THREAD " << thread_id << "] Failed to find 'matrixMul' kernel symbol.\n";
+    // 1. In the Driver API, we must explicitly fetch or activate the primary context for this device
+    CUdevice device;
+    CUcontext context;
+    if (cuDeviceGet(&device, device_id) != CUDA_SUCCESS || 
+        cuDevicePrimaryCtxRetain(&context, device) != CUDA_SUCCESS) {
+        std::cerr << "[THREAD " << thread_id << "] Failed to retain primary context.\n";
         return;
     }
 
-    cudaStream_t stream;
-    if (cudaStreamCreate(&stream) != cudaSuccess) {
+    // Bind this thread to the device's context
+    if (cuCtxSetCurrent(context) != CUDA_SUCCESS) {
+        std::cerr << "[THREAD " << thread_id << "] Failed to set context.\n";
+        cuDevicePrimaryCtxRelease(device);
+        return;
+    }
+
+    // 2. Fetch kernel function handle
+    CUfunction matrixMulKernel;
+    if (cuModuleGetFunction(&matrixMulKernel, module, "matrixMul") != CUDA_SUCCESS) {
+        std::cerr << "[THREAD " << thread_id << "] Failed to find 'matrixMul' kernel symbol.\n";
+        cuDevicePrimaryCtxRelease(device);
+        return;
+    }
+
+    // 3. Create an asynchronous stream using Driver API (CUstream)
+    CUstream stream;
+    if (cuStreamCreate(&stream, CU_STREAM_DEFAULT) != CUDA_SUCCESS) {
         std::cerr << "[THREAD " << thread_id << "] Failed to create stream.\n";
+        cuDevicePrimaryCtxRelease(device);
         return;
     }
 
     int N = 0;
     while (queue.pop(N)) {
-        int* d_A = nullptr;
-        int* d_B = nullptr;
-        int* d_C = nullptr;
+        // Driver API pointers are defined as CUdeviceptr (which is an unsigned long long / uintptr_t)
+        CUdeviceptr d_A = 0;
+        CUdeviceptr d_B = 0;
+        CUdeviceptr d_C = 0;
         size_t size_bytes = N * N * sizeof(int);
 
         try {
-            // 1. Allocations
-            CHECK_CUDA_THROW(cudaMallocAsync(&d_A, size_bytes,stream));
-            CHECK_CUDA_THROW(cudaMallocAsync(&d_B, size_bytes,stream));
-            CHECK_CUDA_THROW(cudaMallocAsync(&d_C, size_bytes,stream));
+            // 4. Stream-ordered allocations using Driver API
+            CHECK_CUDA_DRV_THROW(cuMemAllocAsync(&d_A, size_bytes, stream));
+            CHECK_CUDA_DRV_THROW(cuMemAllocAsync(&d_B, size_bytes, stream));
+            CHECK_CUDA_DRV_THROW(cuMemAllocAsync(&d_C, size_bytes, stream));
 
-            // 2. Upload host data
-            CHECK_CUDA_THROW(cudaMemcpyAsync(d_A, pool.A.at(N).data(), size_bytes, cudaMemcpyHostToDevice, stream));
-            CHECK_CUDA_THROW(cudaMemcpyAsync(d_B, pool.B.at(N).data(), size_bytes, cudaMemcpyHostToDevice, stream));
+            // 5. Asynchronous host-to-device memory copies
+            CHECK_CUDA_DRV_THROW(cuMemcpyHtoDAsync(d_A, pool.A.at(N).data(), size_bytes, stream));
+            CHECK_CUDA_DRV_THROW(cuMemcpyHtoDAsync(d_B, pool.B.at(N).data(), size_bytes, stream));
 
-            // 3. Launch Kernel via Driver API
+            // 6. Launch Kernel
             unsigned int gridX = (N + 31) / 32;
             unsigned int gridY = (N + 31) / 32;
 
-            // Pack arguments exactly as expected by the kernel parameters layout
+            // Pack arguments (passing pointers to the CUdeviceptr handles)
             void* args[] = { &d_A, &d_B, &d_C, &N };
 
             CHECK_CUDA_DRV_THROW(
@@ -161,27 +205,40 @@ void worker_thread_fun(int thread_id, int device_id, TaskQueue& queue, const Mat
                                gridX, gridY, 1,       // Grid dims
                                32, 32, 1,             // Block dims
                                0,                     // Shared memory bytes
-                               stream,                // Casts cleanly to CUstream
-                               args,                  // Kernel arguments
-                               nullptr)               // Extra arguments
+                               stream,                // Stream handle
+                               args,                  // Arguments
+                               nullptr)               // Extra parameters
             );
 
-            // 4. Synchronize stream to catch runtime/OOM issues execution pipeline errors
-            CHECK_CUDA_THROW(cudaStreamSynchronize(stream));
+            // 7. Synchronize the stream via Driver API to catch any execution anomalies
+            CHECK_CUDA_DRV_THROW(cuStreamSynchronize(stream));
             stats.succeeded++;
 
         } catch (const std::exception& e) {
+            // Because we used pure Driver API, an exception caught here does NOT poison 
+            // the whole global runtime state. The thread can safely loop and request the next task.
             stats.failed++;
         }
 
-        // Clean up resources for this job loop
-        if (d_A) cudaFree(d_A);
-        if (d_B) cudaFree(d_B);
-        if (d_C) cudaFree(d_C);
+        // 8. Stream-ordered deallocations using Driver API
+        if (d_A) cuMemFreeAsync(d_A, stream);
+        if (d_B) cuMemFreeAsync(d_B, stream);
+        if (d_C) cuMemFreeAsync(d_C, stream);
+        
+        // // Ensure frees are complete before this specific worker thread loops back
+        // cuStreamSynchronize(stream);
     }
 
-    cudaStreamDestroy(stream);
+    // Clean up local thread environment variables cleanly
+    cuStreamDestroy(stream);
+    cuDevicePrimaryCtxRelease(device);
 }
+
+
+
+
+
+
 int main() {
     // 1. Initialize CUDA Driver API
     if (cuInit(0) != CUDA_SUCCESS) {
