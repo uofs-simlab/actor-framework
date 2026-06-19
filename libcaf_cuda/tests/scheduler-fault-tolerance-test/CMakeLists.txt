@@ -1,21 +1,19 @@
-cmake_minimum_required(VERSION 3.16.3)
+cmake_minimum_required(VERSION 3.16) # Back to your original minimum
 
-# 1) Enforce C++20 (needs modern C++ features)
+# Enforce C++20
 set(CMAKE_CXX_STANDARD        20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS      OFF)
 
-# 2) Set CAF source and build directories
 set(CAF_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../actor-framework")
 set(CAF_BUILD "${CAF_SRC}/build")
 
-
-#required since cmake cant seem to find the compiler 
 set(CMAKE_CXX_COMPILER "/usr/bin/g++")
 set(CMAKE_C_COMPILER "/usr/bin/gcc")
 
 project(CUDA_ACTORS)
 
+# Use the old reliable finder to discover where the driver library is hidden
 find_package(CUDA REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
@@ -24,34 +22,19 @@ include_directories(
   "${CAF_SRC}/libcaf_io"
   "${CAF_SRC}/libcaf_core"
   "${CAF_SRC}/libcaf_opencl"
-  "${CAF_BUILD}/libcaf_core"  # for generated build_config.hpp  
+  "${CAF_BUILD}/libcaf_core"  
   "${CAF_SRC}/libcaf_cuda"
 )
 
-
-# 5) Declare your executables
-# add_executable(test main.test.cpp)
-# target_compile_definitions(test PRIVATE CAF_ENABLE_LOGGING)
 add_executable(scheduler_test scheduler_integration_test.cpp)
 target_compile_definitions(scheduler_test PRIVATE CAF_ENABLE_LOGGING)
 
-# add_executable(work-stealing work-stealing.cpp)
-# target_compile_definitions(work-stealing PRIVATE CAF_ENABLE_LOGGING)
-
-# add_executable(cuda-baseline cuda-baseline.cpp)
-# target_link_libraries(cuda-baseline PRIVATE CUDA::cuda_driver)
-
-# target_link_libraries(test
-#   PRIVATE
-#     "${CAF_BUILD}/libcaf_core/libcaf_core.so"
-#     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
-#     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
-#     CUDA::nvrtc 
-#     CUDA::cublas
-#     CUDA::cusparse
-# )
-
-
+# --- THE FIX FOR BASELINE ---
+add_executable(cuda-baseline main.native.cpp)
+target_link_libraries(cuda-baseline PRIVATE 
+    CUDA::cudart           # Fixes Runtime API (cudaMalloc, etc.)
+    CUDA::cuda_driver   # Fixes Driver API (cuInit, cuModuleLoad) via raw path variable
+)
 
 target_link_libraries(scheduler_test
   PRIVATE
@@ -62,13 +45,3 @@ target_link_libraries(scheduler_test
     CUDA::cublas
     CUDA::cusparse
 )
-
-# target_link_libraries(work-stealing
-#   PRIVATE
-#     "${CAF_BUILD}/libcaf_core/libcaf_core.so"
-#     "${CAF_BUILD}/libcaf_io/libcaf_io.so"
-#     "${CAF_BUILD}/libcaf_cuda/libcaf_cuda.so"
-#     CUDA::nvrtc
-#     CUDA::cublas
-#     CUDA::cusparse
-# )
