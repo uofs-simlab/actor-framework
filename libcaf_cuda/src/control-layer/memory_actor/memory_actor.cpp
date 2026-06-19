@@ -1,6 +1,5 @@
 #include "caf/cuda/control-layer/all-control-layer.hpp"
 #include "caf/cuda/manager.hpp"
-#include "caf/cuda/control-layer/return_payloads/ack.hpp"
 #include "caf/cuda/control-layer/memory_actor/memory_request_token.hpp"
 #include "caf/cuda/control-layer/memory_actor/mem_token.hpp"
 #include <iostream>

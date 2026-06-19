@@ -78,20 +78,5 @@ response_token_ptr make_transfer_token(caf::actor receiver,
 
 
 
-
-/// Factory function: create a mem_ptr<int> with fake data
- mem_ptr<int> make_mem_ptr(size_t num_elements = 16) {
-    if (num_elements == 1) {
-        // scalar test
-        return mem_ptr<int>(new mem_ref<int>(42, /*access=*/0));
-    } else {
-        // create a device-like mem_ref with scalar backing for simplicity
-        // normally this would allocate GPU memory, here just fake values
-        auto ptr = mem_ptr<int>(new mem_ref<int>(0, /*CUdeviceptr*/0, /*access=*/0));
-        return ptr;
-    }
-}
-
-
 } // namespace caf::cuda
 

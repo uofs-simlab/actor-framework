@@ -1,7 +1,7 @@
 #pragma once
 #include "caf/cuda/control-layer/response_token.hpp"
 #include "caf/cuda/control-layer/launch_token.hpp"
-#include "caf/cuda/control-layer/return_payloads/transfer_ack.hpp"
+// #include "caf/cuda/control-layer/return_payloads/transfer_ack.hpp"
 #include "caf/cuda/global_export.hpp"
 
 #include <caf/actor.hpp>
@@ -66,12 +66,12 @@ public:
             return;
 
         try {
-            // Create concrete transfer_ack
-            transfer_ack ack_obj{dependency_number_};
+        //     // Create concrete transfer_ack
+        //     transfer_ack ack_obj{dependency_number_};
 
-            // Upcast explicitly to ack reference before sending
-            [[maybe_unused]] const ack& base_ack = ack_obj;
-	    caf::anon_mail(std::move(ack_obj)).urgent().send(receiver_);
+        //     // Upcast explicitly to ack reference before sending
+        //     [[maybe_unused]] const ack& base_ack = ack_obj;
+	    // caf::anon_mail(std::move(ack_obj)).urgent().send(receiver_);
 
 
         } catch (...) {
