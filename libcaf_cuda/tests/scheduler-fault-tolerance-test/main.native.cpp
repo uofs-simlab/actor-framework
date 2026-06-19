@@ -173,7 +173,7 @@ int main() {
     const int max_N = 4096;
     const int num_distinct_sizes = 10;
     const int num_tasks = 3000;
-    const int num_worker_threads = 16; 
+    const int num_worker_threads = 32; 
     const int target_device = 0;
 
     MatrixPool pool = create_matrix_pool_random(num_distinct_sizes, min_N, max_N, 42);
