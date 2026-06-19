@@ -2,6 +2,10 @@
 
 #include "caf/cuda/all.hpp"
 #include "caf/cuda/control-layer/return_payloads/all_return_payloads.hpp"
+#include "caf/cuda/global.hpp"
+
+
+
 
 // Control-layer object types
 #include "caf/cuda/control-layer/token.hpp"
@@ -36,7 +40,7 @@
 // Type IDs (required for typed behaviors)
 // -----------------------------------------------------------------------------
 
-CAF_BEGIN_TYPE_ID_BLOCK(cuda_control, caf::first_custom_type_id + 200)
+CAF_BEGIN_TYPE_ID_BLOCK(cuda_control, caf::first_custom_type_id + 12000)
 
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::token>))
 CAF_ADD_TYPE_ID(cuda_control, (caf::intrusive_ptr<caf::cuda::behavior_token>))

@@ -234,7 +234,7 @@ bool inspect(Inspector& f, matrix_format& x) {
 
 // Define a custom type ID block for CUDA types
 // TODO should this become a macro???
-CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
+CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id+ 10000)
 
   // Your type IDs
   CAF_ADD_TYPE_ID(cuda, (std::vector<char>))
