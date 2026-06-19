@@ -200,17 +200,55 @@ int main() {
 
     apply_memory_pressure(1500ULL * 1024ULL * 1024ULL); 
 
+  // 1. Fetch total number of available CUDA devices
+    int num_devices = 0;
+    CHECK_CUDA_THROW(cudaGetDeviceCount(&num_devices));
+    if (num_devices == 0) {
+        std::cerr << "CRITICAL: No CUDA-capable devices found.\n";
+        return -1;
+    }
+
+    // 2. Enforce exactly 32 streams/threads per device
+    const int STREAMS_PER_DEVICE = 32;
+    const int total_worker_threads = num_devices * STREAMS_PER_DEVICE;
+
+    // 3. Apply memory pressure to ALL devices uniformly
+    for (int d = 0; d < num_devices; ++d) {
+        cudaSetDevice(d);
+        apply_memory_pressure(1500ULL * 1024ULL * 1024ULL); // Keep ~1500 MB free per GPU
+    }
+
     Stats stats;
-    std::cout << "Starting benchmark execution with " << num_tasks << " matrix jobs across " << num_worker_threads << " streams...\n";
+    std::cout << "Starting benchmark execution with " << num_tasks << " matrix jobs\n"
+              << "  Devices found:       " << num_devices << "\n"
+              << "  Streams per device:  " << STREAMS_PER_DEVICE << "\n"
+              << "  Total async workers: " << total_worker_threads << "\n"
+              << "=========================================================\n";
 
     auto start_time = std::chrono::steady_clock::now();
 
+    // 4. Spawn threads grouped by device to ensure precise distribution
     std::vector<std::thread> workers;
-    for (int i = 0; i < num_worker_threads; ++i) {
-        // Pass the module handle down to the thread execution context
-        workers.emplace_back(worker_thread_fun, i, target_device, std::ref(queue), std::ref(pool), std::ref(stats), module);
+    workers.reserve(total_worker_threads);
+
+    for (int d = 0; d < num_devices; ++d) {
+        for (int s = 0; s < STREAMS_PER_DEVICE; ++s) {
+            // Unique thread ID calculation for logging/tracking if needed
+            int global_thread_id = (d * STREAMS_PER_DEVICE) + s;
+
+            workers.emplace_back(
+                worker_thread_fun, 
+                global_thread_id, 
+                d, // Explicit target device ID
+                std::ref(queue), 
+                std::ref(pool), 
+                std::ref(stats), 
+                module
+            );
+        }
     }
 
+    // 5. Await processing completion across all GPU lanes
     for (auto& worker : workers) {
         if (worker.joinable()) worker.join();
     }
