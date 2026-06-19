@@ -339,3 +339,21 @@ to send scheduler actor exit messages invoke caf::cuda::manager::shutdown() and 
 
 
 For more details, see the example code found at https://github.com/uofs-simlab/actor-framework/tree/main/libcaf_cuda/examples
+
+
+== Native CUDA compatability 
+If the Abstractions above are not compatabile with a codebase you wish to integrate, you may use 
+command_runner get_context and get_stream to acquire CUContext and CUStream accordingly to integrate into
+existing code bases you may also create mem_ptr objects by doing the following 
+
+{{{
+
+mem_ptr<T> dptr =  caf::intrusive_ptr<mem_ref<T>>(
+       new mem_ref<T>(size, dev_ptr, access, device number, 0, CUContext, CUstream)));
+  }
+
+}}}
+
+where size is size of the array in elements (not in bytes). dev_ptr is CUdevice_ptr of memory, 
+access is indicator of access, 0 is readonly, 1 is readwrite and 2 is writeonly, the last two parameters are CUContext and
+CUstream belonging to the memory.
