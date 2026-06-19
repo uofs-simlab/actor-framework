@@ -74,25 +74,46 @@ MatrixPool create_matrix_pool_random(int num_sizes, int min_N, int max_N, unsign
     }
     return pool;
 }
+#include <vector>
 
-void apply_memory_pressure(size_t target_free_bytes) {
+// Global container to hold onto the allocated pressure pointers so they stick around
+// and don't get cleaned up until the program completely finishes.
+static std::vector<void*> global_pressure_allocations;
+static std::mutex pressure_mutex;
+
+void apply_memory_pressure(int device_id, size_t target_free_bytes) {
+    // 1. Explicitly switch the current host thread context to the target GPU
+    CHECK_CUDA_THROW(cudaSetDevice(device_id));
+
     size_t free_mem = 0;
     size_t total_mem = 0;
-    cudaMemGetInfo(&free_mem, &total_mem);
+    
+    // 2. Query free/total memory specifically for the newly active device
+    CHECK_CUDA_THROW(cudaMemGetInfo(&free_mem, &total_mem));
 
     if (free_mem > target_free_bytes) {
         size_t to_allocate = free_mem - target_free_bytes;
         void* d_pressure = nullptr;
         
+        // 3. Allocate the pressure block on the selected device's VRAM
         if (cudaMalloc(&d_pressure, to_allocate) == cudaSuccess) {
-            std::cout << "[MAIN] Memory pressure applied. Allocated " 
+            std::cout << "[MAIN] Device " << device_id << " memory pressure applied. Allocated " 
                       << to_allocate / (1024 * 1024) << " MB. Roughly "
                       << target_free_bytes / (1024 * 1024) << " MB left free.\n";
+            
+            // Track the allocation pointer so it stays locked in memory
+            std::lock_guard<std::mutex> lock(pressure_mutex);
+            global_pressure_allocations.push_back(d_pressure);
         } else {
-            std::cerr << "[WARNING] Failed to apply initial memory pressure.\n";
+            std::cerr << "[WARNING] Failed to apply memory pressure on Device " << device_id << ".\n";
         }
+    } else {
+        std::cout << "[MAIN] Device " << device_id << " already has less free memory ("
+                  << free_mem / (1024 * 1024) << " MB) than target ("
+                  << target_free_bytes / (1024 * 1024) << " MB). Skipping.\n";
     }
 }
+
 
 // Worker thread logic
 void worker_thread_fun(int thread_id, int device_id, TaskQueue& queue, const MatrixPool& pool, Stats& stats, CUmodule module) {
@@ -120,9 +141,9 @@ void worker_thread_fun(int thread_id, int device_id, TaskQueue& queue, const Mat
 
         try {
             // 1. Allocations
-            CHECK_CUDA_THROW(cudaMalloc(&d_A, size_bytes));
-            CHECK_CUDA_THROW(cudaMalloc(&d_B, size_bytes));
-            CHECK_CUDA_THROW(cudaMalloc(&d_C, size_bytes));
+            CHECK_CUDA_THROW(cudaMallocAsync(&d_A, size_bytes,stream));
+            CHECK_CUDA_THROW(cudaMallocAsync(&d_B, size_bytes,stream));
+            CHECK_CUDA_THROW(cudaMallocAsync(&d_C, size_bytes,stream));
 
             // 2. Upload host data
             CHECK_CUDA_THROW(cudaMemcpyAsync(d_A, pool.A.at(N).data(), size_bytes, cudaMemcpyHostToDevice, stream));
@@ -161,11 +182,18 @@ void worker_thread_fun(int thread_id, int device_id, TaskQueue& queue, const Mat
 
     cudaStreamDestroy(stream);
 }
-
 int main() {
-    // Initialize CUDA Driver API
+    // 1. Initialize CUDA Driver API
     if (cuInit(0) != CUDA_SUCCESS) {
         std::cerr << "Failed to initialize CUDA Driver API.\n";
+        return -1;
+    }
+
+    // 2. Discover total available physical GPUs
+    int num_devices = 0;
+    CHECK_CUDA_THROW(cudaGetDeviceCount(&num_devices));
+    if (num_devices == 0) {
+        std::cerr << "CRITICAL: No CUDA-capable devices found.\n";
         return -1;
     }
 
@@ -173,9 +201,11 @@ int main() {
     const int max_N = 4096;
     const int num_distinct_sizes = 10;
     const int num_tasks = 3000;
-    const int num_worker_threads = 32; 
-    const int target_device = 0;
+    
+    const int STREAMS_PER_DEVICE = 32;
+    const int total_worker_threads = num_devices * STREAMS_PER_DEVICE;
 
+    // 3. Prepare task datasets
     MatrixPool pool = create_matrix_pool_random(num_distinct_sizes, min_N, max_N, 42);
     std::vector<int> available_Ns;
     for (const auto& pair : pool.A) {
@@ -189,66 +219,53 @@ int main() {
         queue.push(available_Ns[dist_N_idx(rng)]);
     }
 
-    cudaSetDevice(target_device);
+    // Allocate an isolated module handle tracker array for each device
+    std::vector<CUmodule> modules(num_devices);
 
-    // Load the CUBIN module once globally before processing worker loops
-    CUmodule module;
-    if (cuModuleLoad(&module, "../mmul.cubin") != CUDA_SUCCESS) {
-        std::cerr << "CRITICAL: Failed to load cubin file from '../mmul.cubin'\n";
-        return -1;
-    }
-
-    apply_memory_pressure(1500ULL * 1024ULL * 1024ULL); 
-
-  // 1. Fetch total number of available CUDA devices
-    int num_devices = 0;
-    CHECK_CUDA_THROW(cudaGetDeviceCount(&num_devices));
-    if (num_devices == 0) {
-        std::cerr << "CRITICAL: No CUDA-capable devices found.\n";
-        return -1;
-    }
-
-    // 2. Enforce exactly 32 streams/threads per device
-    const int STREAMS_PER_DEVICE = 32;
-    const int total_worker_threads = num_devices * STREAMS_PER_DEVICE;
-
-    // 3. Apply memory pressure to ALL devices uniformly
+    // 4. Localize configurations per device card completely
     for (int d = 0; d < num_devices; ++d) {
-        cudaSetDevice(d);
-        apply_memory_pressure(1500ULL * 1024ULL * 1024ULL); // Keep ~1500 MB free per GPU
+        // Apply Virtual VRAM pressure boundaries to device 'd'
+        apply_memory_pressure(d, 1500ULL * 1024ULL * 1024ULL); 
+
+        // CRITICAL FIX: Explicitly enter context 'd' to load its local code copy
+        CHECK_CUDA_THROW(cudaSetDevice(d));
+        if (cuModuleLoad(&modules[d], "../mmul.cubin") != CUDA_SUCCESS) {
+            std::cerr << "CRITICAL: Failed to load cubin module on Device " << d << "\n";
+            return -1;
+        }
     }
 
     Stats stats;
-    std::cout << "Starting benchmark execution with " << num_tasks << " matrix jobs\n"
-              << "  Devices found:       " << num_devices << "\n"
-              << "  Streams per device:  " << STREAMS_PER_DEVICE << "\n"
-              << "  Total async workers: " << total_worker_threads << "\n"
-              << "=========================================================\n";
+    std::cout << "\n=========================================================\n";
+    std::cout << "Starting benchmark execution with " << num_tasks << " matrix jobs\n";
+    std::cout << "  Devices found:       " << num_devices << "\n";
+    std::cout << "  Streams per device:  " << STREAMS_PER_DEVICE << "\n";
+    std::cout << "  Total async workers: " << total_worker_threads << "\n";
+    std::cout << "=========================================================\n\n";
 
     auto start_time = std::chrono::steady_clock::now();
 
-    // 4. Spawn threads grouped by device to ensure precise distribution
+    // 5. Spawn worker threads passing the matching targeted hardware context module copy
     std::vector<std::thread> workers;
     workers.reserve(total_worker_threads);
 
     for (int d = 0; d < num_devices; ++d) {
         for (int s = 0; s < STREAMS_PER_DEVICE; ++s) {
-            // Unique thread ID calculation for logging/tracking if needed
             int global_thread_id = (d * STREAMS_PER_DEVICE) + s;
 
             workers.emplace_back(
                 worker_thread_fun, 
                 global_thread_id, 
-                d, // Explicit target device ID
+                d, // Target device binding
                 std::ref(queue), 
                 std::ref(pool), 
                 std::ref(stats), 
-                module
+                modules[d] // Pass the distinct module loaded for this specific GPU context
             );
         }
     }
 
-    // 5. Await processing completion across all GPU lanes
+    // 6. Await execution complete
     for (auto& worker : workers) {
         if (worker.joinable()) worker.join();
     }
@@ -256,7 +273,7 @@ int main() {
     auto end_time = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = end_time - start_time;
 
-    // Output Stats Report
+    // 7. Output Final Metrics Reports
     int total_processed = stats.succeeded + stats.failed;
     double success_ratio = total_processed > 0 ? (100.0 * stats.succeeded / total_processed) : 0.0;
 
@@ -269,7 +286,26 @@ int main() {
     std::cout << "  Total Makespan:  " << elapsed.count() << " seconds\n";
     std::cout << "=====================================\n";
 
-    // Unload the CUBIN before termination
-    cuModuleUnload(module);
+    // 8. Resource Deallocation Sweep
+    {
+        std::lock_guard<std::mutex> lock(pressure_mutex);
+        for (size_t i = 0; i < global_pressure_allocations.size(); ++i) {
+            if (global_pressure_allocations[i]) {
+                int assigned_device = static_cast<int>(i); 
+                if (assigned_device < num_devices) {
+                    cudaSetDevice(assigned_device);
+                }
+                cudaFree(global_pressure_allocations[i]);
+            }
+        }
+        global_pressure_allocations.clear();
+    }
+
+    // Unload each distinct module handle in its corresponding context
+    for (int d = 0; d < num_devices; ++d) {
+        cudaSetDevice(d);
+        cuModuleUnload(modules[d]);
+    }
+
     return 0;
 }
