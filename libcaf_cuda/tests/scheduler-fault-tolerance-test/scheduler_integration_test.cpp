@@ -277,7 +277,7 @@ behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
 
                             auto token = make_launch_token(self->state().prog, nd_range(1,1,1,1,1,1), 0, 
                              res -> name(), self);
-                            self->mail(res).delay(backoff).send(self); // Trigger restart logic with delay
+                            self->mail(token).delay(backoff).send(self); // Trigger restart logic with delay
                         }
                     } else {
                         // Worker exited normally (success)
@@ -292,7 +292,11 @@ behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
             
             }
             
+        },
+        [=](token_ptr token) {
+                caf::cuda::manager::get().send_scheduler_actor_message(token);
         }
+
     };
 }
 
