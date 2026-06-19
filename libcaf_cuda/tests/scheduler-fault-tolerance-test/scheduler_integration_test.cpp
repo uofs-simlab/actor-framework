@@ -181,9 +181,17 @@ behavior task_worker_fun(stateful_actor<task_actor_state>* self, caf::actor stat
                 auto in_b = create_in_arg(st.pool->B.at(N));
                 auto out_c = create_out_arg_with_size<int>(N * N);
                 auto in_n = create_in_arg(N);
+                int THREADS= 32;
+
+                  nd_range range((N + THREADS - 1) / THREADS, 
+                           (N + THREADS - 1) / THREADS, 1, 
+                           THREADS, THREADS, 1);
+
+
+
 
                 // 2. Launch Work asynchronously using the stream and device assigned by the scheduler.
-                auto result_tuple = runner.run_async(st.prog, launch_res->getRange(), res, in_a, in_b, out_c, in_n);
+                auto result_tuple = runner.run_async(st.prog, range, res, in_a, in_b, out_c, in_n);
                 auto d_c = std::get<2>(result_tuple);
 
                 // 3. Asynchronous Copyback.
@@ -257,6 +265,7 @@ behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
                             res->release();
                             self->quit();
                         } else {
+                            res -> release();
                             std::uniform_int_distribution<> dis(100, 1000);
                             auto backoff = std::chrono::milliseconds(dis(self->state().rng));
 
@@ -264,6 +273,10 @@ behavior task_supervisor_fun(stateful_actor<supervisor_state>* self) {
                                       << "). Restarting N=" << self->state().N_val 
                                       << " after " << backoff.count() << "ms backoff (Retry " 
                                       << self->state().retries << "/5)." << std::endl;
+
+
+                            auto token = make_launch_token(self->state().prog, nd_range(1,1,1,1,1,1), 0, 
+                             res -> name(), self);
                             self->mail(res).delay(backoff).send(self); // Trigger restart logic with delay
                         }
                     } else {
