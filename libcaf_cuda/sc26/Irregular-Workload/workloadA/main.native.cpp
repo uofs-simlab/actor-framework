@@ -24,7 +24,7 @@ int main(int argc, char** argv)
 
     std::cout << "[INFO] Loading matrices...\n";
     //std::vector<MatrixTask> matrix_pool = scan_for_matrices("/scratch/nqr159/matrix-collection/matrices/mixed", CGS_SOLVER);
-    std::vector<MatrixTask> matrix_pool = scan_for_matrices("/scratch/nqr159/matrices/workloadA", CGS_SOLVER);
+    std::vector<MatrixTask> matrix_pool = scan_for_matrices("../../../scripts/Irregular-Workload/workloadA/downloaded_matrices/matrices", CGS_SOLVER);
   
     
     if (matrix_pool.empty()) {
