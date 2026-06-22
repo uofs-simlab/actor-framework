@@ -81,7 +81,7 @@ behavior stats_actor_fun(stateful_actor<stats_actor_state>* self) {
 
         // FINAL REPORT (IMPORTANT FIX)
         [=](char finalize_stats) {
-            auto& st = self->state();
+             auto& st = self->state();
 
             if (st.finalized)
                 return;
@@ -97,6 +97,11 @@ behavior stats_actor_fun(stateful_actor<stats_actor_state>* self) {
             double success_pct = (total > 0)
                 ? (100.0 * total_succeeded / total)
                 : 0.0;
+
+            double throughput = 0.0;
+            if (st.runtime > 0.0) {
+                throughput = total / st.runtime;
+            }
 
             std::cout << "\n=====================================\n";
             std::cout << "[STATS REPORT] Iteration Complete\n";
@@ -120,10 +125,16 @@ behavior stats_actor_fun(stateful_actor<stats_actor_state>* self) {
                       << std::fixed << std::setprecision(2)
                       << success_pct << "%\n";
 
+            std::cout << "  Runtime: ";
             if (st.runtime > 0.0) {
-                std::cout << "  Runtime: "
-                          << std::fixed << std::setprecision(3)
+                std::cout << std::fixed << std::setprecision(3)
                           << st.runtime << " s\n";
+
+                std::cout << "  Throughput: "
+                          << std::fixed << std::setprecision(2)
+                          << throughput << " tasks/sec\n";
+            } else {
+                std::cout << "N/A\n";
             }
 
             std::cout << "=====================================\n";
@@ -539,6 +550,7 @@ void run_single_pressure_test(actor_system& sys,
     std::cout << "[RESULT] Pressure=" << to_string(level)
               << " | time=" << elapsed << " s\n";
 
+    self->mail(elapsed).send(stats_actor);
     self->mail('c').send(stats_actor);
     anon_send_exit(stats_actor, exit_reason::user_shutdown);
     self->wait_for(stats_actor);
