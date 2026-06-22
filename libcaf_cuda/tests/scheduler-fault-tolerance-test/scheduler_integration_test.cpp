@@ -387,7 +387,11 @@ void apply_memory_pressure(int device_id,
                            size_t total_mem_bytes,
                            memory_pressure_level level)
 {
-    auto dev = manager::get().find_device(device_id);
+  auto dev = manager::get().find_device(device_id);
+CUcontext ctx = dev->getContext();
+
+CHECK_CUDA(cuCtxSetCurrent(ctx));
+CHECK_CUDA(cuCtxSynchronize());
 
     size_t target_free_bytes = get_profile(level, total_mem_bytes).target_free_bytes;
     size_t available = dev->available_memory_bytes();
