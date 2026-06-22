@@ -366,10 +366,10 @@ inline pressure_profile get_profile(memory_pressure_level lvl, size_t total_mem)
             return { total_mem };              // no allocation pressure
 
         case memory_pressure_level::low:
-            return { static_cast<size_t>(total_mem * 0.40) }; // 40% free
+            return { static_cast<size_t>(total_mem * 0.20) }; // 40% free
 
         case memory_pressure_level::medium:
-            return { static_cast<size_t>(total_mem * 0.20) }; // 20% free
+            return { static_cast<size_t>(total_mem * 0.10) }; // 20% free
 
         case memory_pressure_level::high:
             return { static_cast<size_t>(total_mem * 0.05) }; // 5% free
