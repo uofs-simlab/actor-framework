@@ -92,3 +92,5 @@ std::vector<MatrixTask> generate_batch(
     const std::vector<MatrixTask>& matrix_pool,
     std::mt19937& rng,
     size_t batch_size);
+
+std::vector<Partition> make_contiguous_partitions(size_t num_tasks, size_t rows, size_t cols);
