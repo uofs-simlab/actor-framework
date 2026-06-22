@@ -1,128 +1,103 @@
-#!/usr/bin/env python3
+import os
+import glob
 import re
-import argparse
-from pathlib import Path
-from collections import defaultdict
-from statistics import mean
-
-import matplotlib
-matplotlib.use("Agg")
+import numpy as np
 import matplotlib.pyplot as plt
 
+def parse_runtime_data(base_dir):
+    # Dictionary to store list of runtimes for each GPU count
+    # e.g., {1: [750.088, ...], 2: [386.738, ...]}
+    gpu_data = {}
+    
+    # Pattern to match directories like 'gpus_1', 'gpus_2', 'gpus_4', 'gpus_7'
+    dir_pattern = os.path.join(base_dir, 'gpus_*')
+    
+    # Regex to find the runtime value in the text files
+    time_regex = re.compile(r'Run complete\.\s+Time:\s+([\d.]+)\s+s')
 
-# Only match NO scheduler sections
-NO_SCHED_PATTERN = re.compile(
-    r"Random Scaling NO scheduler \| actors=(\d+)\s+"
-    r"===== SUPERVISOR TOTAL TIME spawn =====.*?"
-    r"===== SUPERVISOR TOTAL TIME =====\s*"
-    r"Total runtime:\s*([0-9]*\.?[0-9]+)\s*s",
-    re.DOTALL,
-)
-
-
-def parse_file(path: Path):
-    text = path.read_text(errors="replace")
-    results = []
-    for actors_str, runtime_str in NO_SCHED_PATTERN.findall(text):
-        results.append((int(actors_str), float(runtime_str)))
-    return results
-
-
-def collect_data(base_dir: Path):
-    """
-    data[actors][gpu_count] = [runtime1, runtime2, ...]
-    """
-    data = defaultdict(lambda: defaultdict(list))
-
-    for gpu_dir in sorted(base_dir.glob("gpus_*")):
-        if not gpu_dir.is_dir():
+    for gpu_dir in glob.glob(dir_pattern):
+        # Extract the number of GPUs from the directory name
+        dir_name = os.path.basename(gpu_dir)
+        try:
+            num_gpus = int(dir_name.split('_')[1])
+        except (IndexError, ValueError):
             continue
+            
+        gpu_data[num_gpus] = []
+        
+        # Read all output_*.txt files in this directory
+        file_pattern = os.path.join(gpu_dir, 'output_*.txt')
+        for file_path in glob.glob(file_pattern):
+            try:
+                with open(file_path, 'r') as f:
+                    content = f.read()
+                    match = time_regex.search(content)
+                    if match:
+                        runtime = float(match.group(1))
+                        gpu_data[num_gpus].append(runtime)
+            except Exception as e:
+                print(f"Error reading file {file_path}: {e}")
+                
+    return gpu_data
 
-        m = re.match(r"gpus_(\d+)$", gpu_dir.name)
-        if not m:
-            continue
-        gpu_count = int(m.group(1))
+def calculate_metrics(gpu_data):
+    # Calculate means
+    mean_runtimes = {gpus: np.mean(times) for gpus, times in gpu_data.items() if times}
+    
+    # Sort by number of GPUs to keep things in order
+    sorted_gpus = sorted(mean_runtimes.keys())
+    
+    if 1 not in mean_runtimes:
+        raise ValueError("Error: Could not find 1 GPU data to calculate the scaling factor.")
+        
+    base_runtime = mean_runtimes[1]
+    
+    # Calculate scaling factors: (Runtime of 1 GPU) / (Runtime of N GPUs)
+    scaling_factors = {gpus: base_runtime / mean_runtimes[gpus] for gpus in sorted_gpus}
+    
+    return sorted_gpus, mean_runtimes, scaling_factors
 
-        for txt_file in sorted(gpu_dir.glob("*.txt")):
-            for actors, runtime in parse_file(txt_file):
-                data[actors][gpu_count].append(runtime)
-
-    return data
-
-
-def make_plots(data, out_dir: Path):
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    for actors in sorted(data.keys()):
-        gpu_map = data[actors]
-        gpu_counts = sorted(gpu_map.keys())
-        if not gpu_counts:
-            continue
-
-        means = [mean(gpu_map[g]) for g in gpu_counts]
-
-        # 🔥 FIX: use categorical spacing instead of numeric spacing
-        x_pos = list(range(len(gpu_counts)))
-
-        fig, ax = plt.subplots(figsize=(8, 5))
-        bars = ax.bar(x_pos, means)
-
-        # Add value labels on top of bars
-        for bar, value in zip(bars, means):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height(),
-                f"{value:.2f}",
-                ha="center",
-                va="bottom",
-                fontsize=9,
-            )
-
-        fig.suptitle("multi-gpu scaling test on gpufarm7")
-        ax.set_title(f"actors = {actors}")
-        ax.set_xlabel("Number of GPUs")
-        ax.set_ylabel("Runtime (s)")
-
-        # Show actual GPU counts as labels (1,2,4,7) but evenly spaced
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(gpu_counts)
-
-        ax.grid(True, axis="y", alpha=0.3)
-
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
-
-        out_file = out_dir / f"multi_gpu_scaling_actors_{actors}.png"
-        fig.savefig(out_file, dpi=200)
-        plt.close(fig)
-
-        print(f"Saved {out_file}")
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Generate GPU scaling bar charts (NO scheduler only)"
-    )
-    parser.add_argument(
-        "--base-dir",
-        type=Path,
-        default=Path("."),
-        help="Directory containing gpus_* folders",
-    )
-    parser.add_argument(
-        "--out-dir",
-        type=Path,
-        default=Path("gpu_scaling_plots"),
-        help="Output directory for plots",
-    )
-    args = parser.parse_args()
-
-    data = collect_data(args.base_dir)
-
-    if not data:
-        raise SystemExit("No data found.")
-
-    make_plots(data, args.out_dir)
-
+def plot_and_report(sorted_gpus, mean_runtimes, scaling_factors):
+    # Print the text report
+    print(f"{'GPUs':<10}{'Mean Runtime (s)':<20}{'Scaling Factor':<15}")
+    print("-" * 45)
+    for gpus in sorted_gpus:
+        print(f"{gpus:<10}{mean_runtimes[gpus]:<20.3f}{scaling_factors[gpus]:<15.2f}x")
+    
+    # Generate the bar chart
+    runtimes = [mean_runtimes[gpus] for gpus in sorted_gpus]
+    labels = [f"{gpus} GPU(s)" for gpus in sorted_gpus]
+    
+    plt.figure(figsize=(8, 6))
+    bars = plt.bar(labels, runtimes, color='lightgreen', edgecolor='black', width=0.6)
+    
+    # Add values on top of the bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + max(runtimes)*0.01,
+                 f'{height:.2f}s', ha='center', va='bottom', fontsize=10)
+                 
+    plt.title('Mean Runtime vs. Number of GPUs', fontsize=14, fontweight='bold')
+    plt.xlabel('GPU Configuration', fontsize=12)
+    plt.ylabel('Mean Runtime (seconds)', fontsize=12)
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    
+    # Save chart image and show
+    plt.savefig('gpu_scaling_chart.png', dpi=300)
+    print("\n[INFO] Bar chart saved as 'gpu_scaling_chart.png'")
+    plt.show()
 
 if __name__ == "__main__":
-    main()
+    # Use current directory '.' if script is placed inside 'scheduler/' 
+    # Otherwise replace with your absolute path: '/home/nqr159/data/scheduler-test/...'
+    BASE_DIR = '.' 
+    
+    print("Parsing dataset...")
+    raw_data = parse_runtime_data(BASE_DIR)
+    
+    if not raw_data:
+        print("No data found. Ensure you are running the script in the correct folder.")
+    else:
+        gpus, means, scaling = calculate_metrics(raw_data)
+        plot_and_report(gpus, means, scaling)
