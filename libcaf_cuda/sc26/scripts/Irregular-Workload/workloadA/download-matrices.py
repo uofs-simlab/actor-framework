@@ -12,12 +12,13 @@ from scipy.sparse import issparse
 # ============================================================
 # CONFIGURATION
 # ============================================================
-INPUT_FILE = "valid_matrix_subset.txt"
+INPUT_FILE = "valid_matrix_subset.txt"  # Your generated text file
 OUTPUT_DIR = "./downloaded_matrices"
 
-MATRIX_DIR = os.path.join(OUTPUT_DIR, "matrices", "spd")
-METADATA_DIR = os.path.join(OUTPUT_DIR, "metadata", "spd")
-INDEX_PATH = os.path.join(OUTPUT_DIR, "spd_index.json")
+# No more "spd" subdirectories; everything goes directly into these folders
+MATRIX_DIR = os.path.join(OUTPUT_DIR, "matrices")
+METADATA_DIR = os.path.join(OUTPUT_DIR, "metadata")
+INDEX_PATH = os.path.join(OUTPUT_DIR, "collection_index.json")
 
 # ============================================================
 # SETUP & PARSING
@@ -27,7 +28,7 @@ def setup_directories():
     os.makedirs(METADATA_DIR, exist_ok=True)
 
 def parse_matrix_names(file_path):
-    """Extracts matrix names from the file paths (e.g., '1138_bus' from '.../1138_bus.bin')"""
+    """Extracts matrix names from the file paths or raw lists."""
     if not os.path.exists(file_path):
         print(f"[ERROR] Input file {file_path} not found.")
         sys.exit(1)
@@ -37,7 +38,6 @@ def parse_matrix_names(file_path):
         for line in f:
             line = line.strip()
             if line:
-                # Get the filename (e.g., 1138_bus.bin) and strip extension
                 base = os.path.basename(line)
                 name, _ = os.path.splitext(base)
                 matrix_names.append(name)
@@ -82,13 +82,11 @@ if __name__ == "__main__":
     for idx, name in enumerate(matrix_names, 1):
         print(f"\n[INFO] Processing [{idx}/{len(matrix_names)}]: {name}")
         
-        # Search for exact name match in SuiteSparse
         results = ssgetpy.search(name=name)
         if not results:
             print(f"[WARN] Matrix '{name}' not found in SuiteSparse Collection. Skipping.")
             continue
             
-        # Grab the first match (ssgetpy ranks exact matches highly)
         meta = results[0]
         
         try:
@@ -102,13 +100,12 @@ if __name__ == "__main__":
             print(f"[WARN] Download failed for {meta.name}: {e}")
             continue
 
-        # Locate downloaded .mtx file
         mtx_file = find_mtx(meta.name)
         if mtx_file is None:
             print(f"[SKIP] no .mtx file found locally for: {meta.name}")
             continue
 
-        # Process and write file
+        # --- FIXED TRY/EXCEPT BLOCK INDENTATION HERE ---
         try:
             mat = mmread(mtx_file)
             if not issparse(mat):
@@ -117,14 +114,12 @@ if __name__ == "__main__":
 
             csr = mat.tocsr()
             
-            # Paths configuration
+            # Simplified flat paths
             bin_path = os.path.join(MATRIX_DIR, f"{name}.bin")
             meta_path = os.path.join(METADATA_DIR, f"{name}.json")
 
-            # Export custom binary format
             export_binary(csr, bin_path)
 
-            # Build metadata object
             metadata = {
                 "id": meta.id,
                 "name": meta.name,
@@ -151,11 +146,9 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[WARN] Failed processing data for {meta.name}: {e}")
 
-        # Clean cache to prevent disk explosion
         shutil.rmtree(os.path.expanduser("~/.ssgetpy"), ignore_errors=True)
 
-    # Save the execution index mapping
     with open(INDEX_PATH, "w") as f:
         json.dump(index_entries, f, indent=2)
 
-    print(f"\n[DONE] Pipeline complete. Saved execution index map to {INDEX_PATH}")
+    print(f"\n[DONE] Pipeline complete. Saved master index map to {INDEX_PATH}")
