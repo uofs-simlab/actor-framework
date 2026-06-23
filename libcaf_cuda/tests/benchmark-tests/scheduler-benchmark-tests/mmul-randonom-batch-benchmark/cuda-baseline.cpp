@@ -176,19 +176,20 @@ int main() {
         CUDA_CHECK(cuCtxCreate(&contexts[i], 0, dev));
     }
 
-    // Make the context for device 0 current on the main thread before loading the module
-    CUDA_CHECK(cuCtxPushCurrent(contexts[0]));
+    // // Make the context for device 0 current on the main thread before loading the module
+    // CUDA_CHECK(cuCtxPushCurrent(contexts[0]));
 
-    // Load the cubin module (assuming mmul.cu is compiled to mmul.cubin)
-    CUDA_CHECK(cuModuleLoad(&mmul_mod, "../mmul.cubin"));
-    // Get function handles
-    CUDA_CHECK(cuModuleGetFunction(&mmul_funcs[0], mmul_mod, "matrixMul"));
+    // // Load the cubin module (assuming mmul.cu is compiled to mmul.cubin)
+    // CUDA_CHECK(cuModuleLoad(&mmul_mod, "../mmul.cubin"));
+    // // Get function handles
+    // // CUDA_CHECK(cuModuleGetFunction(&mmul_funcs[0], mmul_mod, "matrixMul"));
 
-    // Pop the context from the main thread
-    CUDA_CHECK(cuCtxPopCurrent(nullptr));
+    // // Pop the context from the main thread
+    // CUDA_CHECK(cuCtxPopCurrent(nullptr));
 
-    for (int i = 1; i < num_gpus; ++i) {
+    for (int i = 0; i < num_gpus; ++i) {
         CUDA_CHECK(cuCtxPushCurrent(contexts[i]));
+        CUDA_CHECK(cuModuleLoad(&mmul_mod, "../mmul.cubin"));
         CUDA_CHECK(cuModuleGetFunction(&mmul_funcs[i], mmul_mod, "matrixMul"));
         CUDA_CHECK(cuCtxPopCurrent(nullptr));
     }
