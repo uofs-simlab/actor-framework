@@ -73,7 +73,7 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_
                            THREADS, THREADS, 1);
 
                 // 2. Launch Work asynchronously using the stream and device assigned by the scheduler.
-                auto result_tuple = runner.run_async(st.prog, range,st.stream,0,st.device ,in_a, in_b, out_c, in_n);
+                auto result_tuple = runner.run_async(st.prog, range,stream,0,device ,in_a, in_b, out_c, in_n);
                 auto d_c = std::get<2>(result_tuple);
 
                 // 3. Asynchronous Copyback.
