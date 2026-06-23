@@ -187,9 +187,8 @@ int main() {
     // Pop the context from the main thread
     CUDA_CHECK(cuCtxPopCurrent(nullptr));
 
-    // Assuming all GPUs can use the same function handle from the same module.
     for (int i = 1; i < num_gpus; ++i) {
-        mmul_funcs[i] = mmul_funcs[0];
+        CUDA_CHECK(cuModuleGetFunction(&mmul_funcs[i], mmul_mod, "matrixMul"));
     }
 
     std::vector<int> shared_dtoh_buffer((size_t)max_N_val * max_N_val);
