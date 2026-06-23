@@ -48,7 +48,7 @@ void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_g
     // Prepare Streams
     std::vector<CUstream> streams(streams_per_gpu);
     for (int i = 0; i < streams_per_gpu; ++i) {
-        CUDA_CHECK(cuStreamCreate(&streams[i], CU_STREAM_NON_BLOCKING));
+        CUDA_CHECK(cuStreamCreate(&streams[i], CU_STREAM_DEFAULT));
     }
 
     // Use the first stream for initial allocations and cleanup
