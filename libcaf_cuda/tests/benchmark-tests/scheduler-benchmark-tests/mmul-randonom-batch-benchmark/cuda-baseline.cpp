@@ -256,9 +256,9 @@ int main() {
     for (int i = 0; i < num_gpus; ++i) {
         CUDA_CHECK(cuCtxDestroy(contexts[i]));
     }
-    CUDA_CHECK(cuModuleUnload(mmul_mod));
-    CUDA_CHECK(cuModuleUnload(vadd_mod));
-    CUDA_CHECK(cuModuleUnload(conv_mod));
+    // CUDA_CHECK(cuModuleUnload(mmul_mod));
+    // CUDA_CHECK(cuModuleUnload(vadd_mod));
+    // CUDA_CHECK(cuModuleUnload(conv_mod));
 
     return 0;
 }
