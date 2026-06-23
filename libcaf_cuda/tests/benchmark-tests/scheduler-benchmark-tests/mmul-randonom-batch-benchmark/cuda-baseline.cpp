@@ -188,7 +188,9 @@ int main() {
     CUDA_CHECK(cuCtxPopCurrent(nullptr));
 
     for (int i = 1; i < num_gpus; ++i) {
+        CUDA_CHECK(cuCtxPushCurrent(contexts[i]));
         CUDA_CHECK(cuModuleGetFunction(&mmul_funcs[i], mmul_mod, "matrixMul"));
+        CUDA_CHECK(cuCtxPopCurrent(nullptr));
     }
 
     std::vector<int> shared_dtoh_buffer((size_t)max_N_val * max_N_val);
