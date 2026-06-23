@@ -55,12 +55,20 @@ int main() {
     checkCU(cuDeviceGet(&dev, 0), "cuDeviceGet(0)");
 
     CUcontext ctx;
-    checkCU(cuCtxCreate(&ctx, 0, dev), "cuCtxCreate");
+  
+#if CUDA_VERSION >= 13000
+    {
+      CUctxCreateParams ctx_params = {};
+      checkCU(cuCtxCreate(&ctx, &ctx_params, CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, dev),"create context");
+    }
+#else
+      checkCU(cuCtxCreate(&ctx, CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, dev),"create context");
+#endif
 
     std::string ptx = readFile("mmul.ptx");
 
     CUmodule module;
-    checkCU(cuModuleLoadDataEx(&module, ptx.c_str(), 0, nullptr, nullptr), "cuModuleLoadDataEx");
+    checkCU(cuModuleLoadData(&module, ptx.c_str()), "cuModuleLoadData");
 
     CUfunction kernel;
     checkCU(cuModuleGetFunction(&kernel, module, "matrixMul"), "cuModuleGetFunction matrixMul");
