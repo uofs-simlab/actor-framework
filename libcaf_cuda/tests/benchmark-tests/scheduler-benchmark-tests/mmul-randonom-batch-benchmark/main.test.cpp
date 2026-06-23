@@ -153,6 +153,9 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         // Spawn the exit actor for this specific test run (moved inside the loop)
         auto exit_actor = sys.spawn(caf::cuda::exit_actor_fun, num_tasks);
 
+
+
+        double elapsed = time_run([&]() {
         std::vector<actor> workers;
         // Spawn task actors and prepare tokens
         for (int i = 0; i < num_tasks; ++i) {
@@ -171,9 +174,8 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
             device_id = (device_id + 1) % devices;
         }
 
-        double elapsed = time_run([&]() {
-            // std::cout << "[MAIN] Dispatching batch to scheduler..." << std::endl;
-            // mgr.send_scheduler_actor_message(std::move(tokens));
+       
+          
 
             // The dispatch is asynchronous. To get an accurate measurement, we must
             // block until the exit_actor terminates (signaling all 50k tasks are done).

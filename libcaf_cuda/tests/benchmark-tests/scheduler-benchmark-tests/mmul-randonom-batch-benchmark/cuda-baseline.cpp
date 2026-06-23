@@ -210,9 +210,9 @@ int main() {
         std::vector<std::thread> all_threads;
         std::deque<std::vector<std::vector<Task>>> run_partitions_storage;
 
-        auto start = std::chrono::steady_clock::now();
 
-        for (int b = 0; b < num_batches; ++b) {
+         for (int b = 0; b < num_batches; ++b) {
+            
             // Generate random sized partition (batch)
             int current_batch_size = dist_batch_size(rng_prod);
             std::vector<Task> batch_tasks;
@@ -221,6 +221,9 @@ int main() {
                 TaskType t_type = static_cast<TaskType>(0);
                 batch_tasks.push_back({N_for_task, t_type});
             }
+
+            
+            auto start = std::chrono::steady_clock::now();
 
             std::cout << "Producer: Dispatching Batch " << b + 1 << "/" << num_batches 
                       << " with " << current_batch_size << " tasks..." << std::endl;
@@ -239,15 +242,19 @@ int main() {
                                             contexts[i], mmul_funcs[i], vadd_funcs[i], conv_funcs[i],
                                          std::ref(global_host_matrix_pool), shared_dtoh_buffer.data());
             }
-        }
+        
 
         for (auto& t : all_threads) {
             t.join();
         }
 
-        auto end = std::chrono::steady_clock::now();
-        std::chrono::duration<double> elapsed = end - start;
-        std::cout << "Total Makespan: " << elapsed.count() << "s" << std::endl;
+          auto end = std::chrono::steady_clock::now();
+          std::chrono::duration<double> elapsed = end - start;
+          std::cout << "Total Makespan: " << elapsed.count() << "s" << std::endl;
+    
+        }   
+      
+
     }
 
     // Cleanup contexts and module
