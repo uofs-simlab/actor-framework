@@ -222,8 +222,8 @@ int main() {
             std::vector<Task> batch_tasks;
             for (int i = 0; i < current_batch_size; ++i) {
                 int N_for_task = available_Ns[dist_N_idx(rng_prod)];
-                // TaskType t_type = static_cast<TaskType>(dist_type(rng_prod));
-                batch_tasks.push_back({N_for_task, 0});
+                TaskType t_type = static_cast<TaskType>(0);
+                batch_tasks.push_back({N_for_task, t_type});
             }
 
             std::cout << "Producer: Dispatching Batch " << b + 1 << "/" << num_batches 
