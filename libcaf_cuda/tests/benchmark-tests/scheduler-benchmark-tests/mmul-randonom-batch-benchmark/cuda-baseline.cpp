@@ -3,12 +3,26 @@
 #include <vector>
 #include <chrono>
 #include <random>
+#include <cstdlib>
 #include <thread>
 #include <algorithm>
 #include <functional>
 #include <stdexcept> // For runtime_error
 #include <unordered_map> // For MatrixPool
+#include <deque>
 #include <unordered_set> // For create_matrix_pool_random
+
+#define CUDA_CHECK(expr)                                                       \
+  do {                                                                         \
+    CUresult _res = (expr);                                                    \
+    if (_res != CUDA_SUCCESS) {                                                \
+      const char* _err_str;                                                    \
+      cuGetErrorString(_res, &_err_str);                                       \
+      std::cerr << "CUDA Error in " << #expr << " at line " << __LINE__        \
+                << ": " << _err_str << std::endl;                              \
+      std::exit(EXIT_FAILURE);                                                 \
+    }                                                                          \
+  } while (0)
 
 enum TaskType { MMUL = 0, VADD = 1, CONV = 2 };
 
@@ -29,19 +43,12 @@ struct MatrixPool {
 // Per-GPU execution logic
 void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_gpu, CUcontext ctx, CUfunction mmul_func,
      CUfunction vadd_func, CUfunction conv_func, const MatrixPool& pool, int* shared_dtoh_buffer) {
-    // Set the CUDA context for this thread
-    CUresult err = cuCtxSetCurrent(ctx);
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error setting context for device " << device_id << ": " << err_str << std::endl;
-        return;
-    }
+    CUDA_CHECK(cuCtxSetCurrent(ctx));
 
     // Prepare Streams
     std::vector<CUstream> streams(streams_per_gpu);
     for (int i = 0; i < streams_per_gpu; ++i) {
-        cuStreamCreate(&streams[i], CU_STREAM_NON_BLOCKING);
+        CUDA_CHECK(cuStreamCreate(&streams[i], CU_STREAM_NON_BLOCKING));
     }
 
     // Use the first stream for initial allocations and cleanup
@@ -52,62 +59,48 @@ void gpu_worker(int device_id, const std::vector<Task>& tasks, int streams_per_g
         int N = tasks[i].N;
         CUstream stream = streams[i % streams_per_gpu];
         TaskType type = tasks[i].type;
-        size_t bytes_a = (type == MMUL) ? (size_t)N * N * sizeof(int) : (size_t)N * sizeof(int);
-        size_t bytes_b = (type == CONV) ? 5 * sizeof(int) : bytes_a;
-        size_t bytes_out = (type == MMUL) ? (size_t)N * N * sizeof(int) : (size_t)N * sizeof(int);
+        size_t bytes_a = (size_t)N * N * sizeof(int);
+        size_t bytes_b = bytes_a;
+        size_t bytes_out = (size_t)N * N * sizeof(int);
 
         CUdeviceptr d_a, d_b, d_c;
 
-        cuMemAllocAsync(&d_a, bytes_a, stream);
-        cuMemAllocAsync(&d_b, bytes_b, stream);
-        cuMemAllocAsync(&d_c, bytes_out, stream);
+        CUDA_CHECK(cuMemAllocAsync(&d_a, bytes_a, stream));
+        CUDA_CHECK(cuMemAllocAsync(&d_b, bytes_b, stream));
+        CUDA_CHECK(cuMemAllocAsync(&d_c, bytes_out, stream));
 
         // Perform Host-to-Device transfer
-        const std::vector<int>& h_a = (type == MMUL) ? pool.A.at(N) : (type == VADD ? pool.vec_A.at(N) : pool.conv_A.at(N));
-        const std::vector<int>& h_b = (type == MMUL) ? pool.B.at(N) : (type == VADD ? pool.vec_B.at(N) : pool.conv_K.at(N));
+        const std::vector<int>& h_a = pool.A.at(N);
+        const std::vector<int>& h_b = pool.B.at(N);
 
-        cuMemcpyHtoDAsync(d_a, h_a.data(), bytes_a, stream);
-        cuMemcpyHtoDAsync(d_b, h_b.data(), bytes_b, stream);
+        CUDA_CHECK(cuMemcpyHtoDAsync(d_a, h_a.data(), bytes_a, stream));
+        CUDA_CHECK(cuMemcpyHtoDAsync(d_b, h_b.data(), bytes_b, stream));
 
         // Kernel arguments for cuLaunchKernel
         void *kernel_args[] = { &d_a, &d_b, &d_c, &N };
 
-        if (type == MMUL) {
-            unsigned int block_dim = 32;
-            unsigned int grid_dim = (N + block_dim - 1) / block_dim;
-            cuLaunchKernel(mmul_func, grid_dim, grid_dim, 1,
-                           block_dim, block_dim, 1,
-                           0, stream, kernel_args, nullptr);
-        } else if (type == VADD) {
-            unsigned int block_dim = 256;
-            unsigned int grid_dim = (N + block_dim - 1) / block_dim;
-            cuLaunchKernel(vadd_func, grid_dim, 1, 1,
-                           block_dim, 1, 1,
-                           0, stream, kernel_args, nullptr);
-        } else {
-            unsigned int block_dim = 256;
-            unsigned int grid_dim = (N + block_dim - 1) / block_dim;
-            cuLaunchKernel(conv_func, grid_dim, 1, 1,
-                           block_dim, 1, 1,
-                           0, stream, kernel_args, nullptr);
-        }
-        
-        // Simulating the result retrieval (Copy back)
-        size_t res_count = (type == MMUL) ? (size_t)N * N : (size_t)N;
-        cuMemcpyDtoHAsync(shared_dtoh_buffer, d_c, bytes_out, stream);
+        unsigned int block_dim = 32;
+        unsigned int grid_dim = (N + block_dim - 1) / block_dim;
+        CUDA_CHECK(cuLaunchKernel(mmul_func, grid_dim, grid_dim, 1,
+                                      block_dim, block_dim, 1,
+                                      0, stream, kernel_args, nullptr));
+      
 
-        // Free GPU memory for this task
-        cuMemFreeAsync(d_a, stream);
-        cuMemFreeAsync(d_b, stream);
-        cuMemFreeAsync(d_c, stream);
+
+    auto h_c = std::make_shared<std::vector<int>>(N * N);
+    CUDA_CHECK(cuMemcpyDtoHAsync(h_c->data(), d_c, bytes_out, stream));
+
+    CUDA_CHECK(cuMemFreeAsync(d_a, stream));
+    CUDA_CHECK(cuMemFreeAsync(d_b, stream));
+    CUDA_CHECK(cuMemFreeAsync(d_c, stream));
     }
 
     // Synchronize this GPU context
-    cuCtxSynchronize();
+    CUDA_CHECK(cuCtxSynchronize());
 
     // Cleanup
     for (auto s : streams) {
-        cuStreamDestroy(s);
+        CUDA_CHECK(cuStreamDestroy(s));
     }
 }
 
@@ -127,38 +120,26 @@ MatrixPool create_matrix_pool_random(
         if (used_Ns.insert(N_val).second) {
             pool.A[N_val] = std::vector<int>(N_val * N_val, 1);
             pool.B[N_val] = std::vector<int>(N_val * N_val, 1);
-            pool.vec_A[N_val] = std::vector<int>(N_val, 1);
-            pool.vec_B[N_val] = std::vector<int>(N_val, 1);
-            pool.conv_A[N_val] = std::vector<int>(N_val, 1);
-            pool.conv_K[N_val] = std::vector<int>(5, 1);
         }
     }
     return pool;
 }
 
 int main() {
-    CUresult err;
-
     // Initialize the CUDA Driver API
-    err = cuInit(0);
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error initializing CUDA Driver API: " << err_str << std::endl;
-        return 1;
-    }
+    CUDA_CHECK(cuInit(0));
 
     const int streams_per_gpu = 8;
 
     int num_gpus;
-    cuDeviceGetCount(&num_gpus);
+    CUDA_CHECK(cuDeviceGetCount(&num_gpus));
     if (num_gpus == 0) {
         std::cerr << "No CUDA devices found." << std::endl;
         return 1;
     }
 
     // Define parameters for irregular workload
-    const int num_matrix_sizes = 60; // Number of distinct N values
+    const int num_matrix_sizes = 10; // Number of distinct N values
     const int min_N_val = 32;
     const int max_N_val = 2048;
     const unsigned int pool_seed = 42; // Fixed seed for deterministic pool generation
@@ -191,110 +172,29 @@ int main() {
     // Create a CUDA context for each device
     for (int i = 0; i < num_gpus; ++i) {
         CUdevice dev;
-        cuDeviceGet(&dev, i);
-        err = cuCtxCreate(&contexts[i], 0, dev); // Flag 0 for default context creation
-        if (err != CUDA_SUCCESS) {
-            const char* err_str;
-            cuGetErrorString(err, &err_str);
-            std::cerr << "Error creating context for device " << i << ": " << err_str << std::endl;
-            // Clean up already created contexts
-            for (int j = 0; j < i; ++j) cuCtxDestroy(contexts[j]);
-            return 1;
-        }
+        CUDA_CHECK(cuDeviceGet(&dev, i));
+        CUDA_CHECK(cuCtxCreate(&contexts[i], 0, dev));
     }
 
     // Make the context for device 0 current on the main thread before loading the module
-    err = cuCtxPushCurrent(contexts[0]);
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error pushing context for device 0: " << err_str << std::endl;
-        for (int i = 0; i < num_gpus; ++i) cuCtxDestroy(contexts[i]);
-        return 1;
-    }
+    CUDA_CHECK(cuCtxPushCurrent(contexts[0]));
 
     // Load the cubin module (assuming mmul.cu is compiled to mmul.cubin)
-    err = cuModuleLoad(&mmul_mod, "../mmul.cubin");
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error loading module ../mmul.cubin: " << err_str << std::endl;
-        cuCtxPopCurrent(nullptr); // Pop context on error
-        return 1;
-    }
-
-    err = cuModuleLoad(&vadd_mod, "../vector_add.cubin");
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error loading module ../vector_add.cubin: " << err_str << std::endl;
-        cuCtxPopCurrent(nullptr);
-        return 1;
-    }
-
-    err = cuModuleLoad(&conv_mod, "../conv1d.cubin");
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error loading module ../conv1d.cubin: " << err_str << std::endl;
-        cuCtxPopCurrent(nullptr);
-        return 1;
-    }
-
+    CUDA_CHECK(cuModuleLoad(&mmul_mod, "../mmul.cubin"));
     // Get function handles
-    err = cuModuleGetFunction(&mmul_funcs[0], mmul_mod, "matrixMul");
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error getting function matrixMul: " << err_str << std::endl;
-        cuCtxPopCurrent(nullptr); // Pop context on error
-        cuModuleUnload(mmul_mod);
-        cuModuleUnload(vadd_mod);
-        for (int i = 0; i < num_gpus; ++i) cuCtxDestroy(contexts[i]);
-        return 1;
-    }
-
-    err = cuModuleGetFunction(&vadd_funcs[0], vadd_mod, "vectorAdd");
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error getting function vectorAdd: " << err_str << std::endl;
-        cuCtxPopCurrent(nullptr);
-        return 1;
-    }
-
-    err = cuModuleGetFunction(&conv_funcs[0], conv_mod, "conv1d");
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error getting function conv1d: " << err_str << std::endl;
-        cuCtxPopCurrent(nullptr);
-        return 1;
-    }
+    CUDA_CHECK(cuModuleGetFunction(&mmul_funcs[0], mmul_mod, "matrixMul"));
 
     // Pop the context from the main thread
-    err = cuCtxPopCurrent(nullptr);
-    if (err != CUDA_SUCCESS) {
-        const char* err_str;
-        cuGetErrorString(err, &err_str);
-        std::cerr << "Error popping context from main thread: " << err_str << std::endl;
-        cuModuleUnload(mmul_mod);
-        cuModuleUnload(vadd_mod);
-        cuModuleUnload(conv_mod);
-        for (int i = 0; i < num_gpus; ++i) cuCtxDestroy(contexts[i]);
-        return 1;
-    }
+    CUDA_CHECK(cuCtxPopCurrent(nullptr));
 
     // Assuming all GPUs can use the same function handle from the same module.
     for (int i = 1; i < num_gpus; ++i) {
         mmul_funcs[i] = mmul_funcs[0];
-        vadd_funcs[i] = vadd_funcs[0];
-        conv_funcs[i] = conv_funcs[0];
     }
 
     std::vector<int> shared_dtoh_buffer((size_t)max_N_val * max_N_val);
 
-    std::vector<int> batch_configs = {5, 10};
+    std::vector<int> batch_configs = {1};
     for (int num_batches : batch_configs) {
         std::cout << "=====================================" << std::endl;
         std::cout << "Starting Run with " << num_batches << " batches" << std::endl;
@@ -302,8 +202,11 @@ int main() {
         std::mt19937 rng_prod(42); 
         std::uniform_int_distribution<size_t> dist_N_idx(0, available_Ns.size() - 1);
         std::uniform_int_distribution<int> dist_type(0, 2);
-        std::uniform_int_distribution<int> dist_batch_size(5000, 15000);
+        std::uniform_int_distribution<int> dist_batch_size(50000, 50000);
         std::uniform_int_distribution<int> dist_sleep(500, 2000);
+
+        std::vector<std::thread> all_threads;
+        std::deque<std::vector<std::vector<Task>>> run_partitions_storage;
 
         auto start = std::chrono::steady_clock::now();
 
@@ -330,15 +233,18 @@ int main() {
                 partitions[i % num_gpus].push_back(batch_tasks[i]);
             }
 
-            std::vector<std::thread> threads;
-            for (int i = 0; i < num_gpus; ++i) {
-                threads.emplace_back(gpu_worker, i, std::ref(partitions[i]), streams_per_gpu, contexts[i], mmul_funcs[i], vadd_funcs[i], conv_funcs[i],
-                 std::ref(global_host_matrix_pool), shared_dtoh_buffer.data());
-            }
+            run_partitions_storage.push_back(std::move(partitions));
+            auto& saved_partitions = run_partitions_storage.back();
 
-            for (auto& t : threads) {
-                t.join();
+            for (int i = 0; i < num_gpus; ++i) {
+                all_threads.emplace_back(gpu_worker, i, std::ref(saved_partitions[i]), streams_per_gpu,
+                                            contexts[i], mmul_funcs[i], vadd_funcs[i], conv_funcs[i],
+                                         std::ref(global_host_matrix_pool), shared_dtoh_buffer.data());
             }
+        }
+
+        for (auto& t : all_threads) {
+            t.join();
         }
 
         auto end = std::chrono::steady_clock::now();
@@ -348,11 +254,11 @@ int main() {
 
     // Cleanup contexts and module
     for (int i = 0; i < num_gpus; ++i) {
-        cuCtxDestroy(contexts[i]);
+        CUDA_CHECK(cuCtxDestroy(contexts[i]));
     }
-    cuModuleUnload(mmul_mod);
-    cuModuleUnload(vadd_mod);
-    cuModuleUnload(conv_mod);
+    CUDA_CHECK(cuModuleUnload(mmul_mod));
+    CUDA_CHECK(cuModuleUnload(vadd_mod));
+    CUDA_CHECK(cuModuleUnload(conv_mod));
 
     return 0;
 }
