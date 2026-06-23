@@ -213,10 +213,6 @@ int main() {
         auto start = std::chrono::steady_clock::now();
 
         for (int b = 0; b < num_batches; ++b) {
-            // Sleep timer (random time)
-            int sleep_ms = dist_sleep(rng_prod);
-            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
-
             // Generate random sized partition (batch)
             int current_batch_size = dist_batch_size(rng_prod);
             std::vector<Task> batch_tasks;
