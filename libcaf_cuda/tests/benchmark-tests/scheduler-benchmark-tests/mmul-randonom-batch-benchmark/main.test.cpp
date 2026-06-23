@@ -171,7 +171,9 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
                                     stream_id); // Pass exit_actor to task actors
             workers.push_back(worker);
             stream_id = (stream_id + 1) % streams;
-            device_id = (device_id + 1) % devices;
+            if (stream_id == 0) {
+                device_id = (device_id + 1) % devices;
+            }
         }
 
        
