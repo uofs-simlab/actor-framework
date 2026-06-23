@@ -52,13 +52,13 @@ MatrixPool create_matrix_pool_random(
 
 // This actor represents a single task that requests permission from the scheduler.
 behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_actor) {
-    self->mail("hello").send(self);
+   
 
     return {
-        [=](std::string start_tag) mutable {
+        [=](int device,int stream,int current_N) mutable {
                 auto& st = self->state();
-                
-                int N = st.N_val;
+
+                int N = current_N;
 
                 // 1. Setup GPU arguments.
                 // Fetch data from the shared pool only when scheduled to save RAM
@@ -68,7 +68,6 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_
                 auto in_n = create_in_arg(N);
 
                 const int THREADS = 32;
-                int current_N = N;
                 nd_range range((current_N + THREADS - 1) / THREADS, 
                            (current_N + THREADS - 1) / THREADS, 1, 
                            THREADS, THREADS, 1);
@@ -92,13 +91,11 @@ behavior task_actor_fun(stateful_actor<task_actor_state>* self, caf::actor exit_
 
 // Helper function to initialize task_actor_state
 behavior make_task_actor_behavior(stateful_actor<task_actor_state>* self, program_ptr prog, int N_val, std::shared_ptr<MatrixPool> pool, 
-                                caf::actor exit_actor, int device, int stream) {
+                                caf::actor exit_actor) {
     auto& st = self->state();
     st.prog = std::move(prog);
     st.N_val = N_val;
     st.pool = std::move(pool);
-    st.device = device;
-    st.stream = stream;
     return task_actor_fun(self, exit_actor); // Pass exit_actor to task_actor_fun
 }
 
@@ -157,23 +154,26 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
 
         double elapsed = time_run([&]() {
         std::vector<actor> workers;
+        for (int i =0; i < 200; i++) {
+            int current_N = 1;
+               auto worker = sys.spawn(make_task_actor_behavior,
+                                    program,
+                                    current_N, 
+                                    pool_ptr,
+                                    exit_actor); // Pass exit_actor to task actors
+            workers.push_back(worker);
+           
+        }
         // Spawn task actors and prepare tokens
         for (int i = 0; i < num_tasks; ++i) {
             int current_N = available_Ns[dist_N_idx(rng)];
            
-            
-            auto worker = sys.spawn(make_task_actor_behavior,
-                                    program,
-                                    current_N, 
-                                    pool_ptr,
-                                    exit_actor, 
-                                    device_id, 
-                                    stream_id); // Pass exit_actor to task actors
-            workers.push_back(worker);
+            anon_mail(device_id,stream_id,current_N).send(workers[i%workers.size()]);
             stream_id = (stream_id + 1) % streams;
             if (stream_id == 0) {
                 device_id = (device_id + 1) % devices;
             }
+           
         }
 
        
