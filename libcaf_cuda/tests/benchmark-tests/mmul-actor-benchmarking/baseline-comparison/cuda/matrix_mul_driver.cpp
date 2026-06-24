@@ -65,7 +65,7 @@ int main() {
       checkCU(cuCtxCreate(&ctx, CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST, dev),"create context");
 #endif
 
-    std::string ptx = readFile("mmul.ptx");
+    std::string ptx = readFile("../mmul.cubin");
 
     CUmodule module;
     checkCU(cuModuleLoadData(&module, ptx.c_str()), "cuModuleLoadData");
