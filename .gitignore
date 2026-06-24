@@ -1,6 +1,6 @@
 .make-release-steps.bash
 .push-doxygen-steps.bash
-Makefile
+# Makefile
 bin/*
 build/*
 doxygen-log.txt
@@ -11,3 +11,25 @@ manual/libcaf_core
 manual/libcaf_io
 manual/libcaf_net
 manual/libcaf_openssl
+libcaf_cuda/sc26/Runtime-Overhead/compile.sh
+libcaf_cuda/sc26/Runtime-Overhead/cuda_native
+libcaf_cuda/sc26/Runtime-Overhead/mmul.cubin
+libcaf_cuda/sc26/Sequence-Independent-Tasks/compile.sh
+libcaf_cuda/sc26/Runtime-Overhead/command_runner
+libcaf_cuda/sc26/Fault-Tolerance/compile.sh
+libcaf_cuda/sc26/Fault-Tolerance/main
+libcaf_cuda/sc26/Runtime-Overhead/actor_facade
+libcaf_cuda/sc26/Fault-Tolerance/monte_carlo.cubin
+libcaf_cuda/sc26/Sequence-Independent-Tasks/main_actor_facade
+libcaf_cuda/sc26/Sequence-Independent-Tasks/main_command_runner
+libcaf_cuda/sc26/Sequence-Independent-Tasks/main_cuda_native
+libcaf_cuda/sc26/Sequence-Independent-Tasks/mmul.cubin
+libcaf_cuda/sc26/Fault-Tolerance/run.log
+libcaf_cuda/sc26/Fault-Tolerance/baseline.log
+libcaf_cuda/sc26/benchmarks/__pycache__/
+libcaf_cuda/sc26/scripts/Fault-Tolerance/.venv/
+libcaf_cuda/sc26/scripts/Fault-Tolerance/plots
+libcaf_cuda/sc26/Runtime-Overhead/results/benchmark_results.txt
+libcaf_cuda/sc26/Runtime-Overhead/results/benchmark_results_1.txt
+libcaf_cuda/sc26/Sequence-Independent-Tasks/results/cleaned.txt
+libcaf_cuda/sc26/Sequence-Independent-Tasks/results/benchmark_results.txt

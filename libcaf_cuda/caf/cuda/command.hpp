@@ -13,6 +13,7 @@
 #include "caf/cuda/platform.hpp"
 #include "caf/cuda/mem_ref.hpp"
 #include "caf/cuda/device.hpp"
+#include "caf/cuda/program.hpp"
 
 
 
@@ -158,4 +159,3 @@ public:
 };
 
 } // namespace caf::cuda
-

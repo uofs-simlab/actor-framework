@@ -6,11 +6,14 @@
 #include <vector>
 #include <stdexcept>
 #include <chrono>
+#include <thread>
 #include <iostream>
 #include "caf/cuda/types.hpp"
+#include <caf/actor.hpp>
 //#include "caf/cuda/utility.hpp"
 #include <cuda.h>
 #include <atomic>
+#include "caf/cuda/control-layer/memory_actor/mem_token.hpp"
 
 namespace caf::cuda {
 
@@ -79,6 +82,7 @@ public:
   CUstream stream() const noexcept { return stream_; }
   int deviceID() const noexcept { return device_id;}
   int deviceNumber() const noexcept { return device_id;}
+  CUcontext get_ctx() const noexcept { return ctx; }
 
  //if it is ever needed, you can force synchronization on a mem_ptr
  //to ensure data on the device that the mem_ptr points to
@@ -96,7 +100,24 @@ public:
   //sets all its attributes to null or -1
   void reset() {
     if (!is_scalar_ && memory_) {
-      CHECK_CUDA(cuMemFree(memory_));
+      if (ctx) {
+        CUresult res = cuCtxPushCurrent(ctx);
+        if (res == CUDA_SUCCESS) {
+          CUresult free_res = cuMemFreeAsync(memory_, stream_);
+          if (free_res != CUDA_SUCCESS) {
+            const char* err_str = nullptr;
+            cuGetErrorString(free_res, &err_str);
+            std::cerr << "[ERROR] cuMemFreeAsync failed in mem_ref::reset: " 
+                      << (err_str ? err_str : "unknown error") << std::endl;
+          }
+          cuCtxPopCurrent(nullptr);
+        } else {
+          const char* err_str = nullptr;
+          cuGetErrorString(res, &err_str);
+          std::cerr << "[ERROR] cuCtxPushCurrent failed in mem_ref::reset: " 
+                    << (err_str ? err_str : "unknown error") << std::endl;
+        }
+      }
       memory_ = 0;
     }
     num_elements_ = 0;
@@ -105,27 +126,64 @@ public:
     ctx = nullptr;
   }
 
+  // Enqueues a free operation on the specified stream and invalidates this reference.
+  void free_on(CUstream s) {
+    if (!is_scalar_ && memory_) {
+      if (ctx) {
+        CHECK_CUDA(cuCtxPushCurrent(ctx));
+        CHECK_CUDA(cuMemFreeAsync(memory_, s));
+        CHECK_CUDA(cuCtxPopCurrent(nullptr));
+      }
+      memory_ = 0;
+    }
+  }
+
   //copies gpu memory back to cpu memory in the form of an std::vector
   std::vector<T> copy_to_host() const {
-    if (access_ == IN)
-    {
-	    throw std::runtime_error("Cannt copy a read only buffer back to device\n");
-    } 
-    if (is_scalar_) {
-      return std::vector<T>{host_scalar_};
-    }
-    std::vector<T> host_data(num_elements_);
-    size_t bytes = num_elements_ * sizeof(T);
-    CHECK_CUDA(cuCtxPushCurrent(ctx));
-    CUstream s = stream_ ? stream_ : nullptr;
-    CHECK_CUDA(cuMemcpyDtoHAsync(host_data.data(), memory_, bytes, s));
-    if (s) CHECK_CUDA(cuStreamSynchronize(s));
-    else  CHECK_CUDA(cuCtxSynchronize());
-    CHECK_CUDA(cuCtxPopCurrent(nullptr));
-    return host_data;
+	  if (access_ == IN)
+	  {
+		  throw std::runtime_error("Cannt copy a read only buffer back to device\n");
+	  } 
+	  if (is_scalar_) {
+		  return std::vector<T>{host_scalar_};
+	  }
+	  std::vector<T> host_data(num_elements_);
+	  size_t bytes = num_elements_ * sizeof(T);
+	  CHECK_CUDA(cuCtxPushCurrent(ctx));
+	  CUstream s = stream_ ? stream_ : nullptr;
+	  CHECK_CUDA(cuMemcpyDtoHAsync(host_data.data(), memory_, bytes, s));
+	  if (s) CHECK_CUDA(cuStreamSynchronize(s));
+	  else  CHECK_CUDA(cuCtxSynchronize());
+	  CHECK_CUDA(cuCtxPopCurrent(nullptr));
+	  return host_data;
   }
 
 
+  //copies buffer back to dst buffer supplied by the user
+  //count is number of elements the buffer has
+  void copy_to_host(T* dst, size_t count) const {
+	  if (access_ == IN)
+		  throw std::runtime_error("Cannot copy a read only buffer back to host");
+
+	  if (is_scalar_) {
+		  dst[0] = host_scalar_;
+		  return;
+	  }
+
+	  size_t bytes = count * sizeof(T);
+
+	  CHECK_CUDA(cuCtxPushCurrent(ctx));
+	  CUstream s = stream_ ? stream_ : nullptr;
+
+	  CHECK_CUDA(cuMemcpyDtoHAsync(dst, memory_, bytes, s));
+
+	  if (s)
+		  CHECK_CUDA(cuStreamSynchronize(s));
+	  else
+		  CHECK_CUDA(cuCtxSynchronize());
+
+	  CHECK_CUDA(cuCtxPopCurrent(nullptr));
+  }
 
     //reference counting for auto garabage collection
     friend void intrusive_ptr_add_ref(const mem_ref<T>* p) noexcept {
@@ -138,6 +196,12 @@ public:
     }
 
 
+    // manual binding of the resource object that denotes memory
+    // to the pointer that contains it 
+    void bind_token(caf::cuda::mem_token m_token) {
+        token = std::move(m_token);
+    }
+
 
 private:
   size_t      num_elements_{0};
@@ -149,6 +213,8 @@ private:
   CUcontext ctx;
   mutable std::atomic<size_t> ref_count_{0};
 
+  mem_token token;
+
   bool is_scalar_{false};
   T    host_scalar_{};
 };
@@ -157,4 +223,3 @@ template <class T>
 using mem_ptr = caf::intrusive_ptr<mem_ref<T>>;
 
 } // namespace caf::cuda
-

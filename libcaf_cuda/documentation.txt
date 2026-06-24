@@ -30,7 +30,17 @@ Lastly it is also expected that arguments that you give to GPU Actors appear in 
 
 == The Actor Facade
 All GPU programming boils down to the following: write a kernel, configure its dimensions, transfer the memory to the GPU, launch the kernel and finally transfer the memory from the GPU back to the device. GPU Actors have two primary ways of configuring how you want to navigate this workflow. 
-The first way is using the custom GPU Actor called actor facade. 
+The first way is using the **Actor Facade**. 
+
+The `actor_facade` is a stateless, high-level wrapper for GPU kernels. It is designed to be fully asynchronous: when you send it a message, it immediately enqueues the GPU work and returns. Results are pushed back to the requester via individual messages once the GPU completes the work and the data is transferred back to the host.
+
+**Key Advantages:**
+- **Non-blocking:** It never stalls a CAF worker thread.
+- **Push-based:** Results are "pushed" to your actor as they become available.
+- **Selective Transfers:** You can specify exactly which buffers to copy back.
+
+### Example Kernel: mmul.cu
+For clarity, here is the CUDA kernel code (`mmul.cu`) used in the following examples. It performs standard matrix multiplication on the GPU.
 
 {{{
 // mmul.cu
@@ -46,42 +56,85 @@ void matrixMul(const int* a, const int* b, int* c, int N) {
         c[row * N + col] = temp;
     }
 }
-
 }}}
 
+### Spawning and Communicating with the Facade
+The facade is spawned using a kernel file and argument tags. Because it is asynchronous, do not use `.request().then()`. Instead, use `send()` and define handlers in your actor's behavior to receive the results.
+
 {{{
- // Spawn actor from precompiled cubin file
+  // Create a facade for matrix multiplication
   caf::actor gpuActor = mgr.spawnFromCUBIN(
-                  "../mmul.cubin", //kernel file location
-                  "matrixMul", //kernel name 
-                  dim, //kernel dimensions             
-                  in<int>{}, in<int>{}, out<int>{}, in<int>{} //kernel arg tags 
-                                                              //in order they appear in kernel
+                  "../mmul.cubin", "matrixMul", dim,
+                  in<int>{}, in<int>{}, out<int>{}, in<int>{} 
                   );
+  // Launching the kernel
+  self->mail(arg1, arg2, arg3, arg4).send(gpuActor);
 
-
+  // Handling results
+  return {
+    = {
+      // Handle vector data (e.g., matrix result at index 2)
+    },
+    = {
+      if (index == -1) 
+        self->println("All GPU work and transfers complete.");
+    }
+  };
 }}}
-All you need to do is tell it where to find the kernel, the dimensions for that kernel and specify the argument tags in order it appears in the kernel. From here you can send the gpuActor a message in the form of tagged kernel args and it will automatically launch the kernel for you and return an output_buffer which you can call extract_vector<T> on to retrieve the std::vector you are looking for. Results in the output buffer appear in the order they appear in the kernel arguments, minus the in<T>/readonly buffers since they are automatically garabage collected.
+
+### Understanding the Message Flow
+When you launch a kernel via the facade, it doesn't send a single reply. Instead, it sends a sequence of messages back to the requester:
+
+1. **Per Output Buffer:** For every buffer being copied back, you receive **one** message. 
+   - If it's a standard output, you get a **Data Result**: `(int reply_id, int arg_index, std::vector<T> data)`.
+   - If you used `output_mapping`, you get a **Mapping Notification**: `(int reply_id, int arg_index)`. This tells you the GPU is done writing to the memory address you provided.
+2. **Final Signal:** Once all kernels are finished and all data transfers for that specific launch are complete, you receive **exactly one Completion Signal**: `(int reply_id, int signal)` where the signal is `-1`.
+
+For example, if you launch a kernel with two output buffers, you will receive a total of three messages: two data/notification messages and one completion signal.
+
+### Selective Transfers and Output Mapping
+By default, the facade copies back all `out<T>` and `in_out<T>` arguments. You can optimize this by passing a list of indices or specific memory mappings.
+
 {{{
-  //tag the buffers so that the actor facade knows what to do with it 
-  in<T>  arg1 = caf::cuda::create_in_arg(h_a); //matrix A readonly buffer
-  in<T> arg2 = caf::cuda::create_in_arg(h_b); //matrix B readonly buffer
-  out<T> arg3 = caf::cuda::create_out_arg_with_size<int>(N*N); //matrix size writeonly buffer
-  in<T> arg4 = caf::cuda::create_in_arg(N); // int size, readonly scalar
+  // Only copy back the 3rd argument (index 2)
+  std::vector<int> indices = {2};
+  self->mail(indices, arg1, arg2, arg3, arg4).send(gpuActor);
 
-  self_actor->mail(arg1, arg2, arg3, arg4)
-      .request(gpuActor, std::chrono::seconds(10))
-      .then([=](const std::vector<output_buffer>& outputs) {
-        std::vector<int> result = caf::cuda::extract_vector<int>(outputs); //collect the result buffer from output
-         //do something with it 
-
+  // Or, copy directly into a pre-allocated host buffer (output mapping)
+  std::vector<caf::cuda::output_mapping> mappings = { {2, my_raw_ptr, count} };
+  self->mail(mappings, arg1, arg2, arg3, arg4).send(gpuActor);
 }}}
-
 
 
 == Command Runner
-The second way of expressing this workflow is using the command runner as an entry point to the GPU to create your own custom GPU actors by mixing up the original caf actors along with the cuda api that GPU Actors has. The Command Runner class functionally does everything that the actor facade can do (minus receiving and replying to messages that's the custom actors job) as well as some additional advanced features such as controlling which GPU and stream your kernel launches on, shared memory support and GPU memory management for more complicated pipelines. These features will be discussed further down below as right now we will just show the same operation that the actor facade did above using command runner.
+The second way of expressing this workflow is using the `command_runner` as an entry point to the GPU. This allows you to create custom GPU actors by combining standard CAF actor logic with the GPU Actors API. 
 
+**Warning:** It is highly recommended to use asynchronous methods (`run_async`, `copy_to_host_async`, etc.). Synchronous methods like `run()` and `copy_to_host()` block the calling thread until the GPU operation and data transfer are complete. In a CAF-based system, this stalls the worker thread, preventing it from processing other actors and significantly reducing overall system throughput.
+
+The Command Runner class functionally does everything that the actor facade can do (minus receiving and replying to messages) as well as some additional advanced features such as controlling which GPU and stream your kernel launches on, shared memory support and GPU memory management.
+
+### Asynchronous Operations
+The `command_runner` provides several asynchronous operations, allowing for non-blocking execution and more fine-grained control over the GPU workflow.
+
+**Asynchronous Kernel Launch (`run_async`)**
+Unlike the synchronous `run()` method, `run_async()` immediately returns a tuple of `mem_ptr`s representing the output and in-out arguments on the GPU. This allows the CAF worker thread to continue execution or handle other messages while the GPU kernel is running.
+
+**Asynchronous Memory Transfers (`transfer_memory` and `copy_to_host_async`)**
+The `transfer_memory` methods are designed for asynchronous data transfer to the device. Similarly, `copy_to_host_async` allows for non-blocking transfer of data from the GPU back to the host. These methods can often take callbacks, enabling the execution of host-side code once the transfer is complete, without blocking the calling thread.
+
+**Stream Callbacks (`add_callback`)**
+The `add_callback` method allows you to register a host-side lambda to be executed on the associated CUDA stream. This callback triggers only after all preceding tasks (kernels, transfers) enqueued on that stream are finished.
+
+{{{
+    // Example: Launch and notify when done
+    auto results = mmul.run_async(program, dim, stream_id, arg1, arg2, arg3, arg4);
+    
+    runner.add_callback(stream_id, device_num, self {
+        self->println("GPU Kernel and transfers are finished!");
+    });
+}}}
+
+While you can do whatever you want in these callbacks, so long as you do not invoke other cuda calls. The best pattern is to use callbacks to send messages to other actors when an operation on the GPU is completed
 
 {{{
 
@@ -109,23 +162,22 @@ mmulCommand mmul;
     out<int> arg3 = caf::cuda::create_out_arg_with_size<int>(N*N); //matrix C (specify with size)
     in<int> arg4 = caf::cuda::create_in_arg(N); //size of the matrices
 
-    //launch kernel and collect the output 
-    auto tempC = mmul..run(
+   //launch kernel asynchronously to avoid blocking worker threads
+    auto results = mmul.run_async(
                           program,//kernel to launch
                           dim, //kernel dimensions
-                          id, //actor id 
+                          stream_id, // stream identifier
                           arg1,arg2,arg3,arg4 //kernel args in order that they appear in the kernel  
                           );
-    std::vector<int> matrixC = caf::cuda::extract_vector<int>(tempC);
+    
+    // results is std::tuple<mem_ptr<int>...>
+    auto matrixC_ptr = std::get<2>(results);
 
+    // results is a tuple of mem_ptr<int>. 
+    // Use copy_to_host_async to get data back without blocking.
 }}}
 
 For a more in depth look on how this is done go to https://github.com/uofs-simlab/actor-framework/blob/main/libcaf_cuda/examples/custom-actor-examples/mmul.example.cpp 
-
-== Actor id's
-Actors use ids as a way to request resources on the GPU, mainly streams (command queues on the GPU). The actor facade will automatically get its own id and separate GPU resources from other actors. However if you are creating your own custom GPU actor, then you can decide if 2 or more actors or kernel launches share the same GPU resources, such as streams by using the same id per request. It is worth mentioning that at a certain limit (after 500 actor ids) GPU resources will be shared amongst actors to prevent extreme overhead costs of managing all the GPU resources or even crashing for having too much resources allocated
-
-
 
 == Multiple GPU Support and Device Numbers
 GPU Actors will attempt to use all GPUs (devices) it detects when launching kernels. The only time it will not use a GPU it detects is if it detects that the GPUs are different from one another since there is no way of knowing what program belongs on which device without querying the user, in which case it will revert to using the first device it detects. When using the actor facade or the command runner and do not specify a device number, it will use a simple lottery scheduler as a way of determining which GPU to launch your kernel on. If you are using command runner you can decide what device your kernel launches on by specifying a device number. The agreement is as follows, any set of commands that have the same device numbers will launch on the same device, while any 2 sets of commands with different device numbers may or may not launch on the same device, depending on how many devices are found on the computer. It will module arithmetic the device number with the number of devices to determine which device to put the command on. For example given device numbers 0,1,2,3,4 if the number of devices on a computer is 4. Then commands with device numbers 0,4 would appear on device 0 (since 0%4 and 4%4 = 0), commands with device numbers of 1 would appear on device 1, and device numbers 2 and 3 would appear on the corresponding device. If there are only 2 devices then commands with device even device numbers (0,2,4) would appear on device 0, while commands with odd device numbers (1,3) would appear on device 1. 
@@ -176,16 +228,20 @@ void generate_random_matrix(int* matrix, int total_elements, int seed, int max_v
                           );
            caf::cuda::mem_ptr<int> matrixA =  std::get<0>(tempA); //fetch the memory of the first argument of the kernel
 }}}
-
+<br>
 In the example listed above we can see that getting the zeroth element of the tuple, grabs the memory associated with the matrix parameter/buffer in the generate_random_matrix kernel.
 It is worth mentioning that if the user wishes to use the manual memory management via run_async(), they are responsible for handling the synchronization of the memory and kernels associated with it as well as ensuring that the memory does not end up on a different device than it is allocated on. mem_ptrs do have methods to help out with this. 
 
-For starters recall that GPU Actors use multiple streams and using memory between streams will cause race conditions,there are two ways of handling this. By far the simplest way to handle this is to ensure each actor or command that interacts with the mem_ptr uses the same actor id. In doing so it will guarantee that the same stream is used on the memory and will preserve in order operations. Alternatively you can call mem_ptr synchronize() method, which will synchronize all GPU operations on that memory with the CPU.
+Recall that GPU Actors use multiple streams; using memory across different streams without care will cause race conditions. The simplest fix is to ensure each command interacting with a `mem_ptr` uses the same `stream_id`. This guarantees in-order execution. Alternatively, you can call the `synchronize()` method, though this is a blocking operation.
 
 For ensuring memory does not end up on a different device than it is currently allocated on. The user needs to ensure the device number is the same for all mem_ptrs being used in run_async. mem_ptrs do track what device number they use (although it may differ from the user's device number if it is higher than the number of GPUs, it will end up being on the same device) with the deviceNumber() method.
+<br>
+**Asynchronous Memory Deallocation**
+`mem_ptr`s are smart pointers managing GPU memory. When a `mem_ptr`'s reference count drops to zero, the GPU memory is not immediately freed in a blocking fashion. Instead, the deallocation is enqueued onto the associated CUDA stream. This ensures that memory is only released after all pending GPU operations using that memory have completed, and it prevents the CPU from stalling during the `free` call. 
 
-Lastly, to transfer memory from the GPU to the CPU use the copy_to_host() method. It is a blocking operation (since it is synchronizing with the GPU) that will always return an std::vector<T>.
+The `actor_facade`'s destructor explicitly calls `release_stream_for_actor`, which ensures that the stream resources and any pending asynchronous deallocations tied to that actor's lifecycle are cleaned up properly.
 
+To transfer memory from the GPU to the CPU, always prefer `copy_to_host_async()` with a callback to keep your actor system responsive.
 
 
 
@@ -202,7 +258,102 @@ The command runner does support kernels with shared memory (actor facade does no
                           );
 }}}
 
+== Multi GPU Scheduling 
+We use actors as a way to provide single node Multi GPU task scheduling. To accomplish this the runtime uses Send Receive Reply IPC as a means
+Of GPU scheduling.
+What this means is that if you want the scheduler to load balance tasks across multiple devices for you, actors cannot directly submit GPU work
+they must instead seek permission from the scheduler actor to do so and only when the scheduler actor tells the actor that its ok it may then
+do GPU work.
+
+The scheduler actor uses tokens as a way to track tasks. A token contains metadata about a task such as what device and stream to execute on and is given 
+to the GPU actor requesting to do work granting it permission to do work.
+Tokens are C++ smart pointers that embedd a message signalling to the scheduler actor that created it that a task is completed in its deconstructor.
+Meaning that the scheduler actor expects that the issued token object lifetime matches that of the GPU task that is being completed. Destroying it 
+too early will make the scheduler actor behave as if the task has been completed. 
+
+Tokens can either be sent to scheduler actor one by one or in batches. Submitting one by one looks like 
+
+{{{
+///sending a single token
+caf::cuda::launch_token token = make_launch_token(program, range, 0, 
+                             "task_name", reply_actor);
+
+mgr.send_scheduler_actor_message(token);
+
+
+
+
+//sending a batch of tokens
+  std::vector<token_ptr> tokens;
+  for (int i = 0; i < num_tasks; ++i) {
+            
+            
+            caf::actor supervisor = sys.spawn(supervisor_behavior);
+
+            tokens.push_back(make_launch_token(program, range, 0, 
+                             "task_" + std::to_string(i), supervisor));
+        }
+
+mgr.send_scheduler_actor_message(tokens);
+
+
+}}}
+
+a request token contains a program_ptr, kernel dimensions, memory being used, a task identifer (string) and
+a handle to an actor that will receive the response token. The scheduler actor does not look at program, range, memory size or task identifers,
+it only cares about the handle to the actor.
+
+
+ {{{
+  //receiving a response token
+
+
+    [=](response_token_ptr res) mutable {
+       if (res->getType() == LAUNCH_RESPONSE) {
+              auto& st = self->state();
+                
+               
+                int N = st.N_val;
+
+                // 1. Setup GPU arguments
+
+                // 2. Launch Work asynchronously using the stream and device assigned by the scheduler.
+                auto result_tuple = runner.run_async(st.prog, dims, res, in_a, in_b, out_c, in_n);
+                //alternatively you can use res->getDeviceNumber() and res->getStreamId() to access the values assigned to the actor via the scheduler
+                auto d_c = std::get<2>(result_tuple);
+
+                // 3. Asynchronous Copyback.
+                // Allocate a local buffer for the result to keep the total system memory low.
+                auto h_c = std::make_shared<std::vector<int>>(N * N);
+                // The launch_response_token is released inside the callback 
+                // to signal to the scheduler that the resource is free. 
+                runner.copy_to_host_async(d_c, h_c->data(), h_c->size(), [res, exit_actor, h_c](int* /*ptr*/, size_t /*sz*/) {
+                    res->release();//marks the tasks lifetime as complete, alternatively could have just dropped it out of scope.
+                });
+            }
+
+
+ }}}
+
+to send scheduler actor exit messages invoke caf::cuda::manager::shutdown() and this will send exit messages to the scheduler actor
+
 
 For more details, see the example code found at https://github.com/uofs-simlab/actor-framework/tree/main/libcaf_cuda/examples
 
 
+== Native CUDA compatability 
+If the Abstractions above are not compatabile with a codebase you wish to integrate, you may use 
+command_runner get_context and get_stream to acquire CUContext and CUStream accordingly to integrate into
+existing code bases you may also create mem_ptr objects by doing the following 
+
+{{{
+
+mem_ptr<T> dptr =  caf::intrusive_ptr<mem_ref<T>>(
+       new mem_ref<T>(size, dev_ptr, access, device number, 0, CUContext, CUstream)));
+  }
+
+}}}
+
+where size is size of the array in elements (not in bytes). dev_ptr is CUdevice_ptr of memory, 
+access is indicator of access, 0 is readonly, 1 is readwrite and 2 is writeonly, the last two parameters are CUContext and
+CUstream belonging to the memory.

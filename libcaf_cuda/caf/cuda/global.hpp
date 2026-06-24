@@ -7,21 +7,18 @@
 #include <caf/logger.hpp>
 #include <cuda.h>
 #include "caf/cuda/types.hpp" //be sure to include any caf-cuda headers after this one
+#include <memory>
 #include "caf/cuda/nd_range.hpp"
 #include "caf/cuda/helpers.hpp"
+#include "caf/cuda/event.hpp"
 #include <nvrtc.h>
 // CAF type ID registration
 #include <caf/type_id.hpp>
 #include <caf/anon_mail.hpp>
+#include "caf/cuda/global_export.hpp"
 
-//a strange fix required in order to get the .so files to become viewable for binaries
-//linking against them, if this is not defined with classes you want viewable then
-//the linker will complain
-#if defined(_MSC_VER)
-  #define CAF_CUDA_EXPORT __declspec(dllexport)
-#else
-  #define CAF_CUDA_EXPORT __attribute__((visibility("default")))
-#endif
+ 
+
 
 //helper function to check errors
 void inline check(CUresult result, const char* msg) {
@@ -116,9 +113,51 @@ bool inspect(Inspector& f, output_buffer& x) {
   return f.object(x).fields(f.field("data", x.data));
 }
 
+// Serialization support for sparse_cg_solve_context
+template <class Inspector, class T>
+bool inspect(Inspector& f, caf::cuda::sparse_cg_solve_context<T>& x) {
+  return f.object(x).fields(f.field("A_rp", x.A_rp),
+                            f.field("A_ci", x.A_ci),
+                            f.field("A_val", x.A_val),
+                            f.field("b", x.b),
+                            f.field("x", x.x),
+                            f.field("r", x.r),
+                            f.field("p", x.p),
+                            f.field("w", x.w),
+                            f.field("rho", x.rho),
+                            f.field("old_rho", x.old_rho),
+                            f.field("dot_pw", x.dot_pw),
+                            f.field("spmv_ws", x.spmv_ws),
+                            f.field("threshold", x.threshold),
+                            f.field("format", x.format),
+                            f.field("n", x.n),
+                            f.field("nnz", x.nnz),
+                            f.field("max_iter", x.max_iter),
+                            f.field("iterations", x.iterations),
+                            f.field("device_num", x.device_num),
+                            f.field("stream_id", x.stream_id),
+                            f.field("requester", x.requester),
+                            f.field("mappings", x.mappings),
+                            f.field("return_mem_ptr", x.return_mem_ptr));
+}
+
 // Serialization support for std::vector<output_buffer> (global namespace)
 template <class Inspector>
 bool inspect(Inspector& f, std::vector<output_buffer>& x) {
+  return f.object(x).fields(f.field("elements", x));
+}
+
+// Serialization support for output_mapping (global namespace)
+template <class Inspector>
+bool inspect(Inspector& f, output_mapping& x) {
+  return f.object(x).fields(f.field("index", x.index),
+                            f.field("dst", x.dst),
+                            f.field("count", x.count));
+}
+
+// Serialization support for std::vector<output_mapping> (global namespace)
+template <class Inspector>
+bool inspect(Inspector& f, std::vector<output_mapping>& x) {
   return f.object(x).fields(f.field("elements", x));
 }
 
@@ -149,6 +188,32 @@ bool inspect(Inspector& f, buffer_variant& x) {
   return f.apply(x);
 }
 
+// Serialization support for solver_result_meta
+template <class Inspector>
+bool inspect(Inspector& f, caf::cuda::solver_result_meta& x) {
+  return f.object(x).fields(f.field("device_num", x.device_num),
+                            f.field("stream_id", x.stream_id),
+                            f.field("iterations", x.iterations),
+                            f.field("converged", x.converged),
+                            f.field("error_code", x.error_code));
+}
+
+namespace caf::cuda {
+
+// Serialization support for matrix_format
+template <class Inspector>
+bool inspect(Inspector& f, matrix_format& x) {
+  auto val = static_cast<int>(x);
+  if (f.apply(val)) {
+    if constexpr (Inspector::is_loading)
+      x = static_cast<matrix_format>(val);
+    return true;
+  }
+  return false;
+}
+
+} // namespace caf::cuda
+
 // Check CUDA errors macro
 #define CHECK_CUDA(call) \
     do { \
@@ -169,35 +234,73 @@ bool inspect(Inspector& f, buffer_variant& x) {
 
 // Define a custom type ID block for CUDA types
 // TODO should this become a macro???
-CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id)
+CAF_BEGIN_TYPE_ID_BLOCK(cuda, caf::first_custom_type_id+ 10000)
 
   // Your type IDs
   CAF_ADD_TYPE_ID(cuda, (std::vector<char>))
   CAF_ADD_TYPE_ID(cuda, (std::vector<int>))
   CAF_ADD_TYPE_ID(cuda, (in<int>))
   CAF_ADD_TYPE_ID(cuda, (in<char>))
+  CAF_ADD_TYPE_ID(cuda, (in<float>))
+  CAF_ADD_TYPE_ID(cuda, (in<double>))
   CAF_ADD_TYPE_ID(cuda, (out<int>))
+  CAF_ADD_TYPE_ID(cuda, (out<float>))
+  CAF_ADD_TYPE_ID(cuda, (out<double>))
   CAF_ADD_TYPE_ID(cuda, (in_out<int>))
+  CAF_ADD_TYPE_ID(cuda, (in_out<float>))
+  CAF_ADD_TYPE_ID(cuda, (in_out<double>))
   CAF_ADD_TYPE_ID(cuda, (std::vector<float>))
   CAF_ADD_TYPE_ID(cuda, (std::vector<double>))
   CAF_ADD_TYPE_ID(cuda, (buffer_variant))
   CAF_ADD_TYPE_ID(cuda, (output_buffer))
   CAF_ADD_TYPE_ID(cuda, (std::vector<output_buffer>))
+  CAF_ADD_TYPE_ID(cuda, (output_mapping))
+  CAF_ADD_TYPE_ID(cuda, (std::vector<output_mapping>))
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<int>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<float>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<double>))  
   CAF_ADD_TYPE_ID(cuda,(caf::cuda::mem_ptr<char>))  
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::event_ptr))
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::matrix_format))
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::solver_result_meta))
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::sparse_cg_solve_context<float>))
+  CAF_ADD_TYPE_ID(cuda, (caf::cuda::sparse_cg_solve_context<double>))
+  CAF_ADD_TYPE_ID(cuda, (std::shared_ptr<caf::cuda::sparse_cg_solve_context<float>>))
+  CAF_ADD_TYPE_ID(cuda, (std::shared_ptr<caf::cuda::sparse_cg_solve_context<double>>))
   
   //atoms 
   CAF_ADD_ATOM(cuda, kernel_done_atom)
-  //CAF_ADD_ATOM(cuda, become)
-  //CAF_ADD_ATOM(cuda, launch_behavior)
-  //CAF_ADD_ATOM(cuda, update_behavior)
+  CAF_ADD_ATOM(cuda, htod_atom)
+  CAF_ADD_ATOM(cuda, kernel_atom)
+  CAF_ADD_ATOM(cuda, dtoh_atom)
+  CAF_ADD_ATOM(cuda, htod_done_atom)
+  CAF_ADD_ATOM(cuda, dtoh_done_atom)
+  CAF_ADD_ATOM(cuda, gpu_done_atom)
+  CAF_ADD_ATOM(cuda, return_mem_ptr_atom)
+  CAF_ADD_ATOM(cuda, csr_atom)
+  CAF_ADD_ATOM(cuda, csc_atom)
+  CAF_ADD_ATOM(cuda, coo_atom)  
+  CAF_ADD_ATOM(cuda, start_atom)
+  CAF_ADD_ATOM(cuda, cg_next_step_atom)
+  CAF_ADD_ATOM(cuda, next_batch_atom)
+
 
 CAF_END_TYPE_ID_BLOCK(cuda)
+
+
 
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<int>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<float>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<double>)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::mem_ptr<char>)
-
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::event_ptr)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::nd_range)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::program_ptr)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(output_mapping)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::vector<output_mapping>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::matrix_format)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::solver_result_meta)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::sparse_cg_solve_context<float>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(caf::cuda::sparse_cg_solve_context<double>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<caf::cuda::sparse_cg_solve_context<float>>)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(std::shared_ptr<caf::cuda::sparse_cg_solve_context<double>>)

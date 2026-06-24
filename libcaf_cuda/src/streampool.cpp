@@ -174,5 +174,192 @@ void DeviceStreamTable::release_stream(int actor_id) {
   }
 }
 
-} // namespace caf::cuda
+// ---------------------- CublasHandlePool ----------------------
 
+CublasHandlePool::CublasHandlePool(CUcontext ctx, size_t max_size)
+    : ctx_(ctx), max_size_(std::min(max_size, (size_t)32)) {}
+
+CublasHandlePool::~CublasHandlePool() {
+  for (auto h : all_handles_) {
+    cublasDestroy(h);
+  }
+}
+
+cublasHandle_t CublasHandlePool::acquire() {
+  std::lock_guard<std::mutex> guard(pool_mutex_);
+
+  if (!available_handles_.empty()) {
+    cublasHandle_t h = available_handles_.front();
+    available_handles_.pop_front();
+    return h;
+  }
+
+  if (all_handles_.size() < max_size_) {
+    cublasHandle_t h = create_handle();
+    all_handles_.push_back(h);
+    return h;
+  }
+
+  if (!all_handles_.empty()) {
+    static size_t rr_idx = 0;
+    cublasHandle_t h = all_handles_[rr_idx];
+    rr_idx = (rr_idx + 1) % all_handles_.size();
+    return h;
+  }
+
+  throw std::runtime_error("CublasHandlePool: no handles available");
+}
+
+void CublasHandlePool::release(cublasHandle_t h) {
+  std::lock_guard<std::mutex> guard(pool_mutex_);
+  available_handles_.push_back(h);
+}
+
+cublasHandle_t CublasHandlePool::create_handle() {
+  CHECK_CUDA(cuCtxPushCurrent(ctx_));
+  cublasHandle_t h;
+  cublasStatus_t status = cublasCreate(&h);
+  CHECK_CUDA(cuCtxPopCurrent(nullptr));
+
+  if (status != CUBLAS_STATUS_SUCCESS)
+    throw std::runtime_error("cublasCreate failed");
+  return h;
+}
+
+// ---------------------- DeviceCublasHandleTable ----------------------
+
+DeviceCublasHandleTable::DeviceCublasHandleTable(CUcontext ctx, size_t pool_size)
+    : pool_(ctx, pool_size) {}
+
+cublasHandle_t DeviceCublasHandleTable::get_handle(int actor_id, CUstream stream) {
+  cublasHandle_t h = nullptr;
+  {
+    std::shared_lock<std::shared_mutex> read_lock(table_mutex_);
+    auto it = table_.find(actor_id);
+    if (it != table_.end())
+      h = it->second;
+  }
+
+  if (!h) {
+    std::unique_lock<std::shared_mutex> write_lock(table_mutex_);
+    auto it = table_.find(actor_id);
+    if (it != table_.end()) {
+      h = it->second;
+    } else {
+      h = pool_.acquire();
+      table_[actor_id] = h;
+    }
+  }
+
+  // Always bind the handle to the caller's stream
+  cublasStatus_t status = cublasSetStream(h, stream);
+  if (status != CUBLAS_STATUS_SUCCESS)
+    throw std::runtime_error("cublasSetStream failed");
+
+  return h;
+}
+
+void DeviceCublasHandleTable::release_handle(int actor_id) {
+  std::unique_lock<std::shared_mutex> write_lock(table_mutex_);
+  auto it = table_.find(actor_id);
+  if (it != table_.end()) {
+    pool_.release(it->second);
+    table_.erase(it);
+  }
+}
+
+// ---------------------- CusparseHandlePool ----------------------
+
+CusparseHandlePool::CusparseHandlePool(CUcontext ctx, size_t max_size)
+    : ctx_(ctx), max_size_(std::min(max_size, (size_t)32)) {}
+
+CusparseHandlePool::~CusparseHandlePool() {
+  for (auto h : all_handles_) {
+    cusparseDestroy(h);
+  }
+}
+
+cusparseHandle_t CusparseHandlePool::acquire() {
+  std::lock_guard<std::mutex> guard(pool_mutex_);
+
+  if (!available_handles_.empty()) {
+    cusparseHandle_t h = available_handles_.front();
+    available_handles_.pop_front();
+    return h;
+  }
+
+  if (all_handles_.size() < max_size_) {
+    cusparseHandle_t h = create_handle();
+    all_handles_.push_back(h);
+    return h;
+  }
+
+  if (!all_handles_.empty()) {
+    static size_t rr_idx = 0;
+    cusparseHandle_t h = all_handles_[rr_idx];
+    rr_idx = (rr_idx + 1) % all_handles_.size();
+    return h;
+  }
+
+  throw std::runtime_error("CusparseHandlePool: no handles available");
+}
+
+void CusparseHandlePool::release(cusparseHandle_t h) {
+  std::lock_guard<std::mutex> guard(pool_mutex_);
+  available_handles_.push_back(h);
+}
+
+cusparseHandle_t CusparseHandlePool::create_handle() {
+  CHECK_CUDA(cuCtxPushCurrent(ctx_));
+  cusparseHandle_t h;
+  cusparseStatus_t status = cusparseCreate(&h);
+  CHECK_CUDA(cuCtxPopCurrent(nullptr));
+
+  if (status != CUSPARSE_STATUS_SUCCESS)
+    throw std::runtime_error("cusparseCreate failed");
+  return h;
+}
+
+// ---------------------- DeviceCusparseHandleTable ----------------------
+
+DeviceCusparseHandleTable::DeviceCusparseHandleTable(CUcontext ctx, size_t pool_size)
+    : pool_(ctx, pool_size) {}
+
+cusparseHandle_t DeviceCusparseHandleTable::get_handle(int actor_id, CUstream stream) {
+  cusparseHandle_t h = nullptr;
+  {
+    std::shared_lock<std::shared_mutex> read_lock(table_mutex_);
+    auto it = table_.find(actor_id);
+    if (it != table_.end())
+      h = it->second;
+  }
+
+  if (!h) {
+    std::unique_lock<std::shared_mutex> write_lock(table_mutex_);
+    auto it = table_.find(actor_id);
+    if (it != table_.end()) {
+      h = it->second;
+    } else {
+      h = pool_.acquire();
+      table_[actor_id] = h;
+    }
+  }
+
+  // Always bind the handle to the caller's stream
+  cusparseStatus_t status = cusparseSetStream(h, stream);
+  if (status != CUSPARSE_STATUS_SUCCESS)
+    throw std::runtime_error("cusparseSetStream failed");
+
+  return h;
+}
+
+void DeviceCusparseHandleTable::release_handle(int actor_id) {
+  std::unique_lock<std::shared_mutex> write_lock(table_mutex_);
+  auto it = table_.find(actor_id);
+  if (it != table_.end()) {
+    pool_.release(it->second);
+    table_.erase(it);
+  }
+}
+
+} // namespace caf::cuda

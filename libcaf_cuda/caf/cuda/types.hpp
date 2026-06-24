@@ -4,6 +4,7 @@
 
 
 #include <caf/intrusive_ptr.hpp>
+#include <caf/actor.hpp>
 #include <variant>
 #include <vector>
 #include <stdexcept>
@@ -53,8 +54,32 @@ class command;
 template <bool PassConfig, class... Ts>
 class actor_facade;
 
+enum class matrix_format {
+  csr,
+  csc,
+  coo
+};
+
+struct solver_result_meta {
+  int device_num;
+  int stream_id;
+  int iterations;
+  bool converged;
+  int error_code;
+
+  solver_result_meta() : device_num(-1), stream_id(-1), iterations(0), converged(false), error_code(0) {}
+  solver_result_meta(int dev, int stream, int iters, bool conv, int err = 0)
+    : device_num(dev), stream_id(stream), iterations(iters), converged(conv), error_code(err) {}
+};
+
 } // namespace caf::cuda
 
+// Structure for mapping kernel output indices to specific host memory buffers
+struct output_mapping {
+  int index;
+  void* dst; // Destination host pointer
+  size_t count; // Number of elements to copy
+};
 
 // === buffer_variant and output_buffer outside namespace or inside as needed ===
 
@@ -71,109 +96,108 @@ struct output_buffer {
 template <typename T>
 class in_impl {
 private:
-  std::variant<T, std::vector<T>> data_;
+  T scalar_;
+  const T* ptr_;
+  size_t size_;
+  bool is_scalar_;
   bool moved_from_ = false;
 
   void check_valid() const {
     if (moved_from_)
-      throw std::runtime_error(std::string("Use-after-move detected in ") + typeid(*this).name());
+      throw std::runtime_error("Use-after-move detected in in_impl");
   }
 
 public:
   using value_type = T;
 
-  // Constructors
-  in_impl() : data_(T{}) {}
-  explicit in_impl(const T& val) : data_(val) {}
-  explicit in_impl(const std::vector<T>& buf) : data_(buf) {}
+  // scalar ctor
+  in_impl()
+    : scalar_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
-  // Copy constructor/assignment
-  in_impl(const in_impl&) = default;
-  in_impl& operator=(const in_impl&) = default;
+  explicit in_impl(const T& val)
+    : scalar_{val}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
-  // Move constructor
-  in_impl(in_impl&& other) noexcept
-    : data_(std::move(other.data_)) {
-    other.moved_from_ = true;
-  }
+  // zero-copy vector view
+  explicit in_impl(const std::vector<T>& buf)
+    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
 
-  // Move assignment
-  in_impl& operator=(in_impl&& other) noexcept {
-    if (this != &other) {
-      data_ = std::move(other.data_);
-      other.moved_from_ = true;
-    }
-    return *this;
-  }
+  explicit in_impl(std::vector<T>&& buf)
+    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
+
+  // raw pointer constructor
+  explicit in_impl(const T* ptr, size_t size)
+    : scalar_{}, ptr_{ptr}, size_{size}, is_scalar_{false} {}
 
   bool is_scalar() const {
     check_valid();
-    return std::holds_alternative<T>(data_);
+    return is_scalar_;
   }
 
   const T& getscalar() const {
     check_valid();
-    if (!is_scalar())
+    if (!is_scalar_)
       throw std::runtime_error("in_impl does not hold scalar");
-    return std::get<T>(data_);
-  }
-
-  const std::vector<T>& get_buffer() const {
-    check_valid();
-    if (is_scalar())
-      throw std::runtime_error("in_impl does not hold buffer");
-    return std::get<std::vector<T>>(data_);
+    return scalar_;
   }
 
   const T* data() const {
     check_valid();
-    return is_scalar() ? &std::get<T>(data_) : std::get<std::vector<T>>(data_).data();
+    return ptr_;
   }
 
-  std::size_t size() const {
+  size_t size() const {
     check_valid();
-    return is_scalar() ? 1 : std::get<std::vector<T>>(data_).size();
+    return size_;
+  }
+
+  // Required for CAF serialization compatibility
+  std::vector<T> get_buffer() const {
+    check_valid();
+    return std::vector<T>(ptr_, ptr_ + size_);
   }
 };
-
 
 //represents a write only buffer on the gpu
 template <typename T>
 class out_impl {
 private:
-  std::variant<T, std::vector<T>> data_;
+  T scalar_;
+  size_t size_ = 1;
+  bool is_scalar_ = true;
   bool moved_from_ = false;
-  int size_ = 0; // Always store as int
 
   void check_valid() const {
     if (moved_from_)
-      throw std::runtime_error(std::string("Use-after-move detected in ") + typeid(*this).name());
+      throw std::runtime_error("Use-after-move detected in out_impl");
   }
 
 public:
   using value_type = T;
 
-  out_impl() : data_(T{}), size_(1) {}
-  
-  // Replaces old scalar constructor: just set size
-  explicit out_impl(int size) 
-    : data_(std::vector<T>(size)), size_(size) {}
-  
-  explicit out_impl(const std::vector<T>& buf) 
-    : data_(buf), size_(static_cast<int>(buf.size())) {}
+  out_impl() : scalar_{}, size_(1), is_scalar_(true) {}
+
+  // allocate GPU buffer of given size
+  explicit out_impl(size_t size)
+    : scalar_{}, size_(size), is_scalar_(false) {}
+
+  explicit out_impl(const std::vector<T>& buf)
+    : scalar_{}, size_(static_cast<int>(buf.size())), is_scalar_(false) {}
 
   out_impl(const out_impl&) = default;
   out_impl& operator=(const out_impl&) = default;
 
-  out_impl(out_impl&& other) noexcept
-    : data_(std::move(other.data_)), size_(other.size_) {
+  out_impl(out_impl&& other) noexcept {
+    scalar_ = other.scalar_;
+    size_ = other.size_;
+    is_scalar_ = other.is_scalar_;
     other.moved_from_ = true;
   }
 
   out_impl& operator=(out_impl&& other) noexcept {
     if (this != &other) {
-      data_ = std::move(other.data_);
+      scalar_ = other.scalar_;
       size_ = other.size_;
+      is_scalar_ = other.is_scalar_;
       other.moved_from_ = true;
     }
     return *this;
@@ -181,20 +205,12 @@ public:
 
   bool is_scalar() const {
     check_valid();
-    return std::holds_alternative<T>(data_);
-  }
-
-   const std::vector<T>& get_buffer() const {
-    check_valid();
-    if (is_scalar())
-      throw std::runtime_error("out_impl does not hold buffer");
-    return std::get<std::vector<T>>(data_);
+    return is_scalar_;
   }
 
   const T* data() const {
     check_valid();
-    return is_scalar() ? reinterpret_cast<const T*>(&size_)
-                       : std::get<std::vector<T>>(data_).data();
+    return &scalar_;
   }
 
   size_t size() const {
@@ -202,71 +218,73 @@ public:
     return static_cast<size_t>(size_);
   }
 
+  // compatibility with CAF serialization
+  std::vector<T> get_buffer() const {
+    check_valid();
+    return std::vector<T>(size_);
+  }
 };
 
 
-//creates a read-write buffer on the gpu
 template <typename T>
 class in_out_impl {
 private:
-  std::variant<T, std::vector<T>> data_;
+  T scalar_;
+  const T* ptr_;
+  size_t size_;
+  bool is_scalar_;
   bool moved_from_ = false;
 
   void check_valid() const {
     if (moved_from_)
-      throw std::runtime_error(std::string("Use-after-move detected in ") + typeid(*this).name());
+      throw std::runtime_error("Use-after-move detected in in_out_impl");
   }
 
 public:
   using value_type = T;
 
-  in_out_impl() : data_(T{}) {}
-  explicit in_out_impl(const T& val) : data_(val) {}
-  explicit in_out_impl(const std::vector<T>& buf) : data_(buf) {}
+  in_out_impl()
+    : scalar_{}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
-  in_out_impl(const in_out_impl&) = default;
-  in_out_impl& operator=(const in_out_impl&) = default;
+  explicit in_out_impl(const T& val)
+    : scalar_{val}, ptr_{&scalar_}, size_{1}, is_scalar_{true} {}
 
-  in_out_impl(in_out_impl&& other) noexcept
-    : data_(std::move(other.data_)) {
-    other.moved_from_ = true;
-  }
+  explicit in_out_impl(const std::vector<T>& buf)
+    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
 
-  in_out_impl& operator=(in_out_impl&& other) noexcept {
-    if (this != &other) {
-      data_ = std::move(other.data_);
-      other.moved_from_ = true;
-    }
-    return *this;
-  }
+  explicit in_out_impl(std::vector<T>&& buf)
+    : scalar_{}, ptr_{buf.data()}, size_{buf.size()}, is_scalar_{false} {}
+
+  // raw pointer constructor
+  explicit in_out_impl(const T* ptr, size_t size)
+    : scalar_{}, ptr_{ptr}, size_{size}, is_scalar_{false} {}
 
   bool is_scalar() const {
     check_valid();
-    return std::holds_alternative<T>(data_);
+    return is_scalar_;
   }
 
   const T& getscalar() const {
     check_valid();
-    if (!is_scalar())
+    if (!is_scalar_)
       throw std::runtime_error("in_out_impl does not hold scalar");
-    return std::get<T>(data_);
-  }
-
-  const std::vector<T>& get_buffer() const {
-    check_valid();
-    if (is_scalar())
-      throw std::runtime_error("in_out_impl does not hold buffer");
-    return std::get<std::vector<T>>(data_);
+    return scalar_;
   }
 
   const T* data() const {
     check_valid();
-    return is_scalar() ? &std::get<T>(data_) : std::get<std::vector<T>>(data_).data();
+    return ptr_;
   }
 
   std::size_t size() const {
     check_valid();
-    return is_scalar() ? 1 : std::get<std::vector<T>>(data_).size();
+    return size_;
+  }
+
+  // required for CAF serialization
+  std::vector<T> get_buffer() const {
+    check_valid();
+    return std::vector<T>(ptr_, ptr_ + size_);
   }
 };
 
@@ -314,4 +332,23 @@ struct raw_type<caf::cuda::mem_ptr<T>> {
 template <typename T>
 using raw_t = typename raw_type<T>::type;
 
+namespace caf::cuda {
 
+/**
+ * Context for asynchronous CG iterations.
+ */
+template <class T>
+struct sparse_cg_solve_context {
+  mem_ptr<int> A_rp, A_ci;
+  mem_ptr<T> A_val, b, x, r, p, w, rho, old_rho, dot_pw;
+  mem_ptr<char> spmv_ws;
+  T threshold;
+  matrix_format format;
+  int n, nnz, max_iter, iterations = 0;
+  int device_num, stream_id;
+  actor requester;
+  std::vector<output_mapping> mappings;
+  bool return_mem_ptr = false;
+};
+
+} // namespace caf::cuda

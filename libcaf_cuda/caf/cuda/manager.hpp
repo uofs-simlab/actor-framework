@@ -6,6 +6,8 @@
 #include <mutex>
 #include <fstream>
 #include <map>
+#include <shared_mutex>
+#include <unordered_map>
 
 #include <caf/actor_system.hpp>
 #include <caf/actor.hpp>
@@ -20,6 +22,10 @@
 #include "caf/cuda/program.hpp"
 #include "caf/cuda/actor_facade.hpp"
 #include "caf/cuda/platform.hpp"
+#include "caf/cuda/manager_config.hpp"
+#include "caf/cuda/control-layer/token.hpp" // For send_scheduler_actor_message
+#include "caf/cuda/control-layer/behavior_token.hpp"
+
 
 //A class that just acts as a user interface
 //and a system initialization for cuda 
@@ -40,36 +46,23 @@ class actor_facade;
 class CAF_CUDA_EXPORT manager {
 public:
   /// Initializes the singleton. Must be called exactly once before get().
-  static void init(caf::actor_system& sys) {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (instance_) {
-      	//return;
-      throw std::runtime_error("CUDA manager already initialized");
-    }
-    CHECK_CUDA(cuInit(0));
-    CUcontext ctx = nullptr;
-    cuCtxGetCurrent(&ctx);
-    //std::cout << "Before cuCtxCreate, context: " << ctx << std::endl;
-    instance_ = new manager(sys);
-    //caf::core::init_global_meta_objects();
-     caf::init_global_meta_objects<caf::id_block::cuda>();
-  }
+  static void init(caf::actor_system& sys);
+
+
+
+
+ /// Initializes the singleton. Must be called exactly once before get().
+  static void init(caf::actor_system& sys,manager_config config);
 
   /// Returns the singleton instance. Crashes if not yet initialized.
-  static manager& get() {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (!instance_) {
-      throw std::runtime_error("CUDA manager used before initialization\n  Please place caf::cuda::manager::init() at the top of CAF_MAIN\n");
-    }
-    return *instance_;
-  }
+  static manager& get();
 
   /// Deletes the singleton if needed (optional).
-  static void shutdown() {
-    std::lock_guard<std::mutex> guard(mutex_);
-    delete instance_;
-    instance_ = nullptr;
-  }
+  //deletes the scheduler actor as well if it exists
+  static void shutdown();
+
+  /// Flushes the cache of compiled programs.
+  void flush_programs();
 
   // Prevent copy/assignment
   manager(const manager&) = delete;
@@ -187,6 +180,42 @@ public:
 
   device_ptr find_device(int id);
 
+  int get_num_devices();
+
+  double available_memory_mb(int id = 0);
+
+  caf::actor spawn_exit_actor(int num_actors);
+
+  // Toggles the scheduler actors on. If called multiple times, it will only spawn them once.
+  void toggle_scheduler_actor(int num_streams, int stream_depth);
+
+  // Enables cuBLAS support on all detected devices.
+  void enable_blas_actors();
+
+  // Enables cuSparse support on all detected devices.
+  void enable_sparse_actors();
+
+  // Sends a batch of tokens to the scheduler actors, distributing them statically.
+  void send_scheduler_actor_message(std::vector<token_ptr> tokens);
+
+  // Sends a single token to a randomly selected scheduler actor.
+  void send_scheduler_actor_message(token_ptr token);
+
+  // Returns the first scheduler actor. Useful for single-GPU setups or general dispatch.
+  caf::actor get_scheduler_actor();
+
+  // Returns a specific scheduler actor by device number.
+  caf::actor get_scheduler_actor(int device_number);
+
+  // Sends a behavior change message to a specific scheduler actor.
+  void send_scheduler_actor_message(const std::string& behavior_name, int device_number);
+
+  /// Returns the CUDA context associated with the given device number.
+  CUcontext get_context(int device_number);
+
+  /// Returns the CUDA stream associated with the given stream number (actor ID) and device number.
+  CUstream get_stream(int stream_number, int device_number);
+
 private:
   explicit manager(caf::actor_system& sys)
     : system_(sys), platform_(platform::create()) {
@@ -199,10 +228,13 @@ private:
   //helper to compile a nvrtc program
   bool compile_nvrtc_program(const char* source, CUdevice device, std::vector<char>& ptx_out);
 
-
   static manager* instance_;
   static std::mutex mutex_;
+
+  mutable std::shared_mutex programs_mutex_;
+  std::unordered_map<size_t, program_ptr> programs_;
+  std::vector<caf::actor> scheduler_actors_; // Stores handles to spawned scheduler actors
+  bool scheduler_actors_spawned_ = false; // Flag to ensure idempotency
 };
 
 } // namespace caf::cuda
-

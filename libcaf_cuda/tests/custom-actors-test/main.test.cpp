@@ -216,12 +216,16 @@ caf::behavior mmul_actor_fun(caf::stateful_actor<mmul_actor_state>* self) {
 }
 
 
-
 void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
   if (num_actors < 1) {
     std::cerr << "[ERROR] Number of actors must be >= 1\n";
     return;
   }
+
+  // ------------------------------------
+  // Start timing
+  // ------------------------------------
+  auto start = std::chrono::steady_clock::now();
 
   // Spawn num_actors actors running the mmul behavior
   std::vector<caf::actor> actors;
@@ -230,10 +234,22 @@ void run_mmul_test(caf::actor_system& sys, int matrix_size, int num_actors) {
     actors.push_back(sys.spawn(mmul_actor_fun));
   }
 
-  // Actor 0 generates matrices and broadcasts to others 
+  // Actor 0 generates matrices and broadcasts to others
   caf::anon_mail(matrix_size, actors).send(actors[0]);
 
-   sys.await_all_actors_done();
+  // Wait for all actors to finish
+  sys.await_all_actors_done();
+
+  // ------------------------------------
+  // Stop timing
+  // ------------------------------------
+  auto end = std::chrono::steady_clock::now();
+  auto duration_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+  std::cout << "[MMUL TEST] matrix_size=" << matrix_size
+            << ", actors=" << num_actors
+            << ", time=" << duration_ms << " ms\n";
 }
 
 
@@ -733,12 +749,42 @@ void benchmark_shared_perf_all(caf::actor_system& sys) {
 }
 
 
+void run_mmul_scaling_tests(caf::actor_system& sys) {
+  const int min_size   = 10;
+  const int max_size   = 1024;
+  const int min_actors = 1;
+  const int max_actors = 1024;
+
+  // Matrix sizes: 10, 32, 64, 128, ..., 1024
+  std::vector<int> matrix_sizes = {10};
+  for (int s = 32; s <= max_size; s *= 2)
+    matrix_sizes.push_back(s);
+
+  // Actor counts: 1, 2, 4, 8, ..., 1024
+  std::vector<int> actor_counts;
+  for (int a = min_actors; a <= max_actors; a *= 2)
+    actor_counts.push_back(a);
+
+  std::cout << "=== MMUL Scaling Tests ===\n";
+
+  for (int size : matrix_sizes) {
+    for (int actors : actor_counts) {
+      std::cout << "\n[RUN] matrix_size=" << size
+                << ", actors=" << actors << "\n";
+
+      run_mmul_test(sys, size, actors);
+    }
+  }
+
+  std::cout << "\n=== MMUL Scaling Tests Complete ===\n";
+}
+
 
 
 void caf_main(caf::actor_system& sys) {
   caf::cuda::manager::init(sys);
 
-  run_mmul_test(sys,100,4000);
+  //run_mmul_test(sys,10,250);
   //run_async_mmul_test(sys,100,1);
   //run_async_mmul_perf_test(sys,1024,200);
 
@@ -747,6 +793,8 @@ void caf_main(caf::actor_system& sys) {
 
   // run the shared-memory suite:
   //benchmark_shared_perf_all(sys);
+
+  run_mmul_scaling_tests(sys);
 }
 
 

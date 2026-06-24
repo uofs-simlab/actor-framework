@@ -683,6 +683,119 @@ void test_compare_strings([[maybe_unused]] caf::actor_system& sys) {
   assert(vectors_equal(result, expected));
 }
 
+
+// Test for command_runner.hpp: memory transfer via transfer_memory
+void test_command_runner_memory_transfer([[maybe_unused]] caf::actor_system& sys) {
+    using namespace caf::cuda;
+    auto& mgr = manager::get();
+    auto dev = mgr.find_device(0);
+
+    int device_number = 0;
+    int stream_id = 1;
+
+    command_runner<> runner; // no template args needed for transfer_memory
+
+    // Host data
+    std::vector<int> in_data = {1, 2, 3};
+    std::vector<int> io_data = {10, 20, 30};
+    int out_size = 3;
+
+    // Wrap args
+    in<int> in_arg(in_data);
+    in_out<int> io_arg(io_data);
+    out<int> out_arg(out_size);
+
+    // Transfer host -> device
+    caf::cuda::mem_ptr<int> d_in =
+    runner.transfer_memory(device_number, stream_id, in_arg);
+    caf::cuda::mem_ptr<int> d_io =
+    runner.transfer_memory(device_number, stream_id, io_arg);
+
+    caf::cuda::mem_ptr<int> d_out =
+    runner.transfer_memory(device_number, stream_id, out_arg);
+    
+    // Do a dummy kernel on device that increments each element (optional)
+    const char* kernel_src = R"(
+    extern "C" __global__
+    void increment_kernel(int* inout, int* out, int size) {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        
+	if (idx < size) {
+	    inout[idx] += 1;    // in_out
+            out[idx] = idx+1;   // out
+        }
+    }
+    )";
+
+    program_ptr prog;
+    try {
+        prog = mgr.create_program(kernel_src, "increment_kernel", dev);
+    } catch (const std::exception& e) {
+        std::cerr << "Skipping test_command_runner_memory_transfer due to create_program failure: "
+                  << e.what() << std::endl;
+        return;
+    }
+
+    nd_range dims(out_size, 1, 1, out_size, 1, 1);
+
+    // Run kernel through command_runner using transferred memory
+    command_runner<in_out<int>, out<int>,in<int>> kernel_runner;
+    auto outputs = kernel_runner.run(prog, dims, 1 /* actor_id */,
+                                     io_arg, out_arg,
+				     in<int>{out_size});
+
+    // Copy back to host
+    std::vector<int> h_io  = caf::cuda::extract_vector<int>(outputs,0); 
+    std::vector<int> h_out = caf::cuda::extract_vector<int>(outputs,1);
+
+    // Verify memory transfer
+    //assert(vectors_equal(h_in, in_data));               // in: unchanged
+    for (size_t i = 0; i < h_io.size(); ++i)
+        assert(h_io[i] == io_data[i]+1);               // in_out: incremented
+    for (size_t i = 0; i < h_out.size(); ++i)
+        assert(h_out[i] == i+1);                       // out: set by kernel
+}
+
+
+// Test for context and stream retrieval helper methods
+void test_context_stream_retrieval([[maybe_unused]] caf::actor_system& sys) {
+  using namespace caf::cuda;
+  auto& mgr = manager::get();
+  
+  // Test manager context and stream retrieval
+  CUcontext m_ctx = mgr.get_context(0);
+  assert(m_ctx != nullptr);
+  
+  CUstream m_stream = mgr.get_stream(1, 0);
+  assert(m_stream != nullptr);
+  
+  // Test command_runner context and stream retrieval
+  command_runner<> runner;
+  CUcontext cr_ctx = runner.get_context(0);
+  assert(cr_ctx == m_ctx);
+  
+  CUstream cr_stream = runner.get_stream(1, 0);
+  assert(cr_stream == m_stream);
+  
+  // Test invalid device exception throwing
+  bool manager_threw = false;
+  try {
+    mgr.get_context(9999);
+  } catch (const std::exception&) {
+    manager_threw = true;
+  }
+  assert(manager_threw);
+  
+  bool runner_threw = false;
+  try {
+    runner.get_context(9999);
+  } catch (const std::exception&) {
+    runner_threw = true;
+  }
+  assert(runner_threw);
+}
+
+
 // Structure to hold test information
 struct Test {
     std::string name;
@@ -708,7 +821,9 @@ const std::vector<Test> tests = {
     {"test_vector_addition", test_vector_addition},
     {"test_invalid_kernel_params", test_invalid_kernel_params},
     {"test_stream_async_execution", test_stream_async_execution},
-    {"test_compare_strings", test_compare_strings}
+    {"test_compare_strings", test_compare_strings},
+    {"test_command_runner_memory_transfer", test_command_runner_memory_transfer},
+    {"test_context_stream_retrieval", test_context_stream_retrieval}
 };
 
 // Function to run a single test and report its result

@@ -3,7 +3,7 @@
 namespace caf::cuda {
 
 program::program(std::string name, std::vector<char> binary, bool is_fatbin)
-    : name_(std::move(name)), binary_(std::move(binary)) {
+    : name_(std::move(name)), binary_(std::move(binary)), hashValue(hasher(name_)) {
   load_kernels(is_fatbin);
 }
 
