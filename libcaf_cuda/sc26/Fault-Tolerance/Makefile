@@ -9,12 +9,16 @@ CAF_INCLUDE_DIR ?=
 CAF_LIB_DIR ?=
 
 LIBS = -L$(CAF_LIB_DIR) \
- 			-lcaf_core \
+			-lcaf_core \
 			-lcaf_io \
 			-lcaf_net \
 			-lcaf_cuda \
 			-L$(CUDA_LIB_DIR) \
-			-lcuda
+			-lcuda \
+			-lcublas \
+			-lcusparse
+
+
 
 INCLUDES = -I$(CAF_INCLUDE_DIR) \
 		   -I$(CUDA_INCLUDE_DIR)

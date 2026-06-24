@@ -43,7 +43,7 @@ static double ms_between(tp a, tp b) {
 // Atoms
 // ─────────────────────────────────────────────────────────────────────────────
 CAF_BEGIN_TYPE_ID_BLOCK(monte_carlo_app, caf::id_block::cuda::end)
-    CAF_ADD_ATOM(monte_carlo_app, start_atom)
+    // CAF_ADD_ATOM(monte_carlo_app, start_atom)
     CAF_ADD_ATOM(monte_carlo_app, done_atom)
 CAF_END_TYPE_ID_BLOCK(monte_carlo_app)
 
