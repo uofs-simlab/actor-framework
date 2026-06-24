@@ -128,7 +128,7 @@ void run_scheduler_integration_scaling_test(actor_system& sys) {
         // Start scheduler with 4 streams and depth 2 (8 slots) to force queuing
         mgr.toggle_scheduler_actor(8, 1);
 
-        auto program = mgr.create_program_from_cubin("../mmul.cubin", "matrixMul");
+        auto program = mgr.create_program_from_cubin("mmul.cubin", "matrixMul");
         const int THREADS = 32;
 
         std::vector<token_ptr> tokens;
